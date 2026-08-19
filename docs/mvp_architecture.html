@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Vibepaws MVP 技术架构 v1</title>
+<title>Vibepaws MVP 技术架构（v1.1）</title>
 <style>
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
@@ -90,8 +90,8 @@ hr { border: none; height: 1px; background: #d0d7de; margin: 24px 0; }
 </tr>
 <tr>
 <td>D6</td>
-<td>技术栈：Core = Node ≥20 + better-sqlite3；UI = Tauri v2 + TypeScript + Canvas 2D</td>
-<td>体积小、启动快、跨平台 always-on-top 可控；Canvas 2D 规避 WebGL 跨平台差异</td>
+<td>技术栈：Core = Node ≥20 + better-sqlite3；UI 壳 = <strong>Electron（MVP 已落地）→ Tauri v2（待 Rust 就绪）</strong>；渲染 = Canvas 2D</td>
+<td>Electron 已实现透明桌宠窗+托盘+点击穿透，壳与渲染层/SSE 协议解耦，换 Tauri 仅改壳层；打包 electron-builder 产出 .app/dmg/zip（GitHub 100MB 限制已通过历史清理规避）</td>
 </tr>
 <tr>
 <td>D7</td>
@@ -143,7 +143,39 @@ hr { border: none; height: 1px; background: #d0d7de; margin: 24px 0; }
 <hr>
 <h2>2. 模块设计</h2>
 <h3>2.1 Adapter 采集插件（P0，Claude Code + Codex 共享模板）</h3>
-<p><strong>为什么能共享</strong>（依据 references/event_collection.md）：</p>
+<p><strong>差异与关键坑（实测 2026-08）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Claude Code</th>
+<th>Codex（v0.148）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>hooks 配置</td>
+<td><code>.claude/settings.json</code>（驼峰事件键）</td>
+<td><code>.codex/hooks.json</code>（<strong>驼峰事件键</strong>，源码 serde rename 确认）</td>
+</tr>
+<tr>
+<td>项目信任</td>
+<td>目录信任后生效</td>
+<td><strong>项目级 hooks 被「项目信任」门控</strong>：未信任时项目层整体 disabled，hooks 被跳过；需 <code>~/.codex/config.toml</code> 的 <code>[projects.&quot;&lt;path&gt;&quot;] trust_level=&quot;trusted&quot;</code>（install.ts 自动配置，含备份）</td>
+</tr>
+<tr>
+<td>hooks 信任</td>
+<td>无需单独审查</td>
+<td>非托管 hooks 需 <code>/hooks</code> 审查信任，否则被跳过；headless 自动化用 <code>--dangerously-bypass-hook-trust</code></td>
+</tr>
+<tr>
+<td>token 通道</td>
+<td><strong>statusLine 实时</strong>（stdin JSON 含 context_window.total_input_tokens/total_output_tokens）+ SessionEnd transcript 提取</td>
+<td>无 statusline；hooks stdin 无 token 字段；SessionEnd 时从 <code>~/.codex/sessions/*.jsonl</code> 提取（best-effort）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>token 采集（详见 §2.8）</strong>：Claude Code statusLine → 实时 token_update；SessionEnd → transcript 汇总兜底（实测 53218 tokens）。</p>
 <table>
 <thead>
 <tr>
@@ -319,9 +351,43 @@ self_growth:        每小时 +0.1 EXP（tired 时暂停）——避免「不用
 <h3>2.7 宠物内容注册表（数据驱动插件）</h3>
 <pre><code>pet_types: { id, name, rarity(common/uncommon/rare/legendary),
              sprite_pack, evolution_meta[], starter }
-- schema 支持 ≥100 个 ID；MVP 交付 12 个高质量 sprite + 1 个完整进化家族
+- schema 支持 ≥100 个 ID；MVP 交付 6 个 sprite（程序化生成）+ Spark/Flare/Nova 进化家族（seed.ts）
 - 首次启动随机分配一个 starter pet（README 6.1 验收）
 </code></pre>
+<h3>2.8 token 采集通道（实时 + 兜底，2026-08 新增）</h3>
+<p><strong>调研结论（实测 + 源码确认）</strong>：Claude Code / Codex 的 <strong>hooks stdin 输入均不含 token/usage 字段</strong>（PostToolUse/SessionEnd 实测无；codex PostToolUseRequest 结构确认无）。token 只能间接获取：</p>
+<table>
+<thead>
+<tr>
+<th>通道</th>
+<th>机制</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>statusLine（Claude Code）</strong></td>
+<td><code>settings.json</code> 配 <code>statusLine.command</code>，每次状态刷新 stdin JSON 含 <code>context_window.total_input_tokens/total_output_tokens</code>（官方口径 input 含缓存读写）；headless <code>-p</code> 不触发（TUI 特性）</td>
+<td>✅ 已实现 <code>src/adapters/statusline.ts</code>（token 未变去重、静默失败）</td>
+</tr>
+<tr>
+<td><strong>SessionEnd transcript（Claude Code）</strong></td>
+<td>hook 输入带 <code>transcript_path</code> → 解析 assistant message.usage（input+output+cache_creation）→ 一次性 token_update</td>
+<td>✅ 已实现（实测 53218 tokens）</td>
+</tr>
+<tr>
+<td><strong>SessionEnd 存档（Codex）</strong></td>
+<td><code>transcript_path</code> → <code>~/.codex/sessions/*.jsonl</code>（session 存档）；提取逻辑通用覆盖，格式不符自动降级</td>
+<td>✅ 已实现（best-effort，完整验证待认证环境）</td>
+</tr>
+<tr>
+<td>降级（D4）</td>
+<td>全部缺失时 EXP 只算 outcome + daily care</td>
+<td>默认行为</td>
+</tr>
+</tbody>
+</table>
+<p>隐私：只提取 token 数字，不读代码/文本内容；解析失败不阻塞核心循环。</p>
 <hr>
 <h2>3. 事件 Schema（标准化）</h2>
 <h3>3.1 事件信封</h3>
@@ -667,6 +733,13 @@ settings(key, value)                                                    -- budge
 <li><strong>jump-to = 各 agent 原生恢复命令</strong>（<code>claude --resume &lt;id&gt;</code> / <code>codex resume &lt;id&gt;</code> / pi RPC switch_session），写进能力声明，按 agent 路由</li>
 <li><strong>Codex「丢 session ID 就找不到会话」是真实痛点</strong>（codex-sessions-manager 的起源）→ Vibepaws 事件流天然记录 id+cwd，浮层一键恢复，这正是跨 session 管理的价值点</li>
 </ol>
+<p><strong>实测补充（2026-08，v0.1）</strong>：</p>
+<ul>
+<li>Codex v0.148 项目级 hooks 被「项目信任」门控（未信任 → 项目层 disabled，hooks 全部跳过）；<code>install.ts</code> 已自动写 <code>~/.codex/config.toml</code> 信任（带备份）</li>
+<li>Codex hooks.json 事件键为驼峰（SessionStart），与 Claude Code 一致（源码 <code>#[serde(rename = &quot;SessionStart&quot;)]</code> 确认）</li>
+<li>Claude Code / Codex 的 hooks stdin 均不含 token 字段；token 经 statusLine（CC 实时）+ SessionEnd transcript/存档提取（§2.8）</li>
+<li>打包：electron-builder 产出 .app/dmg/zip；自动拉起 Core（系统 node 探测，ABI 兼容）；历史 100MB+ 文件已清理，<code>.git</code> 415MB→336KB</li>
+</ul>
 
 </body>
 </html>

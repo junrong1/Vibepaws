@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibepaws MVP v0.1 交付手册</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  max-width: 920px; margin: 0 auto; padding: 32px 28px 80px;
+  line-height: 1.7; font-size: 15px; color: #24292f;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #0d1117; color: #c9d1d9; }
+  h1, h2, h3, h4 { color: #f0f6fc; }
+  code, pre { background: #161b22; border: 1px solid #30363d; }
+  table td, table th { border-color: #30363d; }
+  blockquote { color: #8b949e; border-left-color: #30363d; }
+  hr { background: #30363d; }
+}
+h1 { font-size: 26px; border-bottom: 2px solid #d0d7de; padding-bottom: 10px; }
+h2 { font-size: 20px; margin-top: 40px; border-bottom: 1px solid #d0d7de; padding-bottom: 6px; }
+h3 { font-size: 16px; margin-top: 28px; }
+a { color: #0969da; text-decoration: none; }
+code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
+       background: #f6f8fa; padding: 2px 5px; border-radius: 4px; }
+pre { background: #f6f8fa; padding: 14px 16px; border-radius: 8px; overflow-x: auto; line-height: 1.55; }
+pre code { background: none; padding: 0; border: none; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; vertical-align: top; }
+th { background: #f6f8fa; font-weight: 600; }
+blockquote { margin: 14px 0; padding: 4px 16px; color: #57606a; border-left: 4px solid #d0d7de; }
+hr { border: none; height: 1px; background: #d0d7de; margin: 24px 0; }
+.header {
+  margin-bottom: 28px; padding: 20px 24px; border-radius: 10px;
+  background: linear-gradient(135deg, #f6f8fa, #eaeef2);
+}
+.header h1 { border: none; margin: 0 0 8px; }
+.header .meta { color: #57606a; font-size: 13px; }
+@media (prefers-color-scheme: dark) { .header { background: #161b22; } .header .meta { color: #8b949e; } }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 8px; font-size: 11px; margin-right: 4px; }
+.tag.done { background: #dafbe1; color: #1a7f37; }
+.tag.warn { background: #fff8c5; color: #9a6700; }
+.tag.info { background: #ddf4ff; color: #0969da; }
+@media (prefers-color-scheme: dark) {
+  .tag.done { background: #1a4731; color: #7ee787; }
+  .tag.warn { background: #4d3c00; color: #e3b341; }
+  .tag.info { background: #0c2d6b; color: #79c0ff; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+<h1>Vibepaws MVP v0.1 交付手册</h1>
+<div class="meta">版本：v0.1（2026-08-19）· 分支：feat/desktop-shell-codex · 状态：alpha 可玩 · 配套：docs/mvp_architecture.html（技术架构 v1.1）</div>
+</div>
+
+<h2>1. 交付清单</h2>
+
+<table>
+<tr><th>模块</th><th>内容</th><th>验证</th></tr>
+<tr><td>Core（Node/TS headless）</td><td>SQLite 9 表 · 事件 schema 白名单（隐私双闸）· Session Registry 7 态状态机 · 通知引擎 · EXP/健康/进化引擎 · HTTP+SSE</td><td>46/46 测试 · typecheck 干净</td></tr>
+<tr><td>simulator</td><td>5 场景：normal / frequent_decisions / context_overload / correction_loop / multi_session</td><td>全事件注入状态机正确</td></tr>
+<tr><td>UI 桌面壳（Electron）</td><td>透明无边框 · always-on-top · 右下角驻留 · 拖拽 · 托盘（点击穿透/显示/退出）· 自动拉起 Core</td><td>窗口诊断 bounds/opaquePx 正常</td></tr>
+<tr><td>打包</td><td>electron-builder → <code>dist/Vibepaws.app</code> + dmg + zip（arm64）</td><td>open 后 Core/UI 自动就绪</td></tr>
+<tr><td>Adapter：Claude Code</td><td>hooks 12 事件采集 + <b>statusLine 实时 token</b> + SessionEnd transcript token 提取</td><td>真实会话全链路（含 53218 tokens 提取）</td></tr>
+<tr><td>Adapter：Codex</td><td>hooks 11 事件采集（驼峰键）· 项目信任自动配置 · SessionEnd 存档 token 提取（best-effort）</td><td>真实 exec 事件落库（session 存档验证）</td></tr>
+<tr><td>generic bridge</td><td>监听 .vibepaws/events/*.jsonl → 归一化 → Core</td><td>fixture 端到端</td></tr>
+<tr><td>隐私</td><td>adapter 白名单 + ingress schema 丢弃 + transcript 仅提取 token 数字</td><td>privacy.test.ts（tool_input/prompt/secret 永不落库）</td></tr>
+</table>
+
+<h2>2. 运行手册</h2>
+
+<h3>2.1 开发模式（四步走）</h3>
+
+<pre><code>npm install
+npm run core          # Core 守护进程（初始化 SQLite + 随机 starter pet）
+npm run desktop       # Electron 桌宠窗（或 npm run ui 浏览器预览 127.0.0.1:5173）
+npm run sim -- --scenario multi_session   # 试玩：注入 3 session 并行</code></pre>
+
+<h3>2.2 打包版（.app 双击即用）</h3>
+
+<pre><code>npm run dist:mac      # 产出 dist/Vibepaws.app（自动拉起 Core + UI，无需手动 npm run core）</code></pre>
+<p>打包版日志在 <code>~/Library/Application Support/Vibepaws/vibepaws.log</code>；数据在 userData/.vibepaws。</p>
+
+<h3>2.3 接入真实 agent</h3>
+
+<pre><code># Claude Code
+npm run adapter:install -- --agent claude_code   # 写 .claude/settings.json（含 statusLine，实时 token）
+# Codex
+npm run adapter:install -- --agent codex         # 写 .codex/hooks.json + 自动配置项目信任
+#   hooks 信任注册（首次生效，二选一）：
+#   ① 交互：cd 项目 && codex，运行 /hooks 批准
+#   ② 自动化：codex exec --dangerously-bypass-hook-trust …</code></pre>
+
+<h2>3. token 采集机制（2026-08 新增）</h2>
+
+<p><span class="tag done">已落地</span>调研结论：Claude Code / Codex 的 <b>hooks stdin 均不含 token 字段</b>（实测 + 源码确认）。token 经以下通道获取：</p>
+
+<table>
+<tr><th>通道</th><th>机制</th><th>状态</th></tr>
+<tr><td>Claude Code statusLine</td><td>settings.json 配 statusLine.command；每次状态刷新 stdin JSON 含 <code>context_window.total_input_tokens/total_output_tokens</code>（官方口径：input 含缓存读写）；headless -p 不触发（TUI 特性）</td><td><span class="tag done">实时</span></td></tr>
+<tr><td>Claude Code SessionEnd</td><td>hook 输入带 transcript_path → 解析 assistant message.usage（input+output+cache_creation）→ 一次性 token_update</td><td><span class="tag done">兜底</span> 实测 53218 tokens</td></tr>
+<tr><td>Codex SessionEnd</td><td>transcript_path → ~/.codex/sessions/*.jsonl（session 存档）；提取逻辑通用，格式不符自动降级</td><td><span class="tag done">best-effort</span></td></tr>
+</table>
+
+<p>数据流：token_update → sessions.token_used → EXP token 奖励（1000 tokens = 1 EXP × context/topic 倍率，daily cap 200）。</p>
+
+<h2>4. Codex 接入要点（实测踩坑）</h2>
+
+<table>
+<tr><th>坑</th><th>原因</th><th>解决</th></tr>
+<tr><td>hooks 不执行</td><td>Codex v0.148 项目级 hooks 被「项目信任」门控（未信任 → 项目层 disabled）</td><td>install.ts 自动写 <code>~/.codex/config.toml</code> 的 projects 信任（带备份）</td></tr>
+<tr><td>hooks 事件键</td><td>一度误判为蛇形（session_start）</td><td>源码 <code>#[serde(rename = "SessionStart")]</code> 确认<b>驼峰</b>，与 Claude Code 一致</td></tr>
+<tr><td>hooks 信任</td><td>非托管 hooks 需审查否则被跳过</td><td>/hooks 交互 或 <code>--dangerously-bypass-hook-trust</code></td></tr>
+<tr><td>token 缺失</td><td>codex hooks 无 usage 字段、无 statusline（0.148）</td><td>SessionEnd 读 session 存档（best-effort）</td></tr>
+</table>
+
+<h2>5. 隐私与安全</h2>
+
+<ul>
+<li><b>双闸</b>：adapter 白名单提取（丢弃 tool_input/prompt/transcript_path）→ Core 落库前 schema 丢弃未知字段；原始 hook JSON 永不落库</li>
+<li><b>token 提取</b>：只读数字（input/output/cache tokens），不读代码/文本内容</li>
+<li><b>传输</b>：本地 127.0.0.1 + API token（双写 cwd/.vibepaws 与 ~/.vibepaws，任意 cwd 的 hook 可认证）</li>
+<li><b>数据</b>：删除 = 清空 .vibepaws 数据目录</li>
+</ul>
+
+<h2>6. 已知限制 / 后续</h2>
+
+<table>
+<tr><th>项</th><th>状态</th><th>说明</th></tr>
+<tr><td>Tauri v2 壳</td><td><span class="tag warn">待 Rust</span></td><td>本机无 Rust 工具链；Electron 壳与渲染/SSE 解耦，换壳成本仅壳层</td></tr>
+<tr><td>Codex 真实模型会话</td><td><span class="tag info">部分</span></td><td>本机 codex 未登录（401），SessionStart 已验证，PreToolUse/token 完整链待用户环境</td></tr>
+<tr><td>pi adapter</td><td><span class="tag info">P1</span></td><td>generic bridge 已就绪，pi-gui lib 本地保留参考</td></tr>
+<tr><td>W2 功能</td><td><span class="tag info">P1</span></td><td>进化家族/自成长（sprite/seed 已备）、topic drift、tired、STT</td></tr>
+<tr><td>打包签名</td><td><span class="tag warn">未签名</span></td><td>本地构建无 Developer ID；分发需签名或公证</td></tr>
+</table>
+
+<h2>7. 提交记录（本分支）</h2>
+
+<pre><code>03a75c4 MVP v1: Core + UI + adapters（simulator 5 场景）
+a2d84e9 Desktop shell: Electron 透明桌宠窗
+53a231c README 运行指南
+9155478 cc 真实集成验证 + level-up 回落修复
+563ad57 打包 .app + Codex 真实验证（commit 历史含 dist，已清理）
+7dc2ada gitignore 排除 dist
+5b9a6ed pi-gui 不纳入 git
+4cdf110 hook token 提取（SessionEnd transcript）
+2179168 Claude Code statusline 实时 token + Codex 通道确认
+d5d23bd / 55b7585 历史清理后 force push（main / feat）</code></pre>
+
+</body>
+</html>
