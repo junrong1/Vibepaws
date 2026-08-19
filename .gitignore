@@ -3,3 +3,5 @@ node_modules/
 .claude/
 .codex/
 ui/node_modules/
+dist/
+.DS_Store
