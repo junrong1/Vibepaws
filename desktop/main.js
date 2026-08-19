@@ -146,6 +146,10 @@ function spawnUiServer() {
 }
 
 function createWindow() {
+  if (win && !win.isDestroyed()) {
+    win.show();
+    return;
+  }
   const { workArea } = screen.getPrimaryDisplay();
   win = new BrowserWindow({
     width: WIN_W,
@@ -173,6 +177,7 @@ function createWindow() {
   });
   win.on("closed", () => {
     win = null;
+    log("[vibepaws] 窗口已关闭（托盘常驻，可点击托盘图标恢复）");
   });
   // 诊断：窗口状态与 Canvas 渲染结果
   setTimeout(async () => {
@@ -212,10 +217,19 @@ function updateTrayMenu() {
   if (!tray) return;
   const menu = Menu.buildFromTemplate([
     { label: `点击穿透：${clickThrough ? "开" : "关"}`, click: toggleClickThrough },
-    { label: "显示宠物", click: () => win?.show() },
+    { label: win && !win.isDestroyed() ? "隐藏宠物" : "显示宠物", click: () => toggleWindow() },
     { label: "退出 Vibepaws", click: () => app.quit() },
   ]);
   tray.setContextMenu(menu);
+}
+
+/** 显示/隐藏切换（窗口关闭后重建） */
+function toggleWindow() {
+  if (win && !win.isDestroyed()) {
+    win.isVisible() ? win.hide() : win.show();
+  } else {
+    createWindow();
+  }
 }
 
 function createTray() {
@@ -225,37 +239,44 @@ function createTray() {
   tray.setToolTip("Vibepaws — 你的 coding pet");
   updateTrayMenu();
   tray.on("click", () => {
-    if (win) {
+    if (win && !win.isDestroyed()) {
       win.isVisible() ? win.hide() : win.show();
+    } else {
+      createWindow();
     }
   });
 }
 
-app.whenReady().then(async () => {
-  await ensureCore();
-  await spawnUiServer();
-  createWindow();
-  createTray();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+// 单实例：锁在 app ready 之前获取；未拿到锁立即退出，绝不启动服务/窗口
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.exit(0); // 直接退出，避免 whenReady 回调执行
+} else {
+  app.on("second-instance", () => {
+    if (win && !win.isDestroyed()) {
+      win.show();
+      win.focus();
+    } else {
+      createWindow();
+    }
   });
-});
+
+  app.whenReady().then(async () => {
+    await ensureCore();
+    await spawnUiServer();
+    createWindow();
+    createTray();
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
 
 app.on("window-all-closed", () => {
-  // 托盘常驻：不退出
+  // 托盘常驻：窗口关闭不退出（点托盘图标或菜单可恢复）
 });
 
 app.on("before-quit", () => {
   uiServer?.kill();
   coreProc?.kill();
 });
-
-// 单实例
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    win?.show();
-  });
-}

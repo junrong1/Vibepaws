@@ -177,6 +177,15 @@ $("pet").addEventListener("click", (e) => {
   state.panelOpen ? closePanel() : openPanel();
 });
 $("panel-close").onclick = closePanel;
+// 隐藏宠物：关闭窗口（托盘常驻，点托盘图标/菜单可恢复）
+$("act-hide").onclick = () => {
+  const isElectron = Boolean(window.process?.versions?.electron);
+  if (isElectron) {
+    window.close();
+  } else {
+    closePanel();
+  }
+};
 $("act-mute").onclick = async () => { await postAction("mute", { minutes: 30 }); flash("🔕 全部安静 30 分钟"); };
 $("act-mute2h").onclick = async () => { await postAction("mute", { minutes: 120 }); flash("😴 全部安静 2 小时"); };
 $("act-exp").onclick = async () => { await loadExpLog(); };
