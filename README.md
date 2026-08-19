@@ -356,15 +356,19 @@ npm run sim -- --scenario correction_loop    # 反复改同一文件 → correct
 npm run sim -- --scenario multi_session      # 3 个 session 并行 → 聚合/轮播
 ```
 
-### 3. 启动 UI（浏览器打开 http://127.0.0.1:5173）
+### 3. 启动桌面宠物（UI 壳）
 
 ```bash
-npm run ui
+npm run desktop     # Electron 透明桌宠窗口（右下角、always-on-top、托盘）
 ```
 
 - 宠物 7 状态动画（idle/working/needs-you/warning/finished/tired/level-up）
 - 气泡：需要你/权限/context 警告/出错/token 里程碑
 - 点击宠物 → 浮层：session 列表（点击行复制 jump-to 恢复命令）、全部静音 30m/2h、EXP 明细
+- 拖拽：按住宠物窗口空白处拖动；托盘菜单：点击穿透开关 / 显示 / 退出
+- 浏览器预览（可选）：`npm run ui` 后打开 http://127.0.0.1:5173
+
+> 桌面壳当前用 Electron（环境无 Rust 工具链）；Tauri v2 待 Rust 就绪后替换，仅换壳层，渲染与 SSE 协议不变。
 
 ### 4. 接入真实 coding agent（adapter）
 
