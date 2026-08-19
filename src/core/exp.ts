@@ -191,12 +191,14 @@ export class ExpEngine {
   }
 
   // ---- 等级 + 进化 ----
+  private lastLevelUpAt = 0;
   private checkLevelUp(petId: number, exp: number): void {
     const pet = this.petRow();
     if (!pet) return;
     const needed = levelExpRequired(pet.level);
     if (exp >= needed) {
       const nextLevel = pet.level + 1;
+      this.lastLevelUpAt = Date.now(); // 用于 level-up 状态 5s 回落
       this.db
         .prepare("UPDATE pets SET level=?, exp=?, state='level-up' WHERE id=?")
         .run(nextLevel, round2(exp - needed), petId);
@@ -265,13 +267,19 @@ export class ExpEngine {
     const type = this.db.prepare("SELECT name FROM pet_types WHERE id=?").get(p.pet_type_id) as
       | { name: string }
       | undefined;
+    // level-up 状态 5 秒后回落为 idle（避免永远庆祝）
+    let state = (p.state as PetState) ?? "idle";
+    if (state === "level-up" && Date.now() - this.lastLevelUpAt > 5000) {
+      state = "idle";
+      this.db.prepare("UPDATE pets SET state='idle' WHERE id=?").run(p.id);
+    }
     return {
       id: p.id,
       pet_type_id: p.pet_type_id,
       name: type?.name ?? p.name ?? "vibepaws",
       level: p.level,
       exp: round2(p.exp),
-      state: (p.state as PetState) ?? "idle",
+      state,
       health_score: round2(this.healthScore(p.id)),
       daily_exp: round2(p.daily_exp),
       next_level_exp: levelExpRequired(p.level),

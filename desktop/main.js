@@ -84,9 +84,36 @@ function createWindow() {
   win.setAlwaysOnTop(true, "floating");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.loadURL(`http://127.0.0.1:${UI_PORT}/`);
+  // 渲染进程 console → 主进程日志（调试用）
+  win.webContents.on("console-message", (_e, level, message, line, sourceId) => {
+    console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+  });
+  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    console.error(`[renderer] load failed ${code} ${desc} ${url}`);
+  });
   win.on("closed", () => {
     win = null;
   });
+  // 诊断：窗口状态与 Canvas 渲染结果
+  setTimeout(async () => {
+    try {
+      const b = win?.getBounds();
+      const v = win?.isVisible();
+      console.log(`[diag] bounds=${JSON.stringify(b)} visible=${v}`);
+      const pixel = await win?.webContents.executeJavaScript(`(() => {
+        const c = document.getElementById('pet');
+        if (!c) return 'NO_CANVAS';
+        const ctx = c.getContext('2d');
+        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        let opaque = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) opaque++;
+        return 'canvas=' + c.width + 'x' + c.height + ' opaquePx=' + opaque;
+      })()`);
+      console.log(`[diag] ${pixel}`);
+    } catch (e) {
+      console.error(`[diag] ${e}`);
+    }
+  }, 3000);
   // 保持置顶（防被其他窗口压下去）
   setInterval(() => {
     if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, "floating");
