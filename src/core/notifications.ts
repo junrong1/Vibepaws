@@ -1,22 +1,44 @@
 /**
  * 通知引擎 — 架构 §2.4 / README 6.2。
  * 判定全在 Core（保证 5 秒验收）；去重 60s；mute：全局 30m/2h、按 project、按 session。
- * 气泡内容只用 safe_summary + agent 徽标 + session 短名，无敏感数据。
+ * 气泡内容只用固定文案模板 + 白名单 payload 参数 + agent 徽标，无敏感数据。
+ *
+ * i18n（issue #3 / #6）：Core 不决定用户看到哪种语言 —— 通知携带 `i18n`（文案 key + 参数），
+ * 由渲染层按用户 locale 出字；落库的 title/body 固定用英文，DB 内容与界面语言解耦。
  */
 import type Database from "better-sqlite3";
 import type { CoreEvent } from "./events.ts";
 import { projectShortName } from "./registry.ts";
 import { getSetting, setSetting } from "./settings.ts";
+import { t, DEFAULT_LOCALE } from "../i18n/messages.js";
+
+/** 文案定位：渲染层用它出字，Core 用它渲染英文落库。 */
+export interface I18nText {
+  key: string;
+  params?: Record<string, string | number>;
+}
 
 export interface Notification {
   event_id?: string;
   agent: string;
   session_id: string;
   type: string;
+  /** 英文渲染结果（落库 + 老客户端兜底）；渲染层优先用 i18n。 */
   title: string;
   body: string;
+  /** 文案 key + 参数，渲染层按用户 locale 出字 */
+  i18n?: { title: I18nText; body: I18nText };
   status: "shown" | "dismissed" | "actioned" | "muted";
   shown_at: string;
+}
+
+/** 判定结果：只带 key/params，title/body 在落库前统一渲染成英文 */
+type Draft = Omit<Notification, "status" | "shown_at" | "title" | "body"> & {
+  i18n: { title: I18nText; body: I18nText };
+};
+
+function render(text: I18nText): string {
+  return t(DEFAULT_LOCALE, text.key, text.params);
 }
 
 const DEDUP_MS = 60_000; // 同 session 同类型 60s 合并
@@ -46,61 +68,64 @@ export class NotificationEngine {
     return this.persist(n);
   }
 
-  private evaluate(ev: CoreEvent): Omit<Notification, "status" | "shown_at"> | null {
+  private evaluate(ev: CoreEvent): Draft | null {
+    const base = { event_id: ev.event_id, agent: ev.agent, session_id: ev.session_id };
+    const agent = shortAgent(ev.agent);
     switch (ev.event_type) {
       case "decision_required": {
-        const kind = ev.payload.kind ?? "decision";
+        const kind = ev.payload.kind;
         return {
-          event_id: ev.event_id,
-          agent: ev.agent,
-          session_id: ev.session_id,
+          ...base,
           type: "decision",
-          title: `需要你：${shortAgent(ev.agent)} · ${kind}`,
-          body: ev.safe_summary || "Agent 需要你的决定",
+          i18n: {
+            title: { key: "notif.decision.title", params: { agent } },
+            body: kind ? { key: "notif.decision.body_kind", params: { kind } } : { key: "notif.decision.body" },
+          },
         };
       }
       case "permission_required": {
-        const tool = ev.payload.tool_name ?? "";
+        const tool = ev.payload.tool_name;
         return {
-          event_id: ev.event_id,
-          agent: ev.agent,
-          session_id: ev.session_id,
+          ...base,
           type: "permission",
-          title: `权限请求：${tool || "tool"}`,
-          body: ev.safe_summary || "Agent 等待批准",
+          i18n: {
+            title: { key: "notif.permission.title" },
+            body: tool
+              ? { key: "notif.permission.body", params: { agent, tool } }
+              : { key: "notif.permission.body_unknown", params: { agent } },
+          },
         };
       }
       case "context_update": {
         const pct = ev.payload.context_pct ?? 0;
-        const hit = CONTEXT_WARN_PCTS.find((t) => pct >= t);
+        const hit = CONTEXT_WARN_PCTS.find((threshold) => pct >= threshold);
         if (hit === undefined) return null;
+        const severity = pct >= 95 ? "critical" : pct >= 85 ? "high" : "warn";
         return {
-          event_id: ev.event_id,
-          agent: ev.agent,
-          session_id: ev.session_id,
+          ...base,
           type: "context",
-          title: `上下文已用 ${Math.round(pct)}%`,
-          body: pct >= 95 ? "建议尽快收尾或新开会话" : pct >= 85 ? "注意 token 消耗" : "上下文开始紧张",
+          i18n: {
+            title: { key: "notif.context.title", params: { pct: Math.round(pct) } },
+            body: { key: `notif.context.body.${severity}` },
+          },
         };
       }
       case "session_error": {
+        const kind = ev.payload.error_kind;
         return {
-          event_id: ev.event_id,
-          agent: ev.agent,
-          session_id: ev.session_id,
+          ...base,
           type: "error",
-          title: `${shortAgent(ev.agent)} 出错`,
-          body: ev.safe_summary || (ev.payload.error_kind ?? "unknown error"),
+          i18n: {
+            title: { key: "notif.error.title", params: { agent } },
+            body: kind ? { key: "notif.error.body_kind", params: { kind } } : { key: "notif.error.body" },
+          },
         };
       }
       case "topic_drift_warning": {
         return {
-          event_id: ev.event_id,
-          agent: ev.agent,
-          session_id: ev.session_id,
+          ...base,
           type: "drift",
-          title: "话题漂移提醒",
-          body: "任务可能偏离目标，建议新开一个会话",
+          i18n: { title: { key: "notif.drift.title" }, body: { key: "notif.drift.body" } },
         };
       }
       case "token_update": {
@@ -111,12 +136,15 @@ export class NotificationEngine {
         const hit = TOKEN_MILESTONES.find((m) => ratio >= m);
         if (hit === undefined) return null;
         return {
-          event_id: ev.event_id,
-          agent: ev.agent,
-          session_id: ev.session_id,
+          ...base,
           type: "milestone",
-          title: `已用 ${Math.round(ratio * 100)}% budget`,
-          body: `${(tokens / 1000).toFixed(1)}k tokens · 预算 ${Math.round(budget / 1000)}k`,
+          i18n: {
+            title: { key: "notif.milestone.title", params: { pct: Math.round(ratio * 100) } },
+            body: {
+              key: "notif.milestone.body",
+              params: { used: (tokens / 1000).toFixed(1), budget: Math.round(budget / 1000) },
+            },
+          },
         };
       }
       default:
@@ -125,7 +153,9 @@ export class NotificationEngine {
   }
 
   /** 去重 + mute + 落库 */
-  private persist(n: Omit<Notification, "status" | "shown_at">): Notification | null {
+  private persist(draft: Draft): Notification | null {
+    // 落库与兜底用英文渲染；用户看到的语言由渲染层按 i18n 决定
+    const n = { ...draft, title: render(draft.i18n.title), body: render(draft.i18n.body) };
     // mute 检查
     const muted = this.isMuted(n.session_id, n.type);
     if (muted) {

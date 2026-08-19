@@ -4,8 +4,12 @@
  */
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join, extname, normalize, resolve } from "node:path";
 import { readApiToken } from "../core/token.ts";
+
+/** 文案目录（src/i18n/messages.js）：Core 与渲染层共用同一份，见 issue #3 / #6。 */
+const I18N_FILE = fileURLToPath(new URL("../i18n/messages.js", import.meta.url));
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -39,6 +43,13 @@ export function startUiServer(opts: UiServerOptions = {}): Promise<{ server: Ser
 
     if (url.startsWith("/api/")) {
       proxyToCore(req, res);
+      return;
+    }
+
+    // 文案目录不在 ui/ 下（Core 也要 import 它），单独走一条路由
+    if (url === "/i18n.js") {
+      res.writeHead(200, { "content-type": MIME[".js"] as string, "cache-control": "no-cache" });
+      res.end(readFileSync(I18N_FILE));
       return;
     }
 

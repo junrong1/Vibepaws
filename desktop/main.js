@@ -10,6 +10,7 @@ import { app, BrowserWindow, Tray, Menu, screen, nativeImage } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
 function log(line) {
@@ -57,6 +58,29 @@ function workDir() {
   // packaged：数据目录用 userData（.vibepaws 建在这里），cwd 不可靠
   return app.isPackaged ? app.getPath("userData") : process.cwd();
 }
+
+/* ---------------- i18n（issue #3 / #6） ----------------
+ * 主进程是 locale 的唯一裁决者：app.getLocale() 拿到的是 OS 语言，
+ * 再通过 ?locale= 传给渲染层，保证托盘菜单与宠物界面永远同一种语言。
+ * 文案目录与 Core 共用 src/i18n/messages.js（打包后在 resources/src 下，不在 asar 里）。 */
+let LOCALE = "en";
+let translate = (_locale, key) => key;
+
+async function loadI18n() {
+  const file = join(resourcesDir(), "src", "i18n", "messages.js");
+  try {
+    const mod = await import(pathToFileURL(file).href);
+    translate = mod.t;
+    LOCALE = process.env.VIBEPAWS_LOCALE
+      ? mod.normalizeLocale(process.env.VIBEPAWS_LOCALE)
+      : mod.normalizeLocale(app.getLocale());
+    log(`[vibepaws] locale=${LOCALE} (os=${app.getLocale()})`);
+  } catch (e) {
+    err(`[vibepaws] 文案目录加载失败，回落英文: ${e}`);
+  }
+}
+
+const t = (key, params) => translate(LOCALE, key, params);
 
 function coreRunning() {
   return new Promise((resolve) => {
@@ -163,7 +187,8 @@ function createWindow() {
   });
   win.setAlwaysOnTop(true, "floating");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  win.loadURL(`http://127.0.0.1:${UI_PORT}/`);
+  // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
+  win.loadURL(`http://127.0.0.1:${UI_PORT}/?locale=${encodeURIComponent(LOCALE)}`);
   // 渲染进程 console → 主进程日志（调试用）
   win.webContents.on("console-message", (_e, level, message, line, sourceId) => {
     console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`);
@@ -211,9 +236,12 @@ function toggleClickThrough() {
 function updateTrayMenu() {
   if (!tray) return;
   const menu = Menu.buildFromTemplate([
-    { label: `点击穿透：${clickThrough ? "开" : "关"}`, click: toggleClickThrough },
-    { label: "显示宠物", click: () => win?.show() },
-    { label: "退出 Vibepaws", click: () => app.quit() },
+    {
+      label: t("tray.clickthrough", { state: t(clickThrough ? "tray.state.on" : "tray.state.off") }),
+      click: toggleClickThrough,
+    },
+    { label: t("tray.show"), click: () => win?.show() },
+    { label: t("tray.quit"), click: () => app.quit() },
   ]);
   tray.setContextMenu(menu);
 }
@@ -222,7 +250,7 @@ function createTray() {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" rx="4" fill="#58a6ff"/><circle cx="5" cy="8" r="2" fill="#fff"/><circle cx="11" cy="8" r="2" fill="#fff"/></svg>`;
   const img = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
   tray = new Tray(img);
-  tray.setToolTip("Vibepaws — 你的 coding pet");
+  tray.setToolTip(t("tray.tooltip"));
   updateTrayMenu();
   tray.on("click", () => {
     if (win) {
@@ -232,6 +260,7 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  await loadI18n();
   await ensureCore();
   await spawnUiServer();
   createWindow();

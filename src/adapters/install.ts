@@ -11,6 +11,11 @@ import { homedir } from "node:os";
 import { claudeHooksConfig, codexHooksConfig, capabilities } from "./hooks.ts";
 import { deliver } from "./hook_agent.ts";
 import type { CoreEvent } from "../core/events.ts";
+import { t as translate, detectNodeLocale } from "../i18n/messages.js";
+
+/** 安装向导是 onboarding 的第一屏，跟着系统语言走（issue #3）；VIBEPAWS_LOCALE 可覆盖。 */
+const LOCALE = detectNodeLocale();
+const t = (key: string, params?: Record<string, string | number>): string => translate(LOCALE, key, params);
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -29,7 +34,7 @@ function backup(file: string): void {
   const bak = `${file}.vibepaws.bak`;
   if (!existsSync(bak)) {
     writeFileSync(bak, readFileSync(file, "utf-8"));
-    console.log(`  ↳ 已备份原配置 → ${bak}`);
+    console.log(t("cli.backup", { file: bak }));
   }
 }
 
@@ -50,13 +55,13 @@ function installClaude(): void {
   const existing = existsSync(file) ? (JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>) : {};
   const merged = mergeHooks(existing, claudeHooksConfig(REPO));
   if (DRY) {
-    console.log(`[dry-run] 将写入 ${file}，合并后 hooks 键：${Object.keys((merged.hooks ?? {}) as object).length} 个事件`);
+    console.log(t("cli.dryrun.write", { file, count: Object.keys((merged.hooks ?? {}) as object).length }));
     return;
   }
   backup(file);
   writeFileSync(file, JSON.stringify(merged, null, 2) + "\n");
-  console.log(`✓ Claude Code hooks 已写入 ${file}`);
-  console.log("  Claude Code 会在项目目录自动加载 .claude/settings.json（首次需信任该目录）");
+  console.log(t("cli.claude.written", { file }));
+  console.log(t("cli.claude.note"));
 }
 
 /** Codex 项目信任：写 ~/.codex/config.toml（备份已有，只追加 projects 信任条目） */
@@ -70,11 +75,11 @@ export function trustProjectForCodex(projectPath: string): { ok: boolean; file: 
       if (existsSync(file)) writeFileSync(`${file}.vibepaws.bak`, existing);
       const entry = `[projects."${projectPath}"]\ntrust_level = "trusted"\n`;
       writeFileSync(file, existing + "\n" + entry);
-      return { ok: true, file, message: `项目信任已写入 ${file}` };
+      return { ok: true, file, message: t("cli.codex.trust.written", { file }) };
     }
-    return { ok: true, file, message: `项目信任已存在（${file}）` };
+    return { ok: true, file, message: t("cli.codex.trust.exists", { file }) };
   } catch (err) {
-    return { ok: false, file, message: `写入项目信任失败（需手动配置）：${String(err)}` };
+    return { ok: false, file, message: t("cli.codex.trust.failed", { error: String(err) }) };
   }
 }
 
@@ -85,24 +90,20 @@ function installCodex(): void {
   const existing = existsSync(file) ? (JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>) : {};
   const merged = mergeHooks(existing, codexHooksConfig(REPO));
   if (DRY) {
-    console.log(`[dry-run] 将写入 ${file}，合并后 hooks 键：${Object.keys((merged.hooks ?? {}) as object).length} 个事件`);
+    console.log(t("cli.dryrun.write", { file, count: Object.keys((merged.hooks ?? {}) as object).length }));
     return;
   }
   backup(file);
   writeFileSync(file, JSON.stringify(merged, null, 2) + "\n");
-  console.log(`✓ Codex hooks 已写入 ${file}`);
+  console.log(t("cli.codex.written", { file }));
   // 项目信任（Codex 0.148+：项目未信任则项目级 hooks 被门控跳过）
   const trust = trustProjectForCodex(REPO);
   console.log(trust.ok ? `✓ ${trust.message}` : `⚠ ${trust.message}`);
-  console.log(`
-  ⚠ hooks 信任注册（首次生效需授权，二选一）：
-    ① 交互模式：cd ${REPO} && codex，然后运行 /hooks 批准 vibepaws
-    ② headless/自动化：codex exec --dangerously-bypass-hook-trust …
-  💡 全局安装（可选）：把 ${file} 的内容合并到 ~/.codex/hooks.json`);
+  console.log(t("cli.codex.trustNote", { repo: REPO, file }));
 }
 
 async function selfCheck(): Promise<void> {
-  console.log("\n[自检] 发送测试事件到 Core…");
+  console.log(t("cli.selfcheck.start"));
   const testEvent: CoreEvent = {
     event_id: `install-test-${Date.now()}`,
     seq: 0,
@@ -117,23 +118,23 @@ async function selfCheck(): Promise<void> {
   };
   const ok = await deliver(testEvent);
   if (ok) {
-    console.log("✓ Core 已收到测试事件（session_started）");
-    console.log("  下一步：启动 coding agent 开始干活，宠物就会动起来 🐾");
+    console.log(t("cli.selfcheck.ok"));
+    console.log(t("cli.selfcheck.next"));
   } else {
-    console.log("✗ Core 未响应 — 请先运行 npm run core（若 Core 未启动，事件已写入 .vibepaws/events/fallback.jsonl，启动后自动补收由 generic bridge 负责）");
+    console.log(t("cli.selfcheck.fail"));
   }
 }
 
 async function main(): Promise<void> {
-  console.log(`[vibepaws] adapter install — agent=${AGENT}${DRY ? " (dry-run)" : ""} repo=${REPO}`);
+  console.log(t("cli.install.header", { agent: AGENT, dry: DRY ? " (dry-run)" : "", repo: REPO }));
   if (AGENT === "claude_code") {
     installClaude();
-    console.log(`  能力声明：${capabilities("claude_code").join(", ")}`);
+    console.log(t("cli.capabilities", { list: capabilities("claude_code").join(", ") }));
   } else if (AGENT === "codex") {
     installCodex();
-    console.log(`  能力声明：${capabilities("codex").join(", ")}`);
+    console.log(t("cli.capabilities", { list: capabilities("codex").join(", ") }));
   } else {
-    console.error(`未知 agent: ${AGENT}`);
+    console.error(t("cli.unknownAgent", { agent: AGENT }));
     process.exit(1);
   }
   if (!DRY) await selfCheck();
