@@ -94,6 +94,11 @@ export function normalizeHook(
     eventType = raw.matcher === "usage" ? "token_update" : "decision_required";
   }
 
+  // Claude Code 的 AskUserQuestion 工具 = agent 在等用户回答。
+  // 只在 PreToolUse（提问瞬间）弹「需要你」气泡；PostToolUse 由 refineByTool 落回 agent_working（已作答）。
+  const isAskUser = toolName === "AskUserQuestion";
+  if (isAskUser && hookEvent === "PreToolUse") eventType = "decision_required";
+
   // 白名单 payload（绝不含 tool_input/prompt/代码）
   const payload: CoreEvent["payload"] = {};
   if (eventType === "session_started") payload.source = "startup";
@@ -103,7 +108,7 @@ export function normalizeHook(
   }
   if (toolName) payload.tool_name = toolName;
   if (eventType === "decision_required" || eventType === "permission_required") {
-    payload.kind = raw.matcher ?? hookEvent;
+    payload.kind = isAskUser ? "question" : (raw.matcher ?? hookEvent);
     if (raw.turn_id) payload.turn_id = String(raw.turn_id);
   }
   if (eventType === "token_update" && typeof raw.tokens === "number") payload.tokens = raw.tokens;
@@ -145,7 +150,10 @@ function safeSummary(
   switch (eventType) {
     case "session_started": return "Session started";
     case "agent_working": return `Working: ${toolName ?? "agent"}`;
-    case "decision_required": return `Needs decision (${raw.matcher ?? "notification"})`;
+    case "decision_required":
+      return toolName === "AskUserQuestion"
+        ? "Waiting for your answer"
+        : `Needs decision (${raw.matcher ?? "notification"})`;
     case "permission_required": return `Tool permission needed: ${toolName ?? "unknown"}`;
     case "token_update": return `Usage update: ${raw.tokens ?? "?"} tokens`;
     case "context_update": return "Context compaction";

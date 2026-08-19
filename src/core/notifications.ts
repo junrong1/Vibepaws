@@ -79,7 +79,12 @@ export class NotificationEngine {
           type: "decision",
           i18n: {
             title: { key: "notif.decision.title", params: { agent } },
-            body: kind ? { key: "notif.decision.body_kind", params: { kind } } : { key: "notif.decision.body" },
+            body:
+              kind === "question"
+                ? { key: "notif.decision.body_question" }
+                : kind
+                  ? { key: "notif.decision.body_kind", params: { kind } }
+                  : { key: "notif.decision.body" },
           },
         };
       }

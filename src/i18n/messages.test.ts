@@ -88,6 +88,7 @@ test("每种通知的 key 都在目录里，且两种语言都渲染得出完整
   const cases: CoreEvent[] = [
     ev({ event_type: "decision_required", payload: { kind: "agent_needs_input" } }),
     ev({ event_type: "decision_required", payload: {} }), // 无 kind 分支
+    ev({ event_type: "decision_required", payload: { kind: "question" } }),
     ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }),
     ev({ event_type: "permission_required", payload: {} }), // 无 tool 分支
     ev({ event_type: "context_update", payload: { context_pct: 72 } }),

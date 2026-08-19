@@ -19,7 +19,7 @@ export function claudeHooksConfig(repoRoot: string): Record<string, unknown> {
         { matcher: "", hooks: [{ type: "command", command: cmd }] },
       ],
       PreToolUse: [
-        { matcher: "Bash|Read|Edit|Write|WebFetch", hooks: [{ type: "command", command: cmd }] },
+        { matcher: "Bash|Read|Edit|Write|WebFetch|AskUserQuestion", hooks: [{ type: "command", command: cmd }] },
       ],
       PostToolUse: [
         { matcher: "", hooks: [{ type: "command", command: cmd }] },

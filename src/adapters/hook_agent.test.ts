@@ -37,6 +37,26 @@ test("Claude Code PreToolUse(Bash) → agent_working + tool_name", () => {
   assert.equal(ev.payload.tool_name, "Bash");
 });
 
+test("Claude Code PreToolUse(AskUserQuestion) → decision_required（ask-user 弹气泡）", () => {
+  const ev = normalizeHook(
+    { hook_event_name: "PreToolUse", session_id: "s-1", cwd: "/p", tool_name: "AskUserQuestion" },
+    "claude_code",
+  )!;
+  assert.equal(ev.event_type, "decision_required");
+  assert.equal(ev.payload.kind, "question");
+  assert.equal(ev.severity, "high");
+  assert.match(ev.safe_summary, /answer/);
+});
+
+test("Claude Code PostToolUse(AskUserQuestion) → agent_working（已作答，不再弹气泡）", () => {
+  const ev = normalizeHook(
+    { hook_event_name: "PostToolUse", session_id: "s-1", cwd: "/p", tool_name: "AskUserQuestion" },
+    "claude_code",
+  )!;
+  assert.equal(ev.event_type, "agent_working");
+  assert.equal(ev.payload.kind, undefined);
+});
+
 test("Claude Code PermissionRequest → permission_required(high)", () => {
   const ev = normalizeHook(
     { hook_event_name: "PermissionRequest", session_id: "s-1", cwd: "/p", tool_name: "Write" },

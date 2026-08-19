@@ -46,7 +46,7 @@ export interface EventPayload {
   cwd?: string;                // session_started
   source?: SessionSource;      // session_started
   tool_name?: string;          // agent_working / permission_required / session_error
-  kind?: string;               // decision_required: Notification | Stop 等
+  kind?: string;               // decision_required: "question"(AskUserQuestion) | Notification matcher | Stop 等
   turn_id?: string;            // decision_required
   tokens?: number;             // token_update
   cost?: number;               // token_update
