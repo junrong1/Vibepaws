@@ -12,6 +12,16 @@ import { join, basename } from "node:path";
 import { readApiToken } from "../core/token.ts";
 import type { CoreEvent, AgentId } from "../core/events.ts";
 
+function debugLog(line: string): void {
+  try {
+    const dir = join(".vibepaws", "events");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "hook_debug.log"), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // 忽略
+  }
+}
+
 /* ---------------- 事件映射（references/event_collection.md §3.2） ---------------- */
 
 interface HookMapping {
@@ -159,6 +169,37 @@ function safeSummary(
 
 /* ---------------- 发送（POST + JSONL 兜底） ---------------- */
 
+/**
+ * SessionEnd 时从 transcript 提取 token 消耗（Claude Code JSONL：assistant message.usage）。
+ * 隐私：只提取数字，不读代码/文本内容。返回 null 表示无法提取（降级，不影响核心循环）。
+ */
+export function extractTokensFromTranscript(transcriptPath: string | undefined): number | null {
+  if (!transcriptPath) return null;
+  try {
+    const content = readFileSync(transcriptPath, "utf-8");
+    let total = 0;
+    let found = false;
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line) as {
+          message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number } };
+        };
+        const u = obj.message?.usage;
+        if (u) {
+          found = true;
+          total += (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        }
+      } catch {
+        // 跳过坏行
+      }
+    }
+    return found ? total : null;
+  } catch {
+    return null; // 文件不存在/不可读 → 降级
+  }
+}
+
 export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean> {
   const token = readApiToken();
   try {
@@ -183,15 +224,41 @@ export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean>
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const agent = (args.find((a) => a.startsWith("--agent="))?.split("=")[1] ?? "generic") as AgentId;
+  const debug = args.includes("--debug");
   let stdin = "";
   process.stdin.on("data", (c) => (stdin += c));
   process.stdin.on("end", async () => {
     try {
       const raw = stdin.trim() ? (JSON.parse(stdin) as HookInput) : {};
+      if (debug) debugLog(`RAW INPUT: ${JSON.stringify(raw)}`);
       const ev = normalizeHook(raw, agent);
       if (ev) {
         const delivered = await deliver(ev);
-        if (process.env.VIBEPAWS_DEBUG) console.error(`[hook] ${ev.event_type} delivered=${delivered}`);
+        if (debug) debugLog(`${ev.event_type} delivered=${delivered} payload=${JSON.stringify(ev.payload)}`);
+        // SessionEnd：从 transcript 提取 token 总量 → 补发 token_update（一次性总量）
+        if (ev.event_type === "session_finished") {
+          const tokens = extractTokensFromTranscript(raw.transcript_path);
+          if (tokens !== null && tokens > 0) {
+            const tokenEv: CoreEvent = {
+              event_id: `hook-token-${Date.now()}-${++seqCounter}`,
+              seq: ++seqCounter,
+              agent: ev.agent,
+              session_id: ev.session_id,
+              project_id: ev.project_id,
+              event_type: "token_update",
+              severity: "low",
+              safe_summary: `Session total tokens: ${tokens}`,
+              timestamp: new Date().toISOString(),
+              payload: { tokens },
+            };
+            const ok = await deliver(tokenEv);
+            if (debug) debugLog(`token_update(${tokens}) delivered=${ok}`);
+          } else if (debug) {
+            debugLog(`no tokens extracted from transcript: ${raw.transcript_path}`);
+          }
+        }
+      } else if (debug) {
+        debugLog(`ignored (no mapping): ${raw.hook_event_name}`);
       }
     } catch (err) {
       console.error("[hook] error:", err);
