@@ -325,3 +325,61 @@ session_exp =
 一个高完成度 desktop pet loop · 12 个 starter pets(而不是 100 个) · 支持 100-pet registry 的架构 · decision bubbles · usage/context/topic warnings · EXP bar 和 level-up · healthy-session multipliers · 无永久死亡 · 一个 evolution family · Claude Code 或 Codex adapter · 用于其他 agents 的 generic bridge · 只有在核心循环稳定时,才把 STT 作为 P1 alpha。
 
 两周后的下一次决策,应基于 **retention 和 notification usefulness**,而不是宠物数量。
+
+---
+
+## 运行指南（MVP 0.1）
+
+> 技术架构见 `docs/mvp_architecture.html`。Core 为 Node 守护进程，UI 为浏览器 Canvas 宠物壳（Tauri 壳待 Rust 工具链就绪后包装）。
+
+### 0. 安装
+
+```bash
+npm install          # Node ≥ 20
+```
+
+### 1. 启动 Core（守护进程）
+
+```bash
+npm run core         # 监听 127.0.0.1:17893，初始化 SQLite（.vibepaws/vibepaws.db）
+```
+
+首次启动会随机分配一只 starter pet；API token 写入 `.vibepaws/api_token`。
+
+### 2. 用 simulator 试玩（无需真实 agent）
+
+```bash
+npm run sim -- --scenario normal             # 正常会话 → 宠物 working → finished
+npm run sim -- --scenario frequent_decisions # 多次需要你 → needs-you 气泡
+npm run sim -- --scenario context_overload   # context 88/96% → warning + EXP 倍率下降
+npm run sim -- --scenario correction_loop    # 反复改同一文件 → correction 计数
+npm run sim -- --scenario multi_session      # 3 个 session 并行 → 聚合/轮播
+```
+
+### 3. 启动 UI（浏览器打开 http://127.0.0.1:5173）
+
+```bash
+npm run ui
+```
+
+- 宠物 7 状态动画（idle/working/needs-you/warning/finished/tired/level-up）
+- 气泡：需要你/权限/context 警告/出错/token 里程碑
+- 点击宠物 → 浮层：session 列表（点击行复制 jump-to 恢复命令）、全部静音 30m/2h、EXP 明细
+
+### 4. 接入真实 coding agent（adapter）
+
+```bash
+npm run adapter:install -- --agent claude_code   # 写入 .claude/settings.json（自动备份原配置）
+npm run adapter:install -- --agent codex         # 写入 .codex/hooks.json；首次需在 codex 里运行 /hooks 授权
+```
+
+- 安装器自动发测试事件自检；Core 未启动时事件落入 `.vibepaws/events/fallback.jsonl`
+- 离线兜底：`npm run bridge` 监听该目录，把 JSONL 归一化后转发给 Core
+- 隐私：adapter 白名单提取（丢弃 tool_input/prompt/transcript_path），Core 落库前再丢未知字段，原始 hook JSON 永不落库（`src/core/privacy.test.ts` 验收）
+
+### 测试
+
+```bash
+npm test          # 34 项：registry 状态机 / 通知引擎 / EXP 引擎 / hook 归一化 / bridge / 隐私
+npm run typecheck
+```

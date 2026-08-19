@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibepaws</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 宠物舞台（拖拽区） -->
+  <div id="stage" title="拖动我">
+    <canvas id="pet" width="160" height="160"></canvas>
+    <!-- EXP 条 -->
+    <div id="expbar">
+      <div id="expfill"></div>
+      <span id="exptext">Lv.1</span>
+    </div>
+    <!-- 名字徽章 -->
+    <div id="nameplate"></div>
+    <!-- 连接状态点 -->
+    <div id="conn" class="conn-unknown" title="Core 连接状态"></div>
+  </div>
+
+  <!-- 气泡层 -->
+  <div id="bubbles"></div>
+
+  <!-- 浮层（点击宠物弹出） -->
+  <div id="panel" hidden>
+    <div id="panel-head">
+      <span id="panel-title">Vibepaws</span>
+      <button id="panel-close" title="关闭">×</button>
+    </div>
+    <div id="panel-body">
+      <div id="sessions"></div>
+      <div id="panel-actions">
+        <button id="act-mute" title="全部安静 30 分钟">🔕 30m</button>
+        <button id="act-mute2h" title="全部安静 2 小时">😴 2h</button>
+        <button id="act-exp" title="EXP 明细">📈 EXP</button>
+      </div>
+      <div id="explog" hidden></div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

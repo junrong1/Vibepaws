@@ -1,0 +1,29 @@
+{
+  "name": "vibepaws",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Vibepaws — AI coding pet for your coding agents (MVP)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "core": "node --experimental-strip-types src/core/server.ts",
+    "core:watch": "node --watch --experimental-strip-types src/core/server.ts",
+    "sim": "node --experimental-strip-types src/simulator/index.ts",
+    "db:init": "node --experimental-strip-types src/db/migrate.ts",
+    "adapter:install": "node --experimental-strip-types src/adapters/install.ts",
+    "hook": "node --experimental-strip-types src/adapters/hook_agent.ts",
+    "ui": "node --experimental-strip-types src/ui/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types src/**/*.test.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

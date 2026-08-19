@@ -1,0 +1,5 @@
+node_modules/
+.vibepaws/
+.claude/
+.codex/
+ui/node_modules/
