@@ -146,6 +146,10 @@ html, body {
   display: flex;
   flex-direction: column;
 }
+/* hidden 属性必须显式覆写：#panel 的 display:flex 是 author 规则，
+ * 会盖掉 UA 样式表的 [hidden]{display:none}，于是 hidden 完全失效 ——
+ * 浮层从启动起就一直挂在屏幕上，× 也关不掉（issue #2 / #5）。 */
+#panel[hidden] { display: none; }
 @keyframes panel-in {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
