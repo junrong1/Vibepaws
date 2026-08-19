@@ -203,8 +203,10 @@ async function loadExpLog() {
   box.hidden = false;
 }
 
-/* ---------------- 拖拽（浏览器里模拟移动，Tauri 里交给窗口系统） ---------------- */
+/* ---------------- 拖拽（浏览器里模拟移动；Electron 用 CSS app-region 拖拽） ---------------- */
 (function setupDrag() {
+  const isElectron = Boolean(window.process?.versions?.electron);
+  if (isElectron) return; // Electron 由 -webkit-app-region: drag 处理
   const stage = $("stage");
   let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
   stage.addEventListener("mousedown", (e) => {

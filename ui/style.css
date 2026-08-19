@@ -32,6 +32,8 @@ html, body {
   justify-content: flex-end;
   padding-bottom: 6px;
   cursor: grab;
+  -webkit-app-region: drag;   /* Electron：整窗拖拽 */
+  app-region: drag;
 }
 #stage:active { cursor: grabbing; }
 #pet {
@@ -39,7 +41,9 @@ html, body {
   image-rendering: crisp-edges;
   cursor: pointer;
   filter: drop-shadow(0 4px 8px rgba(0,0,0,0.45));
+  -webkit-app-region: no-drag;  /* 宠物本体可点击 */
 }
+#expbar, #nameplate, #panel, .bubble, button, .session-row { -webkit-app-region: no-drag; }
 
 /* EXP 条 */
 #expbar {

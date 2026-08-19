@@ -15,6 +15,7 @@
     "adapter:install": "node --experimental-strip-types src/adapters/install.ts",
     "hook": "node --experimental-strip-types src/adapters/hook_agent.ts",
     "ui": "node --experimental-strip-types src/ui/server.ts",
+    "desktop": "electron desktop/main.js",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types src/**/*.test.ts"
   },
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
+    "electron": "^43.4.0",
     "typescript": "^5.7.0"
   }
 }
