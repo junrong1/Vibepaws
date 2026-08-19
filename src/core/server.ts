@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, DATA_DIR } from "../db/migrate.ts";
 import { getApiToken } from "./settings.ts";
+import { writeApiToken } from "./token.ts";
 import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
@@ -44,9 +45,9 @@ export class VibepawsServer {
     this.host = cfg.host ?? "127.0.0.1";
     this.db = cfg.db ?? openDb();
     this.token = getApiToken(this.db);
-    // token 落到磁盘供 adapter/install 读取
+    // token 双写（cwd/.vibepaws + ~/.vibepaws），供任意 cwd 的 hook/simulator 读取
     if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(join(DATA_DIR, "api_token"), this.token, { mode: 0o600 });
+    writeApiToken(this.token);
 
     this.notifications = new NotificationEngine(this.db);
     this.exp = new ExpEngine(this.db);

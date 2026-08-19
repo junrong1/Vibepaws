@@ -40,22 +40,27 @@ export function claudeHooksConfig(repoRoot: string): Record<string, unknown> {
   };
 }
 
-/** Codex hooks 片段（~/.codex/hooks.json，或仓库 .codex/hooks.json） */
+/** Codex hooks 片段（~/.codex/hooks.json，或仓库 .codex/hooks.json）
+ * 注意：Codex hooks.json 的事件键为驼峰（SessionStart 等，与 Claude Code 一致），
+ * 源码 serde rename 确认：#[serde(rename = "SessionStart")]。
+ * 但 hooks 生效还需：① 项目被信任（~/.codex/config.toml projects 表）② 非托管 hooks 经 /hooks 审查
+ * 或 exec 加 --dangerously-bypass-hook-trust。 */
 export function codexHooksConfig(repoRoot: string): Record<string, unknown> {
   const cmd = agentCmd("codex", repoRoot);
+  const hook = { type: "command", command: cmd };
   return {
     hooks: {
-      SessionStart: [{ hooks: [{ type: "command", command: cmd }] }],
-      UserPromptSubmit: [{ hooks: [{ type: "command", command: cmd }] }],
-      PreToolUse: [{ hooks: [{ type: "command", command: cmd }] }],
-      PostToolUse: [{ hooks: [{ type: "command", command: cmd }] }],
-      Stop: [{ hooks: [{ type: "command", command: cmd }] }],
-      PermissionRequest: [{ hooks: [{ type: "command", command: cmd }] }],
-      PreCompact: [{ hooks: [{ type: "command", command: cmd }] }],
-      PostCompact: [{ hooks: [{ type: "command", command: cmd }] }],
-      SessionEnd: [{ hooks: [{ type: "command", command: cmd }] }],
-      SubagentStart: [{ hooks: [{ type: "command", command: cmd }] }],
-      SubagentStop: [{ hooks: [{ type: "command", command: cmd }] }],
+      SessionStart: [{ hooks: [hook] }],
+      UserPromptSubmit: [{ hooks: [hook] }],
+      PreToolUse: [{ hooks: [hook] }],
+      PostToolUse: [{ hooks: [hook] }],
+      Stop: [{ hooks: [hook] }],
+      PermissionRequest: [{ hooks: [hook] }],
+      PreCompact: [{ hooks: [hook] }],
+      PostCompact: [{ hooks: [hook] }],
+      SessionEnd: [{ hooks: [hook] }],
+      SubagentStart: [{ hooks: [hook] }],
+      SubagentStop: [{ hooks: [hook] }],
     },
   };
 }

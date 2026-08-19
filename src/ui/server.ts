@@ -4,7 +4,8 @@
  */
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
-import { join, extname, normalize } from "node:path";
+import { join, extname, normalize, resolve } from "node:path";
+import { readApiToken } from "../core/token.ts";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -30,11 +31,7 @@ export function startUiServer(opts: UiServerOptions = {}): Promise<{ server: Ser
   const port = opts.port ?? 5173;
 
   function coreToken(): string {
-    try {
-      return readFileSync(join(process.cwd(), ".vibepaws", "api_token"), "utf-8").trim();
-    } catch {
-      return "";
-    }
+    return readApiToken();
   }
 
   const server = createServer((req, res) => {
@@ -46,8 +43,10 @@ export function startUiServer(opts: UiServerOptions = {}): Promise<{ server: Ser
     }
 
     let rel = (url === "/" ? "/index.html" : url) ?? "/index.html";
-    const filePath = normalize(join(uiDir, rel));
-    if (!filePath.startsWith(uiDir)) {
+    // 路径规范化：join（不重置）+ resolve（绝对化），兼容 ./ 前缀与 /index.html
+    const uiRoot = resolve(uiDir);
+    const filePath = resolve(join(uiDir, rel));
+    if (!filePath.startsWith(uiRoot + "/")) {
       res.writeHead(403);
       res.end("forbidden");
       return;
@@ -118,7 +117,9 @@ export function startUiServer(opts: UiServerOptions = {}): Promise<{ server: Ser
 if (import.meta.url === `file://${process.argv[1]}`) {
   const corePortArg = process.argv.indexOf("--core-port");
   const portArg = process.argv.indexOf("--port");
+  const uiDirArg = process.argv.indexOf("--ui-dir");
   const corePort = corePortArg >= 0 ? Number(process.argv[corePortArg + 1]) : 17893;
   const port = portArg >= 0 ? Number(process.argv[portArg + 1]) : 5173;
-  startUiServer({ corePort, port });
+  const uiDir = uiDirArg >= 0 ? process.argv[uiDirArg + 1] : undefined;
+  startUiServer({ corePort, port, uiDir });
 }

@@ -9,6 +9,7 @@
  */
 import { readFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
+import { readApiToken } from "../core/token.ts";
 import type { CoreEvent, AgentId } from "../core/events.ts";
 
 /* ---------------- 事件映射（references/event_collection.md §3.2） ---------------- */
@@ -159,8 +160,7 @@ function safeSummary(
 /* ---------------- 发送（POST + JSONL 兜底） ---------------- */
 
 export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean> {
-  const tokenFile = join(".vibepaws", "api_token");
-  const token = existsSync(tokenFile) ? readFileSync(tokenFile, "utf-8").trim() : "";
+  const token = readApiToken();
   try {
     const res = await fetch(`http://127.0.0.1:${corePort}/events`, {
       method: "POST",

@@ -7,6 +7,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { claudeHooksConfig, codexHooksConfig, capabilities } from "./hooks.ts";
 import { deliver } from "./hook_agent.ts";
 import type { CoreEvent } from "../core/events.ts";
@@ -58,6 +59,25 @@ function installClaude(): void {
   console.log("  Claude Code 会在项目目录自动加载 .claude/settings.json（首次需信任该目录）");
 }
 
+/** Codex 项目信任：写 ~/.codex/config.toml（备份已有，只追加 projects 信任条目） */
+export function trustProjectForCodex(projectPath: string): { ok: boolean; file: string; message: string } {
+  const file = join(homedir(), ".codex", "config.toml");
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    let existing = "";
+    if (existsSync(file)) existing = readFileSync(file, "utf-8");
+    if (!existing.includes(`trust_level`)) {
+      if (existsSync(file)) writeFileSync(`${file}.vibepaws.bak`, existing);
+      const entry = `[projects."${projectPath}"]\ntrust_level = "trusted"\n`;
+      writeFileSync(file, existing + "\n" + entry);
+      return { ok: true, file, message: `项目信任已写入 ${file}` };
+    }
+    return { ok: true, file, message: `项目信任已存在（${file}）` };
+  } catch (err) {
+    return { ok: false, file, message: `写入项目信任失败（需手动配置）：${String(err)}` };
+  }
+}
+
 function installCodex(): void {
   const dir = join(REPO, ".codex");
   const file = join(dir, "hooks.json");
@@ -71,11 +91,13 @@ function installCodex(): void {
   backup(file);
   writeFileSync(file, JSON.stringify(merged, null, 2) + "\n");
   console.log(`✓ Codex hooks 已写入 ${file}`);
+  // 项目信任（Codex 0.148+：项目未信任则项目级 hooks 被门控跳过）
+  const trust = trustProjectForCodex(REPO);
+  console.log(trust.ok ? `✓ ${trust.message}` : `⚠ ${trust.message}`);
   console.log(`
-  ⚠ Codex 信任注册（hooks 首次生效需授权）：
-    cd ${REPO} && codex
-    然后在 Codex 里运行：  /hooks
-    找到 vibepaws 并允许（或按提示批准 hook 执行）
+  ⚠ hooks 信任注册（首次生效需授权，二选一）：
+    ① 交互模式：cd ${REPO} && codex，然后运行 /hooks 批准 vibepaws
+    ② headless/自动化：codex exec --dangerously-bypass-hook-trust …
   💡 全局安装（可选）：把 ${file} 的内容合并到 ~/.codex/hooks.json`);
 }
 

@@ -8,8 +8,30 @@
  */
 import { app, BrowserWindow, Tray, Menu, screen, nativeImage } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+
+// packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
+function log(line) {
+  console.log(line);
+  if (app.isPackaged) {
+    try {
+      const dir = app.getPath("userData");
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(join(dir, "vibepaws.log"), `${new Date().toISOString()} ${line}\n`);
+    } catch {}
+  }
+}
+function err(line) {
+  console.error(line);
+  if (app.isPackaged) {
+    try {
+      const dir = app.getPath("userData");
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(join(dir, "vibepaws.log"), `${new Date().toISOString()} ERR ${line}\n`);
+    } catch {}
+  }
+}
 
 const CORE_PORT = 17893;
 const UI_PORT = 5173;
@@ -22,21 +44,87 @@ let uiServer = null;
 let clickThrough = false;
 
 function repoRoot() {
-  // dev 模式：electron desktop/main.js 的 cwd 即仓库根
+  // dev 模式：electron desktop/main.js 的 cwd 即仓库根；packaged：资源目录
   return process.cwd();
+}
+
+function resourcesDir() {
+  // packaged：app.asar 旁边的 resources/（src/、ui/ 以真实文件存在，node 可执行）
+  return app.isPackaged ? process.resourcesPath : process.cwd();
+}
+
+function workDir() {
+  // packaged：数据目录用 userData（.vibepaws 建在这里），cwd 不可靠
+  return app.isPackaged ? app.getPath("userData") : process.cwd();
+}
+
+function coreRunning() {
+  return new Promise((resolve) => {
+    fetch(`http://127.0.0.1:${CORE_PORT}/health`)
+      .then((r) => resolve(r.ok))
+      .catch(() => resolve(false));
+  });
+}
+
+let coreProc = null;
+
+function findSystemNode() {
+  const candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) return c;
+    } catch {}
+  }
+  return null;
+}
+
+async function ensureCore() {
+  if (await coreRunning()) {
+    log("[vibepaws] Core 已在运行");
+    return;
+  }
+  if (!app.isPackaged) {
+    log("[vibepaws] Core 未运行 — dev 模式请手动 npm run core（packaged 版会自动拉起）");
+    return;
+  }
+  // packaged：自动拉起 Core（用系统 node 跑，与 better-sqlite3 ABI 兼容；数据目录=userData/.vibepaws）
+  const nodePath = findSystemNode();
+  if (!nodePath) {
+    err("[vibepaws] 找不到系统 node — 请先安装 Node.js ≥ 20，或手动 npm run core");
+    return;
+  }
+  const entry = join(resourcesDir(), "src", "core", "server.ts");
+  coreProc = spawn(nodePath, ["--experimental-strip-types", entry, "--port", String(CORE_PORT)], {
+    cwd: workDir(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  coreProc.stdout?.on("data", (d) => log(`[core] ${String(d).trim()}`));
+  coreProc.stderr?.on("data", (d) => err(`[core] ${String(d).trim()}`));
+  // 等待 Core 就绪
+  for (let i = 0; i < 40; i++) {
+    if (await coreRunning()) {
+      log("[vibepaws] Core 已自动拉起");
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  err("[vibepaws] Core 启动失败");
 }
 
 function spawnUiServer() {
   return new Promise((resolve, reject) => {
-    const entry = join(repoRoot(), "src", "ui", "server.ts");
-    uiServer = spawn(
-      "node",
-      ["--experimental-strip-types", entry, "--port", String(UI_PORT), "--core-port", String(CORE_PORT)],
-      { cwd: repoRoot(), stdio: ["ignore", "pipe", "pipe"] },
-    );
-    uiServer.stdout?.on("data", (d) => console.log(`[ui-server] ${String(d).trim()}`));
-    uiServer.stderr?.on("data", (d) => console.error(`[ui-server] ${String(d).trim()}`));
-    uiServer.on("exit", (code) => console.log(`[ui-server] exited ${code}`));
+    const entry = join(resourcesDir(), "src", "ui", "server.ts");
+    const uiDir = app.isPackaged ? join(resourcesDir(), "ui") : undefined;
+    const args = ["--experimental-strip-types", entry, "--port", String(UI_PORT), "--core-port", String(CORE_PORT)];
+    if (uiDir) args.push("--ui-dir", uiDir);
+    uiServer = spawn(process.execPath, args, {
+      cwd: workDir(),
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    uiServer.stdout?.on("data", (d) => log(`[ui-server] ${String(d).trim()}`));
+    uiServer.stderr?.on("data", (d) => err(`[ui-server] ${String(d).trim()}`));
+    uiServer.on("exit", (code) => log(`[ui-server] exited ${code}`));
 
     let tries = 0;
     const probe = setInterval(async () => {
@@ -55,14 +143,6 @@ function spawnUiServer() {
       }
     }, 250);
   });
-}
-
-function ensureCore() {
-  try {
-    return existsSync(join(repoRoot(), ".vibepaws", "api_token"));
-  } catch {
-    return false;
-  }
 }
 
 function createWindow() {
@@ -152,9 +232,8 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  await ensureCore();
   await spawnUiServer();
-  const coreReady = ensureCore();
-  console.log(coreReady ? "[vibepaws] Core 检测到" : "[vibepaws] 未检测到 Core — 请先 npm run core");
   createWindow();
   createTray();
   app.on("activate", () => {
@@ -168,6 +247,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   uiServer?.kill();
+  coreProc?.kill();
 });
 
 // 单实例

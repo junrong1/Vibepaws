@@ -5,8 +5,8 @@
  */
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { readApiToken } from "../core/token.ts";
 import { generateScenario, SCENARIOS } from "./scenarios.ts";
-import { readFileSync, existsSync } from "node:fs";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -37,12 +37,11 @@ async function main(): Promise<void> {
 
   const port = Number(arg("port") ?? "17893");
   const base = `http://127.0.0.1:${port}`;
-  const tokenFile = join(".vibepaws", "api_token");
-  if (!existsSync(tokenFile)) {
-    console.error(`[sim] no api_token at ${tokenFile} — 先启动 Core（npm run core）`);
+  const token = readApiToken();
+  if (!token) {
+    console.error(`[sim] 找不到 api_token（cwd/.vibepaws 或 ~/.vibepaws）— 先启动 Core`);
     process.exit(1);
   }
-  const token = readFileSync(tokenFile, "utf-8").trim();
 
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
