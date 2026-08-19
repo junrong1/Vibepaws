@@ -58,6 +58,7 @@ export const MESSAGES = {
     // ---- 浮层 ----
     "ui.panel.close": "Close",
     "ui.panel.empty": "No sessions yet — start your coding agent",
+    "ui.panel.offline": "Can't reach Vibepaws Core — session list unavailable",
     "ui.action.mute30": "Mute everything for 30 minutes",
     "ui.action.mute2h": "Mute everything for 2 hours",
     "ui.action.exp": "EXP breakdown",
@@ -147,6 +148,7 @@ export const MESSAGES = {
     // ---- 浮层 ----
     "ui.panel.close": "关闭",
     "ui.panel.empty": "还没有 session — 启动你的 coding agent 试试",
+    "ui.panel.offline": "连不上 Vibepaws Core — session 列表暂不可用",
     "ui.action.mute30": "全部安静 30 分钟",
     "ui.action.mute2h": "全部安静 2 小时",
     "ui.action.exp": "EXP 明细",

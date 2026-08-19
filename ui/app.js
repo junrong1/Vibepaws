@@ -26,7 +26,8 @@ const state = {
   pet: null,
   sessions: [],
   notifications: [],
-  connected: false,
+  /** null = 还没连上也还没失败（启动瞬间）；true/false = 已确认 */
+  connected: null,
   panelOpen: false,
 };
 
@@ -67,11 +68,17 @@ function setConn(ok) {
 }
 
 /* ---------------- 渲染 ---------------- */
+/**
+ * 浮层无条件重绘（不再用 panelOpen 当门槛）：门槛把「DOM 可见性」和「数据新鲜度」
+ * 绑成了一根绳 —— 一旦两者不同步，用户看到的就是一块永不更新的旧浮层
+ * （issue #5：浮层说「还没有 session」，同一时刻 EXP 明细里却躺着这个 session 的流水）。
+ * 代价只是几行 session DOM，换来的是「屏幕上的浮层永远等于 Core 的当前状态」。
+ */
 function render() {
   renderPetFrame();
   renderExpBar();
   renderNameplate();
-  if (state.panelOpen) renderPanel();
+  renderPanel();
 }
 
 function renderPetFrame() {
@@ -153,7 +160,9 @@ function renderPanel() {
   if (list.length === 0) {
     const empty = document.createElement("div");
     empty.style.cssText = "color:var(--dim);padding:6px;";
-    empty.textContent = t("ui.panel.empty");
+    // 断线时 sessions 也是空的，但此时说「还没有 session」是在撒谎 —— 空列表
+    // 只有在确认连得上 Core 的前提下才代表「真的没有 session」（issue #5）。
+    empty.textContent = t(state.connected === false ? "ui.panel.offline" : "ui.panel.empty");
     container.appendChild(empty);
     return;
   }
