@@ -1,14 +1,33 @@
 /**
  * Vibepaws UI 应用逻辑 — 壳零业务逻辑：状态/气泡/浮层数据全部来自 Core（SSE）。
+ * 文案全部走 i18n（issue #3 / #6）：不在本文件里写死任何一句人类可读文本。
  */
 import { getPet, renderPet } from "./pets.js";
+// 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
+import { t as translate, normalizeLocale } from "/i18n.js";
 
 const $ = (id) => document.getElementById(id);
+
+/* ---------------- i18n ---------------- */
+// locale 来源：Electron 主进程传的 ?locale=（来自 app.getLocale()）> 浏览器语言。
+// 两者都归一化成 en / zh-CN，保证壳与渲染层永远同一种语言。
+const LOCALE = normalizeLocale(
+  new URLSearchParams(location.search).get("locale") ?? navigator.language,
+);
+const t = (key, params) => translate(LOCALE, key, params);
+document.documentElement.lang = LOCALE;
+
+/** 填充 HTML 里的 data-i18n / data-i18n-title 占位 */
+function applyStaticI18n() {
+  for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+  for (const el of document.querySelectorAll("[data-i18n-title]")) el.title = t(el.dataset.i18nTitle);
+}
 const state = {
   pet: null,
   sessions: [],
   notifications: [],
-  connected: false,
+  /** null = 还没连上也还没失败（启动瞬间）；true/false = 已确认 */
+  connected: null,
   panelOpen: false,
 };
 
@@ -45,15 +64,21 @@ function connectCore() {
 function setConn(ok) {
   state.connected = ok;
   $("conn").className = ok ? "conn-ok" : "conn-off";
-  $("conn").title = ok ? "Core 已连接" : "Core 未连接";
+  $("conn").title = t(ok ? "ui.conn.ok" : "ui.conn.off");
 }
 
 /* ---------------- 渲染 ---------------- */
+/**
+ * 浮层无条件重绘（不再用 panelOpen 当门槛）：门槛把「DOM 可见性」和「数据新鲜度」
+ * 绑成了一根绳 —— 一旦两者不同步，用户看到的就是一块永不更新的旧浮层
+ * （issue #5：浮层说「还没有 session」，同一时刻 EXP 明细里却躺着这个 session 的流水）。
+ * 代价只是几行 session DOM，换来的是「屏幕上的浮层永远等于 Core 的当前状态」。
+ */
 function render() {
   renderPetFrame();
   renderExpBar();
   renderNameplate();
-  if (state.panelOpen) renderPanel();
+  renderPanel();
 }
 
 function renderPetFrame() {
@@ -76,6 +101,12 @@ function renderNameplate() {
 }
 
 /* ---------------- 气泡 ---------------- */
+/** Core 只发文案 key + 参数（英文 title/body 仅作兜底），语言在这里决定 */
+function notifText(n, slot) {
+  const spec = n.i18n?.[slot];
+  return spec ? t(spec.key, spec.params) : (n[slot] ?? "");
+}
+
 function pushBubble(n) {
   const box = $("bubbles");
   // 聚合：同类同 session 已存在则更新文字
@@ -83,7 +114,7 @@ function pushBubble(n) {
     (el) => el.dataset.key === `${n.agent}:${n.session_id}:${n.type}`,
   );
   if (existing) {
-    existing.querySelector(".b-body").textContent = n.body;
+    existing.querySelector(".b-body").textContent = notifText(n, "body");
     return;
   }
   const el = document.createElement("div");
@@ -91,8 +122,8 @@ function pushBubble(n) {
   el.dataset.key = `${n.agent}:${n.session_id}:${n.type}`;
   el.innerHTML = `
     <button class="b-dismiss">✕</button>
-    <div class="b-title">${escapeHtml(n.title)}</div>
-    <div class="b-body">${escapeHtml(n.body)}</div>
+    <div class="b-title">${escapeHtml(notifText(n, "title"))}</div>
+    <div class="b-body">${escapeHtml(notifText(n, "body"))}</div>
     <div class="b-meta">${shortAgent(n.agent)} · ${n.session_id.slice(0, 10)}</div>`;
   el.querySelector(".b-dismiss").onclick = (e) => {
     e.stopPropagation();
@@ -127,13 +158,18 @@ function renderPanel() {
     return (rank[a.state] ?? 5) - (rank[b.state] ?? 5);
   });
   if (list.length === 0) {
-    container.innerHTML = `<div style="color:var(--dim);padding:6px;">还没有 session — 启动你的 coding agent 试试</div>`;
+    const empty = document.createElement("div");
+    empty.style.cssText = "color:var(--dim);padding:6px;";
+    // 断线时 sessions 也是空的，但此时说「还没有 session」是在撒谎 —— 空列表
+    // 只有在确认连得上 Core 的前提下才代表「真的没有 session」（issue #5）。
+    empty.textContent = t(state.connected === false ? "ui.panel.offline" : "ui.panel.empty");
+    container.appendChild(empty);
     return;
   }
   for (const s of list) {
     const row = document.createElement("div");
     row.className = "session-row";
-    row.title = `${s.project_id} · 最后活动 ${fmtTime(s.last_event_at)}`;
+    row.title = t("ui.session.tooltip", { project: s.project_id, time: fmtTime(s.last_event_at) });
     row.innerHTML = `
       <span class="s-state ${s.state}"></span>
       <span class="agent-badge">${shortAgent(s.agent)}</span>
@@ -149,9 +185,9 @@ async function copyResume(s) {
   const cmd = resumeCommand(s);
   try {
     await navigator.clipboard.writeText(cmd);
-    flash(`已复制：${cmd}`);
+    flash(t("ui.toast.copied", { cmd }));
   } catch {
-    flash(`命令：${cmd}`);
+    flash(t("ui.toast.command", { cmd }));
   }
 }
 
@@ -186,8 +222,8 @@ $("act-hide").onclick = () => {
     closePanel();
   }
 };
-$("act-mute").onclick = async () => { await postAction("mute", { minutes: 30 }); flash("🔕 全部安静 30 分钟"); };
-$("act-mute2h").onclick = async () => { await postAction("mute", { minutes: 120 }); flash("😴 全部安静 2 小时"); };
+$("act-mute").onclick = async () => { await postAction("mute", { minutes: 30 }); flash(t("ui.toast.muted30")); };
+$("act-mute2h").onclick = async () => { await postAction("mute", { minutes: 120 }); flash(t("ui.toast.muted2h")); };
 $("act-exp").onclick = async () => { await loadExpLog(); };
 
 async function postAction(action, body) {
@@ -204,12 +240,31 @@ async function loadExpLog() {
   const r = await fetch("/api/exp");
   if (!r.ok) return;
   const data = await r.json();
-  box.innerHTML = `<table><tr><th>类别</th><th>数值</th><th>说明</th></tr>${
+  const head = `<tr><th>${t("ui.exp.col.category")}</th><th>${t("ui.exp.col.amount")}</th><th>${t("ui.exp.col.note")}</th></tr>`;
+  box.innerHTML = `<table>${head}${
     (data.logs ?? []).slice(0, 15).map((l) =>
-      `<tr><td>${l.category}</td><td class="amount">+${l.amount}</td><td>${escapeHtml(l.note ?? "")}</td></tr>`,
+      `<tr><td>${escapeHtml(expCategory(l.category))}</td><td class="amount">+${l.amount}</td><td>${escapeHtml(expNote(l.note))}</td></tr>`,
     ).join("")
   }</table>`;
   box.hidden = false;
+}
+
+/** exp_logs.category 是内部枚举（token/outcome/care/self/level…），显示时本地化 */
+function expCategory(category) {
+  return localizedOr(`ui.exp.cat.${category}`, category);
+}
+
+/**
+ * exp_logs.note 混了两类内容：散文式说明（要翻）与公式/键值（tokens=… ×ctx=…，两种语言一样）。
+ * 用 note 原文当 key 查目录：查到就翻，查不到原样显示 —— 老数据也不会变成一串裸 key。
+ */
+function expNote(note) {
+  return note ? localizedOr(`ui.exp.note.${note}`, note) : "";
+}
+
+function localizedOr(key, fallback) {
+  const label = t(key);
+  return label === key ? fallback : label;
 }
 
 /* ---------------- 拖拽（浏览器里模拟移动；Electron 用 CSS app-region 拖拽） ---------------- */
@@ -236,19 +291,20 @@ function shortAgent(a) {
   return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : a;
 }
 function fmtTime(iso) {
-  if (!iso) return "—";
+  if (!iso) return t("ui.time.unknown");
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return t("ui.time.unknown");
   const now = Date.now();
   const diff = now - d.getTime();
-  if (diff < 60_000) return "刚刚";
+  if (diff < 60_000) return t("ui.time.justnow");
   if (diff < 3_600_000) return Math.floor(diff / 60_000) + "m";
   if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + "h";
-  return d.toLocaleDateString();
+  return d.toLocaleDateString(LOCALE);
 }
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
+applyStaticI18n();
 connectCore();

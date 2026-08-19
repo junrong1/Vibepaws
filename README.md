@@ -370,6 +370,14 @@ npm run desktop     # Electron 透明桌宠窗口（右下角、always-on-top、
 
 > 桌面壳当前用 Electron（环境无 Rust 工具链）；Tauri v2 待 Rust 就绪后替换，仅换壳层，渲染与 SSE 协议不变。
 
+**界面语言**：跟随操作系统语言自动选择 —— 中文（任意变体）走简体中文，其余一律英文。
+托盘菜单、宠物界面、通知气泡与 adapter 安装向导共用同一份文案目录（`src/i18n/messages.js`），
+不会出现中英混排。想强制某种语言时设 `VIBEPAWS_LOCALE=en`（或 `zh-CN`）后再启动：
+
+```bash
+VIBEPAWS_LOCALE=en npm run desktop
+```
+
 ### 4. 接入真实 coding agent（adapter）
 
 ```bash
@@ -384,6 +392,6 @@ npm run adapter:install -- --agent codex         # 写入 .codex/hooks.json；�
 ### 测试
 
 ```bash
-npm test          # 34 项：registry 状态机 / 通知引擎 / EXP 引擎 / hook 归一化 / bridge / 隐私
+npm test          # 45 项：registry 状态机 / 通知引擎 / EXP 引擎 / hook 归一化 / bridge / 隐私 / i18n
 npm run typecheck
 ```

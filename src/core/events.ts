@@ -121,6 +121,8 @@ export interface PetStatePush {
     exp: number;
     state: PetState;
     health_score: number;
+    /** 升级所需 EXP —— 渲染层的 EXP 条分母，漏发会显示成 "37/undefined" */
+    next_level_exp: number;
   };
   sessions: SessionView[];
   needs_you: SessionView[];

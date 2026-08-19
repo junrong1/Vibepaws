@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<!-- lang 由 app.js 按探测到的 locale 覆写（issue #3） -->
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,8 +8,8 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- 宠物舞台（拖拽区） -->
-  <div id="stage" title="拖动我">
+  <!-- 宠物舞台（拖拽区）；data-i18n-title 由 app.js 的 applyStaticI18n 填充 -->
+  <div id="stage" data-i18n-title="ui.drag">
     <canvas id="pet" width="160" height="160"></canvas>
     <!-- EXP 条 -->
     <div id="expbar">
@@ -18,7 +19,7 @@
     <!-- 名字徽章 -->
     <div id="nameplate"></div>
     <!-- 连接状态点 -->
-    <div id="conn" class="conn-unknown" title="Core 连接状态"></div>
+    <div id="conn" class="conn-unknown" data-i18n-title="ui.conn.title"></div>
   </div>
 
   <!-- 气泡层 -->
@@ -28,15 +29,15 @@
   <div id="panel" hidden>
     <div id="panel-head">
       <span id="panel-title">Vibepaws</span>
-      <button id="panel-close" title="关闭">×</button>
+      <button id="panel-close" data-i18n-title="ui.panel.close">×</button>
     </div>
     <div id="panel-body">
       <div id="sessions"></div>
       <div id="panel-actions">
-        <button id="act-hide" title="隐藏宠物窗口（托盘图标可恢复）">🙈 隐藏</button>
-        <button id="act-mute" title="全部安静 30 分钟">🔕 30m</button>
-        <button id="act-mute2h" title="全部安静 2 小时">😴 2h</button>
-        <button id="act-exp" title="EXP 明细">📈 EXP</button>
+        <button id="act-hide" data-i18n-title="ui.action.hide">🙈</button>
+        <button id="act-mute" data-i18n-title="ui.action.mute30">🔕 30m</button>
+        <button id="act-mute2h" data-i18n-title="ui.action.mute2h">😴 2h</button>
+        <button id="act-exp" data-i18n-title="ui.action.exp">📈 EXP</button>
       </div>
       <div id="explog" hidden></div>
     </div>

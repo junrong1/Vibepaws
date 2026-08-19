@@ -227,6 +227,7 @@ export class VibepawsServer {
         exp: pet.exp,
         state: pet.state,
         health_score: pet.health_score,
+        next_level_exp: pet.next_level_exp,
       },
       sessions,
       needs_you: sessions.filter((s) => s.is_active && s.state === "needs-you"),

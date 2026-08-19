@@ -10,6 +10,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
+    "allowJs": true,
+    "checkJs": true,
     "types": ["node"],
     "allowImportingTsExtensions": true,
     "noUncheckedIndexedAccess": true
