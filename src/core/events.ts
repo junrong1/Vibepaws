@@ -99,6 +99,9 @@ export interface SessionView {
   context_pct: number;
   correction_count: number;
   last_event_at: string;
+  finished_at: string | null;
+  /** agent 卡在「等你」的起始时刻（ISO），null = 不在等 */
+  needs_input_since: string | null;
   is_active: boolean;
   parent_id: number | null;
   outcome?: string;
@@ -125,6 +128,8 @@ export interface PetStatePush {
     next_level_exp: number;
   };
   sessions: SessionView[];
+  /** 当前静音状态：界面要能显示「还剩多久」并原地取消（issue #7） */
+  mute: { global_until: number | null };
   needs_you: SessionView[];
   warning: SessionView[];
   working: SessionView[];

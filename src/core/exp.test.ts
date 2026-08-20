@@ -119,3 +119,42 @@ test("exp_logs 有明细（category/amount/note）", () => {
   assert.equal(tokenLog.amount, 5);
   assert.match(tokenLog.note, /ctx=1/);
 });
+
+test("token EXP 只按增量结算（累计值不该被重复计费）", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  exp.handle(ev({ payload: { tokens: 30000 } }));
+  exp.handle(ev({ payload: { tokens: 60000 } })); // adapter 报的是累计值
+  const pet = exp.getPetSnapshot();
+  assert.equal(pet.exp, 60, `60k tokens 只该给 60 EXP，实际 ${pet.exp}（旧实现给 90）`);
+});
+
+test("token 计数器倒退（clear 后重新累计）不会漏发也不会重发", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  exp.handle(ev({ payload: { tokens: 20000 } }));
+  db.prepare("UPDATE sessions SET token_used=0, token_exp_granted=0").run(); // registry 的 clear 分支
+  exp.handle(ev({ payload: { tokens: 5000 } }));
+  assert.equal(exp.getPetSnapshot().exp, 25);
+});
+
+test("一次大额 EXP 能连跳多级，余量不会卡在原地", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  db.prepare("UPDATE settings SET value='1000' WHERE key='daily_exp_cap'").run();
+  db.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES('daily_exp_cap','1000')").run();
+  exp.handle(ev({ payload: { tokens: 300000 } })); // 300 EXP → Lv1(100) + Lv2(150) = 250，余 50
+  const pet = exp.getPetSnapshot();
+  assert.equal(pet.level, 3, `expected Lv3, got Lv${pet.level}`);
+  assert.equal(pet.exp, 50);
+});
+
+test("用户给宠物起的名字优先于物种名", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("UPDATE pets SET name='Mochi'").run();
+  assert.equal(exp.getPetSnapshot().name, "Mochi");
+});

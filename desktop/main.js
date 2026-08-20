@@ -6,43 +6,51 @@
  * 说明：Tauri v2（架构 D6 首选）待本机 Rust 工具链就绪后替换本壳，
  *       渲染层（ui/）与通信协议（SSE）不变，替换成本仅壳层。
  */
-import { app, BrowserWindow, Tray, Menu, screen, nativeImage, ipcMain } from "electron";
+import { app, BrowserWindow, Tray, Menu, screen, nativeImage, ipcMain, dialog } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
+function writeLog(prefix, line) {
+  if (!app.isPackaged) return;
+  try {
+    const dir = app.getPath("userData");
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "vibepaws.log"), `${new Date().toISOString()} ${prefix}${line}\n`);
+  } catch {}
+}
 function log(line) {
   console.log(line);
-  if (app.isPackaged) {
-    try {
-      const dir = app.getPath("userData");
-      mkdirSync(dir, { recursive: true });
-      appendFileSync(join(dir, "vibepaws.log"), `${new Date().toISOString()} ${line}\n`);
-    } catch {}
-  }
+  writeLog("", line);
 }
 function err(line) {
   console.error(line);
-  if (app.isPackaged) {
-    try {
-      const dir = app.getPath("userData");
-      mkdirSync(dir, { recursive: true });
-      appendFileSync(join(dir, "vibepaws.log"), `${new Date().toISOString()} ERR ${line}\n`);
-    } catch {}
-  }
+  writeLog("ERR ", line);
 }
 
 const CORE_PORT = 17893;
-const UI_PORT = 5173;
-const WIN_W = 210;
-const WIN_H = 250;
+/** UI server 的首选端口；被占用时改用系统分配的空闲端口（见 pickPort） */
+const PREFERRED_UI_PORT = 5173;
+/** UI server 的身份标记路由（见 src/ui/server.ts）：确认端口上的服务是我们自己 */
+const UI_MARKER_PATH = "/__vibepaws";
+
+/** 收起态：只放得下宠物本体 */
+const COMPACT_SIZE = { width: 210, height: 250 };
+/** 展开态：浮层要装下 session 列表 + 操作按钮（宠物位置不动，窗口向上长） */
+const EXPANDED_SIZE = { width: 300, height: 430 };
 
 let win = null;
 let tray = null;
 let uiServer = null;
+let uiPort = PREFERRED_UI_PORT;
 let clickThrough = false;
+let panelExpanded = false;
+/** UI server 就绪前不许建窗口：那时 uiPort 还是默认值，会加载错的地址 */
+let uiReady = false;
+let levelKeepAlive = null;
 
 /* ---------------- 壳偏好（issue #4） ----------------
  * 只存「窗口怎么摆」这类壳层设定，与 Core 的 settings 表无关：
@@ -51,8 +59,11 @@ let clickThrough = false;
  * allSpaces 默认 true：宠物是「活着的伙伴」，你在哪个桌面干活它就该在哪 ——
  * 尤其是 coding agent 常年跑在全屏 iTerm2 里，那本身就是一个独立 Space，
  * 钉死在启动那张桌面上等于永远看不见。#4 的真正诉求不是「别跟着我」，
- * 而是「这件事得归我管」：所以默认跟随 + 托盘里随时可关。 */
-const DEFAULT_PREFS = { allSpaces: true };
+ * 而是「这件事得归我管」：所以默认跟随 + 托盘里随时可关。
+ *
+ * anchor 存的是窗口**底部中心**（= 宠物脚下那一点）的屏幕坐标，而不是左上角：
+ * 浮层展开时窗口会变大，用左上角存位置的话宠物每次开关浮层都会跳一下。 */
+const DEFAULT_PREFS = { allSpaces: true, anchor: null };
 let prefs = { ...DEFAULT_PREFS };
 
 function prefsFile() {
@@ -74,11 +85,6 @@ function savePrefs() {
   } catch (e) {
     err(`[vibepaws] 偏好写入失败: ${e}`);
   }
-}
-
-function repoRoot() {
-  // dev 模式：electron desktop/main.js 的 cwd 即仓库根；packaged：资源目录
-  return process.cwd();
 }
 
 function resourcesDir() {
@@ -114,12 +120,14 @@ async function loadI18n() {
 
 const t = (key, params) => translate(LOCALE, key, params);
 
-function coreRunning() {
-  return new Promise((resolve) => {
-    fetch(`http://127.0.0.1:${CORE_PORT}/health`)
-      .then((r) => resolve(r.ok))
-      .catch(() => resolve(false));
-  });
+/* ---------------- Core ---------------- */
+async function coreRunning() {
+  try {
+    const r = await fetch(`http://127.0.0.1:${CORE_PORT}/health`);
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 let coreProc = null;
@@ -154,6 +162,7 @@ async function ensureCore() {
     cwd: workDir(),
     stdio: ["ignore", "pipe", "pipe"],
   });
+  coreProc.on("error", (e) => err(`[core] spawn failed: ${e}`));
   coreProc.stdout?.on("data", (d) => log(`[core] ${String(d).trim()}`));
   coreProc.stderr?.on("data", (d) => err(`[core] ${String(d).trim()}`));
   // 等待 Core 就绪
@@ -164,50 +173,165 @@ async function ensureCore() {
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  err("[vibepaws] Core 启动失败");
+  err("[vibepaws] Core 启动失败 — 宠物窗口会显示「Core 未连接」");
 }
 
-function spawnUiServer() {
+/* ---------------- UI server ---------------- */
+function portFree(port) {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => resolve(false));
+    probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
+  });
+}
+
+function ephemeralPort() {
   return new Promise((resolve, reject) => {
-    const entry = join(resourcesDir(), "src", "ui", "server.ts");
-    const uiDir = app.isPackaged ? join(resourcesDir(), "ui") : undefined;
-    const args = ["--experimental-strip-types", entry, "--port", String(UI_PORT), "--core-port", String(CORE_PORT)];
-    if (uiDir) args.push("--ui-dir", uiDir);
-    uiServer = spawn(process.execPath, args, {
-      cwd: workDir(),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
     });
-    uiServer.stdout?.on("data", (d) => log(`[ui-server] ${String(d).trim()}`));
-    uiServer.stderr?.on("data", (d) => err(`[ui-server] ${String(d).trim()}`));
-    uiServer.on("exit", (code) => log(`[ui-server] exited ${code}`));
+  });
+}
+
+/**
+ * 5173 是 Vite 的默认端口 —— 我们的用户几乎人人手边都有个前端 dev server。
+ * 端口被占时既不能硬等（UI server 起不来），也不能盲目探测（会把别人的应用
+ * 加载进宠物窗口），所以：占用就换一个空闲端口。
+ */
+async function pickUiPort() {
+  if (await portFree(PREFERRED_UI_PORT)) return PREFERRED_UI_PORT;
+  const port = await ephemeralPort();
+  log(`[vibepaws] ${PREFERRED_UI_PORT} 已被占用，UI server 改用 ${port}`);
+  return port;
+}
+
+async function startUiServer() {
+  const port = await pickUiPort();
+  const entry = join(resourcesDir(), "src", "ui", "server.ts");
+  const uiDir = app.isPackaged ? join(resourcesDir(), "ui") : undefined;
+  const args = ["--experimental-strip-types", entry, "--port", String(port), "--core-port", String(CORE_PORT)];
+  if (uiDir) args.push("--ui-dir", uiDir);
+  const child = spawn(process.execPath, args, {
+    cwd: workDir(),
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  uiServer = child;
+  child.stdout?.on("data", (d) => log(`[ui-server] ${String(d).trim()}`));
+  child.stderr?.on("data", (d) => err(`[ui-server] ${String(d).trim()}`));
+  child.on("error", (e) => err(`[ui-server] spawn failed: ${e}`));
+  child.on("exit", (code) => log(`[ui-server] exited ${code}`));
+  await waitForUiServer(port, child);
+  return port;
+}
+
+/**
+ * 等 UI server 就绪。三处旧问题一起修：
+ *   ① 超时判断写在 catch 里 —— 服务器返回非 200 时两个分支都不走，
+ *      Promise 永远不 settle，于是「启动了但一个窗口都没有」；
+ *   ② 不验证身份 —— 端口上是别人的应用也会照样加载；
+ *   ③ 子进程秒退（EADDRINUSE 等）不算失败，还在傻等 10 秒。
+ */
+function waitForUiServer(port, child) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      child.off("exit", onExit);
+      fn(value);
+    };
+    const onExit = (code) => finish(reject, new Error(`ui server exited early (code ${code})`));
+    child.once("exit", onExit);
 
     let tries = 0;
-    const probe = setInterval(async () => {
+    const timer = setInterval(async () => {
       tries++;
       try {
-        const r = await fetch(`http://127.0.0.1:${UI_PORT}/`);
+        const r = await fetch(`http://127.0.0.1:${port}${UI_MARKER_PATH}`);
         if (r.ok) {
-          clearInterval(probe);
-          resolve(UI_PORT);
+          const body = await r.json().catch(() => null);
+          if (body?.service === "vibepaws-ui") return finish(resolve, port);
+          return finish(reject, new Error(`port ${port} is served by another app`));
         }
       } catch {
-        if (tries > 40) {
-          clearInterval(probe);
-          reject(new Error("ui server did not start"));
-        }
+        /* 还没起来，继续等 */
       }
+      if (tries > 40) finish(reject, new Error("ui server did not start in time"));
     }, 250);
   });
 }
 
-function createWindow() {
+/* ---------------- 窗口 ---------------- */
+function clampToArea(x, y, width, height, area) {
+  return {
+    x: Math.round(Math.max(area.x, Math.min(x, area.x + area.width - width))),
+    y: Math.round(Math.max(area.y, Math.min(y, area.y + area.height - height))),
+  };
+}
+
+function areaForPoint(point) {
+  return screen.getDisplayNearestPoint(point).workArea;
+}
+
+/** 由「底部中心锚点 + 尺寸」算出窗口左上角，并夹在所在屏幕的可用区域内 */
+function boundsFromAnchor(anchor, size) {
+  const point = { x: Math.round(anchor.x), y: Math.round(anchor.y) };
+  const area = areaForPoint(point);
+  const { x, y } = clampToArea(point.x - size.width / 2, point.y - size.height, size.width, size.height, area);
+  return { x, y, width: size.width, height: size.height };
+}
+
+function defaultAnchor() {
   const { workArea } = screen.getPrimaryDisplay();
+  return {
+    x: workArea.x + workArea.width - 24 - COMPACT_SIZE.width / 2,
+    y: workArea.y + workArea.height - 40,
+  };
+}
+
+function currentAnchor() {
+  if (!win || win.isDestroyed()) return null;
+  const b = win.getBounds();
+  return { x: b.x + b.width / 2, y: b.y + b.height };
+}
+
+let anchorSaveTimer = null;
+/** 位置持久化：拖动期间每帧都会触发 moved，攒一下再写盘 */
+function scheduleAnchorSave() {
+  if (anchorSaveTimer) clearTimeout(anchorSaveTimer);
+  anchorSaveTimer = setTimeout(() => {
+    anchorSaveTimer = null;
+    const anchor = currentAnchor();
+    if (!anchor) return;
+    prefs.anchor = anchor;
+    savePrefs();
+  }, 500);
+}
+
+/**
+ * 拿到（必要时创建）宠物窗口。托盘点击、activate、second-instance 都走这里 ——
+ * 它是唯一的创建入口，避免和启动流程各建一个窗口：那样 `win` 只指向后建的那个，
+ * 先建的那扇透明置顶窗口谁也管不到（拖不动、关不掉、托盘也切不了）。
+ */
+function ensureWindow() {
+  if (win && !win.isDestroyed()) return win;
+  if (!uiReady) return null; // 还没有可加载的地址，等 boot() 建
+  createWindow();
+  return win;
+}
+
+function createWindow() {
+  const size = panelExpanded ? EXPANDED_SIZE : COMPACT_SIZE;
+  // 上次放在哪就还在哪（换过显示器 / 分辨率变了会被 clamp 回可见区域）
+  const anchor = prefs.anchor ?? defaultAnchor();
+  const bounds = boundsFromAnchor(anchor, size);
   win = new BrowserWindow({
-    width: WIN_W,
-    height: WIN_H,
-    x: workArea.x + workArea.width - WIN_W - 24,
-    y: workArea.y + workArea.height - WIN_H - 40,
+    ...bounds,
     transparent: true,
     // 透明窗口显式给一个全透明底色：让合成器每帧都有东西可清，
     // 而不是复用上一帧的 tile —— 快速拖动时的残影来源之一（issue #8）。
@@ -228,42 +352,49 @@ function createWindow() {
   });
   applyWindowLevel();
   // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
-  win.loadURL(`http://127.0.0.1:${UI_PORT}/?locale=${encodeURIComponent(LOCALE)}`);
-  // 渲染进程 console → 主进程日志（调试用）
-  win.webContents.on("console-message", (_e, level, message, line, sourceId) => {
-    console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+  win.loadURL(`http://127.0.0.1:${uiPort}/?locale=${encodeURIComponent(LOCALE)}`);
+  // 渲染进程 console → 主进程日志（调试用）。Electron 28+ 传的是单个 details 对象，
+  // 老签名 (event, level, message, line, sourceId) 只会打印出一串 undefined。
+  win.webContents.on("console-message", (details, ...legacy) => {
+    const message = details?.message ?? legacy[1];
+    const level = details?.level ?? legacy[0];
+    const source = details?.sourceId ?? legacy[3];
+    const lineNo = details?.lineNumber ?? legacy[2];
+    log(`[renderer:${level}] ${message} (${source}:${lineNo})`);
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
-    console.error(`[renderer] load failed ${code} ${desc} ${url}`);
+    err(`[renderer] load failed ${code} ${desc} ${url}`);
   });
   win.on("closed", () => {
     stopDrag();
     win = null;
   });
-  // 诊断：窗口状态与 Canvas 渲染结果
+  if (process.env.VIBEPAWS_DEBUG) runCanvasDiagnostic();
+  // 保持置顶（防被其他窗口压下去）。顺带重申 workspace 行为：
+  // setAlwaysOnTop 会重写窗口的 NSWindow level，之前只重申置顶不重申 workspace，
+  // 两者会渐渐不同步。
+  if (levelKeepAlive) clearInterval(levelKeepAlive);
+  levelKeepAlive = setInterval(applyWindowLevel, 30_000);
+}
+
+/** 诊断：窗口状态与 Canvas 渲染结果（VIBEPAWS_DEBUG=1 才跑） */
+function runCanvasDiagnostic() {
   setTimeout(async () => {
     try {
-      const b = win?.getBounds();
-      const v = win?.isVisible();
-      console.log(`[diag] bounds=${JSON.stringify(b)} visible=${v}`);
+      log(`[diag] bounds=${JSON.stringify(win?.getBounds())} visible=${win?.isVisible()}`);
       const pixel = await win?.webContents.executeJavaScript(`(() => {
         const c = document.getElementById('pet');
         if (!c) return 'NO_CANVAS';
-        const ctx = c.getContext('2d');
-        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
         let opaque = 0;
         for (let i = 3; i < d.length; i += 4) if (d[i] > 0) opaque++;
         return 'canvas=' + c.width + 'x' + c.height + ' opaquePx=' + opaque;
       })()`);
-      console.log(`[diag] ${pixel}`);
+      log(`[diag] ${pixel}`);
     } catch (e) {
-      console.error(`[diag] ${e}`);
+      err(`[diag] ${e}`);
     }
   }, 3000);
-  // 保持置顶（防被其他窗口压下去）。顺带重申 workspace 行为：
-  // setAlwaysOnTop 会重写窗口的 NSWindow level，之前只重申置顶不重申 workspace，
-  // 两者会渐渐不同步。
-  setInterval(applyWindowLevel, 30_000);
 }
 
 /**
@@ -285,6 +416,36 @@ function toggleAllSpaces() {
   savePrefs();
   applyWindowLevel();
   updateTrayMenu();
+}
+
+/**
+ * 浮层展开/收起时改窗口大小（渲染层通过 preload 报告）。
+ * 210×250 的窗口里，浮层会把宠物整个盖住 —— 于是「再点一次宠物关掉浮层」
+ * 这个最自然的操作直接失效。窗口向**上**长，宠物脚下那一点保持不动。
+ */
+function setPanelExpanded(expanded) {
+  panelExpanded = expanded;
+  if (!win || win.isDestroyed()) return;
+  const size = expanded ? EXPANDED_SIZE : COMPACT_SIZE;
+  const b = win.getBounds();
+  if (b.width === size.width && b.height === size.height) return;
+  const anchor = { x: b.x + b.width / 2, y: b.y + b.height };
+  const bounds = boundsFromAnchor(anchor, size);
+  // resizable:false 的窗口在部分平台会忽略 setBounds，临时放开再收回
+  win.setResizable(true);
+  win.setBounds(bounds, false);
+  win.setResizable(false);
+}
+
+function resetWindowPosition() {
+  prefs.anchor = defaultAnchor();
+  savePrefs();
+  const target = ensureWindow();
+  if (!target || target.isDestroyed()) return;
+  target.setResizable(true);
+  target.setBounds(boundsFromAnchor(prefs.anchor, panelExpanded ? EXPANDED_SIZE : COMPACT_SIZE), false);
+  target.setResizable(false);
+  target.show();
 }
 
 /* ---------------- 拖拽（issue #8） ----------------
@@ -309,8 +470,10 @@ function startDrag() {
   dragTimer = setInterval(() => {
     if (!win || win.isDestroyed() || !dragOffset) return stopDrag();
     const p = screen.getCursorScreenPoint();
-    const x = Math.round(p.x - dragOffset.dx);
-    const y = Math.round(p.y - dragOffset.dy);
+    const [w, h] = win.getSize();
+    // 夹在光标所在屏幕的可用区域内：否则宠物可以被拖到屏幕外／菜单栏底下，
+    // 而窗口没有边框也没有任务栏入口，等于把它弄丢了。
+    const { x, y } = clampToArea(p.x - dragOffset.dx, p.y - dragOffset.dy, w, h, areaForPoint(p));
     const [cx, cy] = win.getPosition();
     // 位置没变就别调 setPosition：静止时这个 tick 几乎不花钱
     if (x !== cx || y !== cy) win.setPosition(x, y, false);
@@ -327,7 +490,15 @@ ipcMain.on("vibepaws:drag-start", (e) => {
   // 只认宠物窗口自己发来的拖拽请求
   if (win && !win.isDestroyed() && e.sender === win.webContents) startDrag();
 });
-ipcMain.on("vibepaws:drag-end", stopDrag);
+ipcMain.on("vibepaws:drag-end", (e) => {
+  if (win && !win.isDestroyed() && e.sender !== win.webContents) return;
+  stopDrag();
+  scheduleAnchorSave(); // 松手即记住新位置
+});
+ipcMain.on("vibepaws:panel", (e, open) => {
+  if (win && !win.isDestroyed() && e.sender !== win.webContents) return;
+  setPanelExpanded(Boolean(open));
+});
 
 function toggleClickThrough() {
   clickThrough = !clickThrough;
@@ -351,7 +522,8 @@ function updateTrayMenu() {
       label: t("tray.allspaces", { state: t(prefs.allSpaces ? "tray.state.on" : "tray.state.off") }),
       click: toggleAllSpaces,
     },
-    { label: t("tray.show"), click: () => win?.show() },
+    { label: t("tray.show"), click: () => ensureWindow()?.show() },
+    { label: t("tray.reset"), click: resetWindowPosition },
     { label: t("tray.quit"), click: () => app.quit() },
   ]);
   tray.setContextMenu(menu);
@@ -383,22 +555,37 @@ function createTray() {
   tray.setToolTip(t("tray.tooltip"));
   updateTrayMenu();
   tray.on("click", () => {
-    if (win) {
-      win.isVisible() ? win.hide() : win.show();
-    }
+    const target = ensureWindow();
+    if (!target) return;
+    target.isVisible() ? target.hide() : target.show();
   });
 }
 
-app.whenReady().then(async () => {
+/* ---------------- 启动 ---------------- */
+async function boot() {
   loadPrefs();
   await loadI18n();
-  await ensureCore();
-  await spawnUiServer();
-  createWindow();
+  // 托盘先建：UI server 起不来时至少还有个出口（退出 / 重试），
+  // 而不是「点了图标什么都没发生」。
   createTray();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  await ensureCore();
+  uiPort = await startUiServer();
+  uiReady = true;
+  ensureWindow();
+}
+
+app.whenReady().then(boot).catch((e) => {
+  err(`[vibepaws] 启动失败: ${e}`);
+  if (!tray) {
+    try {
+      createTray();
+    } catch {}
+  }
+  dialog.showErrorBox(t("tray.startfailed.title"), t("tray.startfailed.body", { error: String(e) }));
+});
+
+app.on("activate", () => {
+  ensureWindow()?.show();
 });
 
 app.on("window-all-closed", () => {
@@ -407,6 +594,15 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   stopDrag();
+  if (levelKeepAlive) clearInterval(levelKeepAlive);
+  if (anchorSaveTimer) {
+    clearTimeout(anchorSaveTimer);
+    const anchor = currentAnchor();
+    if (anchor) {
+      prefs.anchor = anchor;
+      savePrefs();
+    }
+  }
   uiServer?.kill();
   coreProc?.kill();
 });
@@ -417,6 +613,6 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    win?.show();
+    ensureWindow()?.show();
   });
 }

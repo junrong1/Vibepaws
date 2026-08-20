@@ -17,87 +17,245 @@ const LOCALE = normalizeLocale(
 const t = (key, params) => translate(LOCALE, key, params);
 document.documentElement.lang = LOCALE;
 
-/** 填充 HTML 里的 data-i18n / data-i18n-title 占位 */
+/** 填充 HTML 里的 data-i18n / data-i18n-title / data-i18n-aria 占位 */
 function applyStaticI18n() {
   for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const el of document.querySelectorAll("[data-i18n-title]")) el.title = t(el.dataset.i18nTitle);
+  for (const el of document.querySelectorAll("[data-i18n-aria]")) {
+    el.setAttribute("aria-label", t(el.dataset.i18nAria));
+  }
 }
+
+/** 壳（Electron preload 暴露的桥）；纯浏览器里为 null */
+const shell = window.vibepaws ?? null;
+
+const POLL_MS = 5000;
+const POLL_TIMEOUT_MS = 4000;
+const BUBBLE_TTL_MS = 8000;
+const MAX_BUBBLES = 3;
+/** 「等你」类通知不自动消失：错过它就等于错过了这个产品唯一必须做对的提醒 */
+const STICKY_TYPES = new Set(["decision", "permission"]);
+
 const state = {
   pet: null,
   sessions: [],
-  notifications: [],
-  /** null = 还没连上也还没失败（启动瞬间）；true/false = 已确认 */
-  connected: null,
+  mute: { global_until: null },
+  /** 事件流是否活着 —— 气泡只从这条流来，它断了就等于提醒功能死了 */
+  streamOk: null,
+  /** 5s 轮询是否活着 —— 只能证明 session 列表新鲜，证明不了气泡还会来 */
+  pollOk: null,
   panelOpen: false,
 };
 
 /* ---------------- Core 连接 ---------------- */
+let stream = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+
 function connectCore() {
-  const es = new EventSource("/api/sse");
-  es.onopen = () => setConn(true);
-  es.onerror = () => setConn(false);
-  es.addEventListener("pet_state", (e) => {
-    const push = JSON.parse(e.data);
-    state.pet = push.pet;
-    state.sessions = push.sessions;
-    render();
-  });
-  es.addEventListener("notification", (e) => {
-    const n = JSON.parse(e.data);
-    if (n && !n.skip) pushBubble(n);
-  });
-  // 轮询兜底
-  setInterval(async () => {
-    try {
-      const r = await fetch("/api/state");
-      if (r.ok) {
-        const push = await r.json();
-        state.pet = push.pet;
-        state.sessions = push.sessions;
-        render();
-        setConn(true);
-      }
-    } catch { setConn(false); }
-  }, 5000);
+  openStream();
+  pollState(); // 立刻拉一次：别让界面空等 5 秒
+  setInterval(pollState, POLL_MS);
+  setInterval(renderMute, 10_000); // 静音剩余时间自己走表
 }
 
-function setConn(ok) {
-  state.connected = ok;
-  $("conn").className = ok ? "conn-ok" : "conn-off";
-  $("conn").title = t(ok ? "ui.conn.ok" : "ui.conn.off");
+function openStream() {
+  closeStream();
+  const es = new EventSource("/api/sse");
+  stream = es;
+  es.onopen = () => {
+    // 只重置退避，**不**点绿灯：代理为了让浏览器能自动重连，会先回 200 +
+    // text/event-stream，再根据上游情况发 core_offline —— 照 onopen 点绿的话，
+    // Core 不在时指示灯会绿红交替闪。真正的绿灯由第一条 pet_state 决定。
+    reconnectDelay = 1000;
+  };
+  es.addEventListener("pet_state", (e) => {
+    const push = parseJson(e.data);
+    if (!push) return;
+    setStream(true);
+    applyPush(push);
+  });
+  es.addEventListener("notification", (e) => {
+    const n = parseJson(e.data);
+    if (n && !n.skip) pushBubble(n);
+  });
+  // UI server 明确告知「连上了代理但 Core 不在」（见 src/ui/server.ts 的 proxySse）
+  es.addEventListener("core_offline", () => setStream(false));
+  es.onerror = () => {
+    setStream(false);
+    // EventSource 只在「已建立后断开」时自己重连；CLOSED 说明它放弃了，
+    // 必须由我们重开 —— 否则 Core 晚启动 / 重启一次，气泡就再也不来了。
+    if (es.readyState === EventSource.CLOSED) scheduleReconnect();
+  };
+}
+
+function closeStream() {
+  if (stream) {
+    stream.onerror = null;
+    stream.close();
+  }
+  stream = null;
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    openStream();
+  }, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 15_000); // 退避，但永不放弃
+}
+
+async function pollState() {
+  try {
+    // 超时必须有：Core 卡死（接了连接不回话）时没有超时的 fetch 永远不 settle，
+    // pollOk 停在上一次的值 —— 指示灯就一直停在绿的，而气泡早就不来了。
+    const r = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
+    if (!r.ok) throw new Error(String(r.status));
+    applyPush(await r.json());
+    setPoll(true);
+  } catch {
+    setPoll(false);
+  }
+}
+
+function applyPush(push) {
+  if (!push || typeof push !== "object") return;
+  state.pet = push.pet ?? state.pet;
+  state.sessions = Array.isArray(push.sessions) ? push.sessions : [];
+  state.mute = push.mute ?? { global_until: null };
+  render();
+  reconcileStickyBubbles();
+}
+
+function parseJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function setStream(ok) {
+  if (state.streamOk === ok) return;
+  state.streamOk = ok;
+  renderConn();
+  renderPanel(); // 「还没有 session」与「连不上 Core」是两句完全不同的话
+}
+
+function setPoll(ok) {
+  if (state.pollOk === ok) return;
+  state.pollOk = ok;
+  renderConn();
+  renderPanel();
+}
+
+/** Core 是否可达（任一通道通即可） */
+function coreReachable() {
+  return state.streamOk === true || state.pollOk === true;
+}
+
+function renderConn() {
+  const el = $("conn");
+  if (state.streamOk === null && state.pollOk === null) {
+    el.className = "conn-unknown";
+    el.title = t("ui.conn.title");
+    return;
+  }
+  if (state.streamOk) {
+    el.className = "conn-ok";
+    el.title = t("ui.conn.ok");
+  } else if (state.pollOk) {
+    // 半死：状态还在刷新，但气泡（只走 SSE）已经不会来了 —— 必须说出来
+    el.className = "conn-degraded";
+    el.title = t("ui.conn.degraded");
+  } else {
+    el.className = "conn-off";
+    el.title = t("ui.conn.off");
+  }
 }
 
 /* ---------------- 渲染 ---------------- */
 /**
- * 浮层无条件重绘（不再用 panelOpen 当门槛）：门槛把「DOM 可见性」和「数据新鲜度」
- * 绑成了一根绳 —— 一旦两者不同步，用户看到的就是一块永不更新的旧浮层
- * （issue #5：浮层说「还没有 session」，同一时刻 EXP 明细里却躺着这个 session 的流水）。
- * 代价只是几行 session DOM，换来的是「屏幕上的浮层永远等于 Core 的当前状态」。
+ * 数据渲染与动画循环彻底分开。
+ * 原来 render() 里调 renderPetFrame()，而后者自己 requestAnimationFrame 续帧 ——
+ * 于是每来一次 pet_state、每跑一次 5 秒轮询，就多出一条永不结束的动画循环：
+ * 跑一小时后是几百条循环在同一个 canvas 上叠着重绘，风扇直接起飞。
+ * 现在整个进程里只有一条循环，由 startPetLoop() 保证唯一。
  */
 function render() {
-  renderPetFrame();
   renderExpBar();
   renderNameplate();
+  renderMute();
   renderPanel();
 }
 
-function renderPetFrame() {
-  const canvas = $("pet");
-  const pet = getPet(state.pet?.pet_type_id ?? 1);
-  renderPet(canvas, pet, state.pet?.state ?? "idle", 10, performance.now());
-  requestAnimationFrame(renderPetFrame);
+let frameHandle = null;
+function startPetLoop() {
+  if (frameHandle !== null) return;
+  const step = (now) => {
+    drawPetFrame(now);
+    frameHandle = requestAnimationFrame(step);
+  };
+  frameHandle = requestAnimationFrame(step);
 }
+
+function stopPetLoop() {
+  if (frameHandle !== null) cancelAnimationFrame(frameHandle);
+  frameHandle = null;
+}
+
+function drawPetFrame(now) {
+  const pet = getPet(state.pet?.pet_type_id ?? 1);
+  renderPet($("pet"), pet, state.pet?.state ?? "idle", 10, now);
+}
+
+// 窗口被藏起来（托盘开关）时别继续烧 CPU —— backgroundThrottling 是关掉的，
+// 没有这一步动画会在看不见的地方一直跑。
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPetLoop();
+  else startPetLoop();
+});
 
 function renderExpBar() {
   const p = state.pet;
   if (!p) return;
-  const pct = Math.min(100, (p.exp / p.next_level_exp) * 100);
+  const level = Number.isFinite(p.level) ? p.level : 1;
+  const exp = Number.isFinite(p.exp) ? p.exp : 0;
+  const need = Number.isFinite(p.next_level_exp) && p.next_level_exp > 0 ? p.next_level_exp : null;
+  // 分母缺失/为 0 时不要算出 NaN%：宽度会被浏览器忽略（进度条卡住），
+  // 文字则会变成 "37/undefined"（issue: EXP 条显示 37.01/undefined 的同一类问题）。
+  const pct = need ? Math.max(0, Math.min(100, (exp / need) * 100)) : 0;
   $("expfill").style.width = pct + "%";
-  $("exptext").textContent = `Lv.${p.level} ${p.exp}/${p.next_level_exp}`;
+  $("exptext").textContent = need ? `Lv.${level} ${exp}/${need}` : `Lv.${level} ${exp}`;
 }
 
 function renderNameplate() {
   $("nameplate").textContent = state.pet?.name ?? "…";
+}
+
+/* ---------------- 静音状态（issue #7） ---------------- */
+function muteRemainingMs() {
+  const until = Number(state.mute?.global_until ?? 0);
+  if (!Number.isFinite(until) || until <= 0) return 0;
+  return Math.max(0, until - Date.now());
+}
+
+function renderMute() {
+  const remaining = muteRemainingMs();
+  const badge = $("mute-badge");
+  const muted = remaining > 0;
+  badge.hidden = !muted;
+  if (muted) {
+    badge.textContent = t("ui.badge.muted", { time: fmtDuration(remaining) });
+    badge.title = t("ui.mute.remaining", { time: fmtDuration(remaining) });
+  }
+  // 按钮自己就是状态：静音中时第一个按钮变成「恢复」，再点一次即解除
+  const mute30 = $("act-mute");
+  mute30.classList.toggle("active", muted);
+  mute30.textContent = muted ? t("ui.btn.unmute") : t("ui.btn.mute30");
+  mute30.title = muted ? t("ui.action.unmute", { time: fmtDuration(remaining) }) : t("ui.action.mute30");
+  $("act-mute2h").classList.toggle("active", muted);
 }
 
 /* ---------------- 气泡 ---------------- */
@@ -107,104 +265,302 @@ function notifText(n, slot) {
   return spec ? t(spec.key, spec.params) : (n[slot] ?? "");
 }
 
+function bubbleKey(n) {
+  return `${n.agent ?? "?"}:${n.session_id ?? "?"}:${n.type ?? "?"}`;
+}
+
 function pushBubble(n) {
   const box = $("bubbles");
-  // 聚合：同类同 session 已存在则更新文字
-  const existing = [...box.children].find(
-    (el) => el.dataset.key === `${n.agent}:${n.session_id}:${n.type}`,
-  );
+  const key = bubbleKey(n);
+  const sticky = STICKY_TYPES.has(n.type);
+  // 聚合：同类同 session 已存在则更新文字并重新计时
+  const existing = [...box.children].find((el) => el.dataset.key === key);
   if (existing) {
+    existing.querySelector(".b-title").textContent = notifText(n, "title");
     existing.querySelector(".b-body").textContent = notifText(n, "body");
+    // 重新计时：不重置的话，一条不断刷新的通知会在**第一次**出现后 8 秒消失，
+    // 用户看到的是「刚更新完就没了」。
+    armDismiss(existing, sticky);
     return;
   }
+
   const el = document.createElement("div");
-  el.className = `bubble ${n.type === "error" ? "danger" : n.type === "milestone" ? "ok" : n.type === "context" || n.type === "drift" ? "warn" : ""}`;
-  el.dataset.key = `${n.agent}:${n.session_id}:${n.type}`;
-  el.innerHTML = `
-    <button class="b-dismiss">✕</button>
-    <div class="b-title">${escapeHtml(notifText(n, "title"))}</div>
-    <div class="b-body">${escapeHtml(notifText(n, "body"))}</div>
-    <div class="b-meta">${shortAgent(n.agent)} · ${n.session_id.slice(0, 10)}</div>`;
-  el.querySelector(".b-dismiss").onclick = (e) => {
+  el.className = `bubble ${bubbleTone(n.type)}${sticky ? " sticky" : ""}`;
+  el.dataset.key = key;
+  el.dataset.agent = n.agent ?? "";
+  el.dataset.session = n.session_id ?? "";
+  el.dataset.type = n.type ?? "";
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "b-dismiss";
+  dismiss.textContent = "✕";
+  dismiss.setAttribute("aria-label", t("ui.bubble.dismiss"));
+  dismiss.onclick = (e) => {
     e.stopPropagation();
-    el.remove();
+    removeBubble(el);
   };
+  el.appendChild(dismiss);
+  // textContent 而不是 innerHTML：agent / session_id 来自 hook 上报的外部数据，
+  // 拼进 HTML 既可能注入，也可能因为字段缺失直接抛异常吃掉整条通知。
+  el.appendChild(line("b-title", notifText(n, "title")));
+  el.appendChild(line("b-body", notifText(n, "body")));
+  el.appendChild(line("b-meta", `${shortAgent(n.agent)} · ${shortId(n.session_id)}`));
+
   el.onclick = () => {
     openPanel();
-    el.remove();
+    removeBubble(el);
   };
   box.appendChild(el);
-  // 自动消失 8s；多气泡轮播：最多同时 3 条
-  setTimeout(() => el.remove(), 8000);
-  while (box.children.length > 3) box.firstChild.remove();
+  armDismiss(el, sticky);
+  trimBubbles();
+}
+
+function line(cls, text) {
+  const div = document.createElement("div");
+  div.className = cls;
+  div.textContent = text;
+  return div;
+}
+
+function bubbleTone(type) {
+  if (type === "error") return "danger";
+  if (type === "milestone") return "ok";
+  if (type === "context" || type === "drift") return "warn";
+  return "";
+}
+
+function armDismiss(el, sticky) {
+  if (el._timer) clearTimeout(el._timer);
+  el._timer = sticky ? null : setTimeout(() => removeBubble(el), BUBBLE_TTL_MS);
+}
+
+function removeBubble(el) {
+  if (el._timer) clearTimeout(el._timer);
+  el.remove();
+}
+
+/** 超出上限时先淘汰会自己消失的那些，别把「等你」挤掉 */
+function trimBubbles() {
+  const box = $("bubbles");
+  while (box.children.length > MAX_BUBBLES) {
+    const victim =
+      [...box.children].find((el) => !el.classList.contains("sticky")) ?? box.firstElementChild;
+    if (!victim) return;
+    removeBubble(victim);
+  }
+}
+
+/**
+ * 用户回答了 agent 之后，Core 会把该 session 的 needs-you 撤掉 ——
+ * 那条常驻气泡也该自己走，不必用户手动叉掉。
+ */
+function reconcileStickyBubbles() {
+  for (const el of [...$("bubbles").children]) {
+    if (!el.classList.contains("sticky")) continue;
+    const s = state.sessions.find(
+      (x) => x.session_id === el.dataset.session && x.agent === el.dataset.agent,
+    );
+    if (s && s.state !== "needs-you") removeBubble(el);
+  }
 }
 
 /* ---------------- 浮层 ---------------- */
 function openPanel() {
+  if (state.panelOpen) return;
   state.panelOpen = true;
   $("panel").hidden = false;
+  // 210×250 的窗口装不下一个 session 列表：让壳把窗口撑高（宠物位置不动）
+  shell?.setPanelOpen?.(true);
   renderPanel();
+  $("panel-close").focus({ preventScroll: true });
 }
+
 function closePanel() {
+  if (!state.panelOpen) return;
   state.panelOpen = false;
   $("panel").hidden = true;
+  shell?.setPanelOpen?.(false);
 }
+
+function togglePanel() {
+  state.panelOpen ? closePanel() : openPanel();
+}
+
+/** 浮层里最多展示的已结束 session 数（以及它们的保鲜期） */
+const FINISHED_SHOWN = 3;
+const FINISHED_MAX_AGE_MS = 6 * 3_600_000;
+
+/**
+ * 浮层无条件重绘（不再用 panelOpen 当门槛）：门槛把「DOM 可见性」和「数据新鲜度」
+ * 绑成了一根绳 —— 一旦两者不同步，用户看到的就是一块永不更新的旧浮层（issue #5）。
+ */
+/** 上一次画出来的内容指纹：内容没变就不要重建 DOM（否则键盘焦点每 5 秒丢一次） */
+let lastPanelSignature = null;
 
 function renderPanel() {
   const container = $("sessions");
-  container.innerHTML = "";
-  const list = [...state.sessions].sort((a, b) => {
-    const rank = { "needs-you": 0, warning: 1, working: 2, idle: 3, finished: 4 };
-    return (rank[a.state] ?? 5) - (rank[b.state] ?? 5);
-  });
+  const rank = { "needs-you": 0, warning: 1, working: 2, idle: 3, finished: 4 };
+  const sorted = [...state.sessions].sort((a, b) => (rank[a.state] ?? 5) - (rank[b.state] ?? 5));
+  // 有 session 在等你时，「等了多久」要继续走表 —— 让指纹每分钟变一次，
+  // 其余时候完全不重建（不然焦点每 5 秒被清一次）。
+  const waitTick = sorted.some((s) => s.needs_input_since) ? Math.floor(Date.now() / 60_000) : 0;
+  const signature = JSON.stringify([
+    coreReachable(),
+    waitTick,
+    sorted.map((s) => [s.agent, s.session_id, s.state, s.is_active, s.token_used, s.needs_input_since, s.title]),
+  ]);
+  if (signature === lastPanelSignature) return;
+  lastPanelSignature = signature;
+  container.replaceChildren();
+  const live = sorted.filter((s) => s.is_active);
+  // 已结束的 session 会在列表里堆积到 50 条，把还在跑的挤出可见范围。
+  // 只留最近一小段时间里的几条，其余折叠成一行计数。
+  const finished = sorted.filter((s) => !s.is_active && freshlyFinished(s));
+  const list = [...live, ...finished.slice(0, FINISHED_SHOWN)];
+  const hidden = sorted.length - list.length;
+
   if (list.length === 0) {
     const empty = document.createElement("div");
-    empty.style.cssText = "color:var(--dim);padding:6px;";
-    // 断线时 sessions 也是空的，但此时说「还没有 session」是在撒谎 —— 空列表
-    // 只有在确认连得上 Core 的前提下才代表「真的没有 session」（issue #5）。
-    empty.textContent = t(state.connected === false ? "ui.panel.offline" : "ui.panel.empty");
+    empty.id = "panel-empty";
+    // 断线时 sessions 也是空的，但此时说「还没有 session」是在撒谎（issue #5）。
+    empty.textContent = t(coreReachable() ? "ui.panel.empty" : "ui.panel.offline");
     container.appendChild(empty);
     return;
   }
-  for (const s of list) {
-    const row = document.createElement("div");
-    row.className = "session-row";
-    row.title = t("ui.session.tooltip", { project: s.project_id, time: fmtTime(s.last_event_at) });
-    row.innerHTML = `
-      <span class="s-state ${s.state}"></span>
-      <span class="agent-badge">${shortAgent(s.agent)}</span>
-      <span class="s-title">${escapeHtml(s.title)}</span>
-      <span class="s-meta">${s.is_active ? (s.token_used / 1000).toFixed(0) + "k" : "✓"}</span>`;
-    row.onclick = () => copyResume(s);
-    container.appendChild(row);
+
+  for (const s of list) container.appendChild(sessionRow(s));
+  if (hidden > 0) {
+    const more = document.createElement("div");
+    more.id = "panel-more";
+    more.textContent = t("ui.panel.more", { count: hidden });
+    container.appendChild(more);
   }
+}
+
+function freshlyFinished(s) {
+  const at = new Date(s.finished_at ?? s.last_event_at ?? 0).getTime();
+  return Number.isFinite(at) && Date.now() - at < FINISHED_MAX_AGE_MS;
+}
+
+function sessionRow(s) {
+  const row = document.createElement("div");
+  row.className = "session-row";
+  row.setAttribute("role", "button");
+  row.tabIndex = 0;
+  row.title = t("ui.session.tooltip", { project: s.project_id, time: fmtTime(s.last_event_at) });
+
+  const dot = document.createElement("span");
+  dot.className = "s-state";
+  // class 里也不拼外部字符串：state 只可能是这几个已知值，别的一律不加 class
+  if (["idle", "working", "needs-you", "warning", "finished"].includes(s.state)) {
+    dot.classList.add(s.state);
+  }
+  row.appendChild(dot);
+
+  const badge = document.createElement("span");
+  badge.className = "agent-badge";
+  badge.textContent = shortAgent(s.agent);
+  row.appendChild(badge);
+
+  const title = document.createElement("span");
+  title.className = "s-title";
+  title.textContent = s.title ?? "";
+  row.appendChild(title);
+
+  // 「等了多久」是决定先处理哪个 session 的关键信息
+  if (s.state === "needs-you" && s.needs_input_since) {
+    const wait = document.createElement("span");
+    wait.className = "s-wait";
+    wait.textContent = fmtTime(s.needs_input_since);
+    row.appendChild(wait);
+  }
+
+  const meta = document.createElement("span");
+  meta.className = "s-meta";
+  meta.textContent = s.is_active ? `${Math.round((s.token_used ?? 0) / 1000)}k` : "✓";
+  row.appendChild(meta);
+
+  const activate = () => copyResume(s);
+  row.onclick = activate;
+  row.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      activate();
+    }
+  };
+  return row;
 }
 
 /** jump-to：复制各 agent 恢复命令（MVP 先复制到剪贴板，P1 唤起终端） */
 async function copyResume(s) {
   const cmd = resumeCommand(s);
-  try {
-    await navigator.clipboard.writeText(cmd);
+  if (await copyText(cmd)) {
     flash(t("ui.toast.copied", { cmd }));
-  } catch {
-    flash(t("ui.toast.command", { cmd }));
+  } else {
+    // 复制不成就必须把命令留在屏幕上，而且要能选中 —— 全局 user-select:none
+    // 会让「自己抄一遍」都做不到（.toast-copy 单独放开选中）。
+    flash(t("ui.toast.command", { cmd }), { sticky: true, selectable: true });
   }
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    /* 窗口失焦 / 权限被拒时 clipboard API 会 reject，往下走兜底 */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * agent 的 session 是跟目录绑定的：`claude --resume <id>` 在别的目录里跑
+ * 根本找不到这个 session，所以恢复命令必须先 cd 回项目。
+ */
 function resumeCommand(s) {
-  const p = state.sessions.find((x) => x.session_id === s.session_id && x.agent === s.agent);
-  const project = p?.project_id ?? s.project_id;
-  if (s.agent === "claude_code") return `claude --resume ${s.session_id}`;
+  const project = shellQuote(s.project_id ?? "");
+  if (s.agent === "claude_code") return `cd ${project} && claude --resume ${s.session_id}`;
   if (s.agent === "codex") return `cd ${project} && codex resume ${s.session_id}`;
   return `cd ${project}`;
 }
 
-function flash(msg) {
+/** 项目路径里可能有空格/引号，直接拼进命令会被 shell 拆开 */
+function shellQuote(p) {
+  return /^[\w@%+=:,./-]*$/.test(p) ? p : `'${String(p).replace(/'/g, `'\\''`)}'`;
+}
+
+function flash(msg, opts = {}) {
   const el = document.createElement("div");
-  el.className = "bubble ok";
-  el.innerHTML = `<div class="b-title">${escapeHtml(msg)}</div>`;
-  $("bubbles").appendChild(el);
-  setTimeout(() => el.remove(), 2500);
+  el.className = `bubble ${opts.error ? "danger" : "ok"}${opts.selectable ? " toast-copy" : ""}`;
+  const title = line("b-title", msg);
+  el.appendChild(title);
+  if (opts.sticky) {
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "b-dismiss";
+    dismiss.textContent = "✕";
+    dismiss.setAttribute("aria-label", t("ui.bubble.dismiss"));
+    dismiss.onclick = () => el.remove();
+    el.insertBefore(dismiss, title);
+  } else {
+    setTimeout(() => el.remove(), 2500);
+  }
+  $("toasts").appendChild(el);
+  while ($("toasts").children.length > 2) $("toasts").firstElementChild.remove();
 }
 
 /* ---------------- 事件绑定 ---------------- */
@@ -221,41 +577,116 @@ $("stage").addEventListener("click", (e) => {
   }
 }, true);
 
+// 点空白处收起浮层（浮层与气泡是 #stage 的兄弟节点，它们的点击不会落到这里）
+$("stage").addEventListener("click", (e) => {
+  if (e.target !== $("pet") && state.panelOpen) closePanel();
+});
+
 $("pet").addEventListener("click", (e) => {
   e.stopPropagation();
-  state.panelOpen ? closePanel() : openPanel();
+  togglePanel();
 });
-$("panel-close").onclick = closePanel;
-$("act-mute").onclick = async () => { await postAction("mute", { minutes: 30 }); flash(t("ui.toast.muted30")); };
-$("act-mute2h").onclick = async () => { await postAction("mute", { minutes: 120 }); flash(t("ui.toast.muted2h")); };
-$("act-exp").onclick = async () => { await loadExpLog(); };
+$("pet").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    togglePanel();
+  }
+});
+// Esc 收起浮层：没有它，点不到宠物时只能瞄准右上角那个 15px 的 ×
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.panelOpen) closePanel();
+});
 
-async function postAction(action, body) {
-  await fetch(`/api/action`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action, ...body }),
-  });
+$("panel-close").onclick = closePanel;
+$("mute-badge").onclick = () => setMute(null);
+$("act-mute").onclick = () => (muteRemainingMs() > 0 ? setMute(null) : setMute(30));
+$("act-mute2h").onclick = () => setMute(120);
+$("act-exp").onclick = () => loadExpLog();
+
+/**
+ * 静音开关。以前这里是「发出去就当成功」：Core 不在的时候照样弹「已安静 30 分钟」，
+ * 而气泡还会继续来 —— 界面在撒谎。现在按响应说话，并用响应里的状态立刻回填按钮。
+ */
+async function setMute(minutes) {
+  const buttons = [$("act-mute"), $("act-mute2h")];
+  for (const b of buttons) b.disabled = true;
+  const res = minutes === null
+    ? await postAction("unmute")
+    : await postAction("mute", { minutes });
+  for (const b of buttons) b.disabled = false;
+  if (!res) {
+    flash(t("ui.toast.actionfailed"), { error: true });
+    return;
+  }
+  state.mute = { global_until: res.global_until ?? null };
+  renderMute();
+  if (minutes === null) flash(t("ui.toast.unmuted"));
+  else flash(t(minutes >= 120 ? "ui.toast.muted2h" : "ui.toast.muted30"));
+}
+
+async function postAction(action, body = {}) {
+  try {
+    const r = await fetch("/api/action", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, ...body }),
+    });
+    if (!r.ok) return null;
+    return (await r.json().catch(() => ({}))) ?? {};
+  } catch {
+    return null;
+  }
 }
 
 async function loadExpLog() {
   const box = $("explog");
-  if (!box.hidden) { box.hidden = true; return; }
-  const r = await fetch("/api/exp");
-  if (!r.ok) return;
-  const data = await r.json();
-  const head = `<tr><th>${t("ui.exp.col.category")}</th><th>${t("ui.exp.col.amount")}</th><th>${t("ui.exp.col.note")}</th></tr>`;
-  box.innerHTML = `<table>${head}${
-    (data.logs ?? []).slice(0, 15).map((l) =>
-      `<tr><td>${escapeHtml(expCategory(l.category))}</td><td class="amount">+${l.amount}</td><td>${escapeHtml(expNote(l.note))}</td></tr>`,
-    ).join("")
-  }</table>`;
+  const btn = $("act-exp");
+  if (!box.hidden) {
+    box.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    return;
+  }
+  btn.disabled = true;
+  let data = null;
+  try {
+    const r = await fetch("/api/exp", { cache: "no-store" });
+    if (r.ok) data = await r.json();
+  } catch {
+    /* 下面统一提示 */
+  }
+  btn.disabled = false;
+  if (!data) {
+    // 以前这里是静默 return：用户点了按钮，什么都没发生，也不知道为什么
+    flash(t("ui.toast.actionfailed"), { error: true });
+    return;
+  }
+  box.replaceChildren(expTable(data.logs ?? []));
   box.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
+}
+
+function expTable(logs) {
+  const table = document.createElement("table");
+  const head = table.insertRow();
+  for (const key of ["ui.exp.col.category", "ui.exp.col.amount", "ui.exp.col.note"]) {
+    const th = document.createElement("th");
+    th.textContent = t(key);
+    head.appendChild(th);
+  }
+  for (const l of logs.slice(0, 15)) {
+    const row = table.insertRow();
+    row.insertCell().textContent = expCategory(l.category);
+    const amount = row.insertCell();
+    amount.className = "amount";
+    amount.textContent = `+${l.amount}`;
+    row.insertCell().textContent = expNote(l.note);
+  }
+  return table;
 }
 
 /** exp_logs.category 是内部枚举（token/outcome/care/self/level…），显示时本地化 */
 function expCategory(category) {
-  return localizedOr(`ui.exp.cat.${category}`, category);
+  return localizedOr(`ui.exp.cat.${category}`, category ?? "");
 }
 
 /**
@@ -284,7 +715,6 @@ function localizedOr(key, fallback) {
  *     窗口一动 clientX 跟着变，拿它算位移会形成反馈环，越拖越飘。
  */
 (function setupDrag() {
-  const shell = window.vibepaws ?? null;
   const stage = $("stage");
   /** 位移小于这个像素数算「点击」，不算拖拽 —— 否则点宠物开浮层会被误判成拖 */
   const THRESHOLD = 4;
@@ -343,23 +773,28 @@ function localizedOr(key, fallback) {
 
 /* ---------------- 工具 ---------------- */
 function shortAgent(a) {
-  return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : a;
+  return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : String(a ?? "?");
+}
+function shortId(id) {
+  return String(id ?? "").slice(0, 10) || "?";
 }
 function fmtTime(iso) {
   if (!iso) return t("ui.time.unknown");
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return t("ui.time.unknown");
-  const now = Date.now();
-  const diff = now - d.getTime();
+  const diff = Date.now() - d.getTime();
   if (diff < 60_000) return t("ui.time.justnow");
-  if (diff < 3_600_000) return Math.floor(diff / 60_000) + "m";
-  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + "h";
+  if (diff < 86_400_000) return fmtDuration(diff);
   return d.toLocaleDateString(LOCALE);
 }
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** 时长本地化：以前直接拼 "5m"/"3h"，中文界面里就混出了英文单位（issue #6） */
+function fmtDuration(ms) {
+  if (ms < 60_000) return t("ui.time.seconds", { n: Math.max(1, Math.round(ms / 1000)) });
+  if (ms < 3_600_000) return t("ui.time.minutes", { n: Math.round(ms / 60_000) });
+  return t("ui.time.hours", { n: Math.round(ms / 3_600_000) });
 }
 
 applyStaticI18n();
+renderConn();
+startPetLoop();
 connectCore();

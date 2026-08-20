@@ -19,4 +19,9 @@ contextBridge.exposeInMainWorld("vibepaws", {
   dragStart: () => ipcRenderer.send("vibepaws:drag-start"),
   /** 结束拖拽：主进程停止跟随 */
   dragEnd: () => ipcRenderer.send("vibepaws:drag-end"),
+  /**
+   * 浮层展开/收起：主进程据此调整窗口大小。
+   * 收起态的窗口（210×250）装不下 session 列表，浮层会把宠物整个盖住。
+   */
+  setPanelOpen: (open) => ipcRenderer.send("vibepaws:panel", Boolean(open)),
 });

@@ -8,6 +8,17 @@ import type { CoreEvent, PetState, SessionView, SessionState } from "./events.ts
 
 export type RegistryHandler = (ev: CoreEvent) => void;
 
+/** 「等你」标记的安全阀：超过这个时长仍没有任何进展事件，就不再当成在等 */
+const NEEDS_INPUT_MAX_MS = 30 * 60_000;
+/** session_finished 之后仍算 finished 态的时长 */
+const FINISHED_GLOW_MS = 60_000;
+
+function recentlyFinished(finishedAt: string | null | undefined): boolean {
+  if (!finishedAt) return false;
+  const at = new Date(finishedAt).getTime();
+  return Number.isFinite(at) && Date.now() - at < FINISHED_GLOW_MS;
+}
+
 export interface RegistryOptions {
   db: Database.Database;
   /** 每个事件处理后通知（SSE 推送等） */
@@ -32,6 +43,7 @@ export class SessionRegistry {
       case "session_started": {
         const source = ev.payload.source ?? "startup";
         const existing = this.findSession(ev);
+        if (existing) this.clearNeedsInput(ev);
         if (source === "resume" || source === "continue") {
           if (existing) {
             // 同一 (agent, session_id) 复用
@@ -49,7 +61,9 @@ export class SessionRegistry {
         } else if (source === "clear") {
           if (existing) {
             db.prepare(
-              `UPDATE sessions SET is_active=1, context_pct=0, token_used=0, last_event_at=? WHERE agent=? AND agent_session_id=?`,
+              `UPDATE sessions SET is_active=1, context_pct=0, token_used=0, token_exp_granted=0,
+                 needs_input_since=NULL, needs_input_kind=NULL, last_event_at=?
+               WHERE agent=? AND agent_session_id=?`,
             ).run(ev.timestamp, ev.agent, ev.session_id);
           } else {
             this.insertSession(ev, "startup");
@@ -84,6 +98,7 @@ export class SessionRegistry {
           }
           this.lastEdit.set(key, { file, at: now });
         }
+        this.clearNeedsInput(ev);
         db.prepare(
           `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.agent, ev.session_id);
@@ -91,10 +106,30 @@ export class SessionRegistry {
       }
 
       case "decision_required":
-      case "permission_required":
+      case "permission_required": {
+        this.ensureSession(ev);
+        // 「等你」是状态，不是瞬间事件：把起点记在 session 上，直到该 session
+        // 再发来任何别的事件（= 用户已经回答 / agent 已经继续）才清掉。
+        // 只靠 notifications 表的 60s 时间窗推断，会让宠物在 agent 仍被阻塞时
+        // 悄悄安静下来 —— 而这正是这个产品唯一必须做对的提醒。
+        db.prepare(
+          `UPDATE sessions SET last_event_at=?,
+             needs_input_since=COALESCE(needs_input_since, ?), needs_input_kind=?
+           WHERE agent=? AND agent_session_id=?`,
+        ).run(
+          ev.timestamp,
+          ev.timestamp,
+          ev.event_type === "permission_required" ? "permission" : "decision",
+          ev.agent,
+          ev.session_id,
+        );
+        break;
+      }
+
       case "session_error":
       case "topic_drift_warning": {
         this.ensureSession(ev);
+        this.clearNeedsInput(ev);
         db.prepare(
           `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.agent, ev.session_id);
@@ -103,6 +138,7 @@ export class SessionRegistry {
 
       case "token_update": {
         this.ensureSession(ev);
+        this.clearNeedsInput(ev);
         const tokens = typeof ev.payload.tokens === "number" ? ev.payload.tokens : 0;
         db.prepare(
           `UPDATE sessions SET token_used=MAX(token_used, ?), last_event_at=? WHERE agent=? AND agent_session_id=?`,
@@ -112,6 +148,7 @@ export class SessionRegistry {
 
       case "context_update": {
         this.ensureSession(ev);
+        this.clearNeedsInput(ev);
         const pct = typeof ev.payload.context_pct === "number" ? ev.payload.context_pct : 0;
         db.prepare(
           `UPDATE sessions SET context_pct=?, last_event_at=? WHERE agent=? AND agent_session_id=?`,
@@ -121,6 +158,7 @@ export class SessionRegistry {
 
       case "subagent_started": {
         this.ensureSession(ev);
+        this.clearNeedsInput(ev);
         db.prepare(
           `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.agent, ev.session_id);
@@ -129,6 +167,7 @@ export class SessionRegistry {
 
       case "session_finished": {
         this.ensureSession(ev);
+        this.clearNeedsInput(ev);
         const reason = ev.payload.reason ?? "completion";
         const outcome = ev.payload.outcome ?? "success";
         db.prepare(
@@ -145,6 +184,16 @@ export class SessionRegistry {
       }
     }
     this.onUpdate?.();
+  }
+
+  /** 收到任何「进展」事件都说明用户已经回答 / agent 已经继续 → 停止「等你」 */
+  private clearNeedsInput(ev: CoreEvent): void {
+    this.db
+      .prepare(
+        `UPDATE sessions SET needs_input_since=NULL, needs_input_kind=NULL
+         WHERE agent=? AND agent_session_id=? AND needs_input_since IS NOT NULL`,
+      )
+      .run(ev.agent, ev.session_id);
   }
 
   private findSession(ev: CoreEvent): { id: number } | undefined {
@@ -190,7 +239,8 @@ export class SessionRegistry {
     const rows = this.db
       .prepare(
         `SELECT agent, agent_session_id as session_id, project_id, title, is_active,
-                token_used, context_pct, correction_count, last_event_at, parent_id, outcome
+                token_used, context_pct, correction_count, last_event_at, finished_at,
+                needs_input_since, parent_id, outcome
          FROM sessions ORDER BY last_event_at DESC LIMIT ?`,
       )
       .all(limit) as Array<Record<string, unknown>>;
@@ -204,6 +254,8 @@ export class SessionRegistry {
       context_pct: (r.context_pct as number) ?? 0,
       correction_count: (r.correction_count as number) ?? 0,
       last_event_at: r.last_event_at as string,
+      finished_at: (r.finished_at as string | null) ?? null,
+      needs_input_since: (r.needs_input_since as string | null) ?? null,
       is_active: (r.is_active as number) === 1,
       parent_id: r.parent_id as number | null,
       outcome: r.outcome as string | undefined,
@@ -215,19 +267,25 @@ export class SessionRegistry {
     if ((r.is_active as number) !== 1) return "finished";
     const agent = r.agent as string;
     const sessionId = r.session_id as string;
-    // 需要你：最近 60s 有未处理的 decision/permission 通知
-    const needs = this.db
-      .prepare(
-        `SELECT 1 FROM notifications WHERE agent=? AND session_id=? AND status='shown'
-         AND type IN ('decision','permission') AND shown_at > datetime('now','-60 seconds') LIMIT 1`,
-      )
-      .get(agent, sessionId);
-    if (needs) return "needs-you";
+    // 需要你：session 上挂着未清除的「等你」标记（由 decision/permission 事件置位，
+    // 任何后续进展事件清除）。上限 NEEDS_INPUT_MAX_MS 只是安全阀 ——
+    // 万一清除事件永远没来，宠物也不该无限告警下去。
+    const waitingSince = r.needs_input_since as string | null;
+    if (waitingSince) {
+      const since = new Date(waitingSince).getTime();
+      // 解析不出来就当「不在等」：安全阀的意义是「不要无限告警」，
+      // 反过来写会让一个坏时间戳把宠物永久钉在 needs-you 上。
+      if (Number.isFinite(since) && Date.now() - since < NEEDS_INPUT_MAX_MS) return "needs-you";
+    }
     // warning：最近 120s 有 context/error/drift 通知
+    // datetime() 两侧都要包：shown_at 落库是 ISO-8601（'2026-08-20T05:28:57.268Z'），
+    // 而 datetime('now') 是 '2026-08-20 05:28:57' —— 直接字符串比较时 'T'(0x54) > ' '(0x20)，
+    // 于是**今天的任何一条**通知都满足「最近 120 秒」，宠物会橙一整天。
     const warn = this.db
       .prepare(
         `SELECT 1 FROM notifications WHERE agent=? AND session_id=? AND status='shown'
-         AND type IN ('context','error','drift') AND shown_at > datetime('now','-120 seconds') LIMIT 1`,
+         AND type IN ('context','error','drift')
+         AND datetime(shown_at) > datetime('now','-120 seconds') LIMIT 1`,
       )
       .get(agent, sessionId);
     if (warn) return "warning";
@@ -236,12 +294,16 @@ export class SessionRegistry {
     return idleMs > 15 * 60_000 ? "idle" : "working";
   }
 
-  /** 聚合宠物状态：needs-you > warning > working > idle */
-  aggregatePetState(overrides?: PetState): PetState {
+  /**
+   * 聚合宠物状态：needs-you > warning > working > finished > idle。
+   * `sessions` 可传入已算好的列表 —— 每次事件都重新查一遍会让 listSessions
+   * 的 per-session 子查询翻倍（一次事件几百条 SQL）。
+   */
+  aggregatePetState(overrides?: PetState, sessions?: SessionView[]): PetState {
     if (overrides && overrides !== "idle") return overrides;
-    const sessions = this.listSessions(100);
+    const list = sessions ?? this.listSessions(100);
     let hasNeeds = false, hasWarning = false, hasWorking = false;
-    for (const s of sessions) {
+    for (const s of list) {
       if (!s.is_active) continue;
       if (s.state === "needs-you") hasNeeds = true;
       else if (s.state === "warning") hasWarning = true;
@@ -250,6 +312,8 @@ export class SessionRegistry {
     if (hasNeeds) return "needs-you";
     if (hasWarning) return "warning";
     if (hasWorking) return "working";
+    // 刚收工：短暂庆祝一下再回 idle（README 6.1 的 finished 态）
+    if (list.some((s) => !s.is_active && recentlyFinished(s.finished_at))) return "finished";
     return "idle";
   }
 

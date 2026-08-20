@@ -75,7 +75,12 @@ export function ingestEvent(raw: unknown, opts: IngressOptions): {
   const event_type = typeof obj.event_type === "string" ? obj.event_type : "";
   const project_id = typeof obj.project_id === "string" ? obj.project_id : "";
   const safe_summary = typeof obj.safe_summary === "string" ? obj.safe_summary : "";
-  const timestamp = typeof obj.timestamp === "string" ? obj.timestamp : new Date().toISOString();
+  // 必须是能解析的时间：下游会拿它算「等了多久」/「刚刚结束」，
+  // 一个解析不出来的字符串会一路变成 NaN 比较。
+  const rawTimestamp = typeof obj.timestamp === "string" ? obj.timestamp : "";
+  const timestamp = rawTimestamp && !Number.isNaN(Date.parse(rawTimestamp))
+    ? rawTimestamp
+    : new Date().toISOString();
   const severity = typeof obj.severity === "string" ? obj.severity : "low";
   const seq = typeof obj.seq === "number" && Number.isFinite(obj.seq) ? obj.seq : 0;
 

@@ -88,3 +88,117 @@ test("token milestone 25% 触发（budget 100k, tokens 25k）", () => {
   const r = n.getForEvent(ev({ event_type: "token_update", payload: { tokens: 25000 } }));
   assert.equal(r?.type, "milestone");
 });
+
+test("context 阈值闩锁：同一档不复读，跨到更高档才出声", () => {
+  const db = makeDb();
+  // dedupMs=0：这里要验证的是闩锁本身，不是 60s 去重窗口
+  const n = new NotificationEngine(db, { dedupMs: 0 });
+  const ctx = (pct: number) => n.getForEvent(ev({ event_type: "context_update", payload: { context_pct: pct } }));
+
+  assert.ok(ctx(72), "首次跨过 70% 应提醒");
+  assert.equal(ctx(75), null, "还在 70 这一档 —— 复读只会把用户逼去点「全部安静」");
+  assert.equal(ctx(84), null);
+  assert.ok(ctx(88), "跨到 85 这一档要提醒");
+  assert.equal(ctx(90), null);
+  assert.ok(ctx(97), "跨到 95 这一档要提醒");
+  assert.equal(ctx(99), null);
+  // compact / clear 之后 context 回落 → 重新武装
+  assert.equal(ctx(20), null);
+  assert.ok(ctx(75), "回落之后再涨上来应该重新提醒");
+});
+
+test("context 96% 报的是最高档（critical），不是 70 那一档", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db, { dedupMs: 0 });
+  const r = n.getForEvent(ev({ event_type: "context_update", payload: { context_pct: 96 } }));
+  assert.equal(r?.i18n?.body.key, "notif.context.body.critical");
+});
+
+test("token 里程碑同样闩锁（25% 之后不再每分钟复读）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db, { dedupMs: 0 });
+  db.prepare(
+    "INSERT INTO sessions(agent, agent_session_id, project_id, budget_tokens) VALUES('claude_code','s1','/Users/x/my-app', 100000)",
+  ).run();
+  const tok = (tokens: number) => n.getForEvent(ev({ event_type: "token_update", payload: { tokens } }));
+  assert.ok(tok(26000));
+  assert.equal(tok(30000), null);
+  assert.equal(tok(49000), null);
+  assert.ok(tok(52000), "跨到 50% 要提醒");
+  assert.ok(tok(91000), "跨到 90% 要提醒");
+});
+
+test("muteStatus 反映当前静音，unmute 立刻恢复出声", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  assert.equal(n.muteStatus().global_until, null);
+  n.muteGlobal(30);
+  assert.ok((n.muteStatus().global_until ?? 0) > Date.now());
+  n.unmuteGlobal();
+  assert.equal(n.muteStatus().global_until, null);
+  assert.ok(n.getForEvent(ev({ event_id: "after-unmute", payload: { kind: "Stop" } })), "解除后应重新出气泡");
+});
+
+test("脏的静音值算已过期（否则一个坏值就永久静音）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  db.prepare("INSERT INTO settings(key, value) VALUES('mute.global','forever')").run();
+  assert.ok(n.getForEvent(ev({ event_id: "dirty", payload: { kind: "Stop" } })), "解析不出时间的静音不该生效");
+  assert.equal(n.muteStatus().global_until, null);
+});
+
+test("被 mute 吞掉的档位不会被记成「已经报过」（解除静音后仍会提醒）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db, { dedupMs: 0 });
+  const ctx = (pct: number) => n.getForEvent(ev({ event_type: "context_update", payload: { context_pct: pct } }));
+  n.muteGlobal(30);
+  assert.equal(ctx(96), null, "静音期间不出气泡");
+  n.unmuteGlobal();
+  const after = ctx(97);
+  assert.ok(after, "解除静音后 95% 这一档必须还能出声（闩锁不该在静音期间就记账）");
+  assert.equal(after.i18n?.body.key, "notif.context.body.critical");
+});
+
+test("升档不被去重窗口吞掉，同档仍然只说一次", () => {
+  const db = makeDb();
+  // 生产的 60s 去重窗口
+  const n = new NotificationEngine(db);
+  const ctx = (pct: number) => n.getForEvent(ev({ event_type: "context_update", payload: { context_pct: pct } }));
+  assert.ok(ctx(72), "首次 70 档");
+  const high = ctx(88);
+  assert.ok(high, "72%→88% 是另一件事，不该被 60s 去重窗口合并掉");
+  assert.equal(high.i18n?.body.key, "notif.context.body.high");
+  const critical = ctx(96);
+  assert.ok(critical, "88%→96% 同理");
+  assert.equal(critical.i18n?.body.key, "notif.context.body.critical");
+  assert.equal(ctx(97), null, "同一档只说一次");
+  assert.equal(ctx(99), null);
+});
+
+test("不带 tokens 的 token_update 不会清掉里程碑闩锁", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db, { dedupMs: 0 });
+  db.prepare(
+    "INSERT INTO sessions(agent, agent_session_id, project_id, budget_tokens) VALUES('claude_code','s1','/Users/x/my-app', 100000)",
+  ).run();
+  assert.ok(n.getForEvent(ev({ event_type: "token_update", payload: { tokens: 26000 } })));
+  // Claude Code 的 PostToolUse 多数不带 tokens
+  assert.equal(n.getForEvent(ev({ event_type: "token_update", payload: { tool_name: "Edit" } })), null);
+  assert.equal(
+    n.getForEvent(ev({ event_type: "token_update", payload: { tokens: 27000 } })),
+    null,
+    "同一档不该因为中间来了几条没读数的事件而复读",
+  );
+});
+
+test("session_finished 之后清掉该 session 的去重/闩锁记录", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  n.getForEvent(ev({ event_id: "d1", payload: { kind: "Stop" } }));
+  assert.equal(n.getForEvent(ev({ event_id: "d2", payload: { kind: "Stop" } })), null, "60s 内去重");
+  n.getForEvent(ev({ event_id: "fin", event_type: "session_finished", payload: { outcome: "success" } }));
+  assert.ok(
+    n.getForEvent(ev({ event_id: "d3", payload: { kind: "Stop" } })),
+    "新一轮（resume 同一 session_id）不该被上一轮的去重记录压住",
+  );
+});

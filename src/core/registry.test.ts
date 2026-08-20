@@ -96,3 +96,75 @@ test("projectShortName 取最后一段", () => {
   assert.equal(projectShortName("/Users/x/my-app/"), "my-app");
   assert.equal(projectShortName("C:\\dev\\proj"), "proj");
 });
+
+test("decision_required 置位「等你」，后续进展事件清除", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+  assert.equal(reg.listSessions()[0]!.state, "needs-you");
+  assert.ok(reg.listSessions()[0]!.needs_input_since);
+
+  reg.handle(ev({ event_type: "token_update", payload: { tokens: 100 } }));
+  assert.equal(reg.listSessions()[0]!.needs_input_since, null, "用户回答后不该继续告警");
+  assert.notEqual(reg.listSessions()[0]!.state, "needs-you");
+});
+
+test("「等你」超过安全阀（30min）后不再告警", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }));
+  // 必须写 ISO（带 Z）：datetime('now') 是无时区的 'YYYY-MM-DD HH:MM:SS'，
+  // JS 会按**本地**时间解析它，于是这个测试在 UTC 以西的时区会假失败。
+  db.prepare("UPDATE sessions SET needs_input_since = ?").run(new Date(Date.now() - 2 * 3600_000).toISOString());
+  assert.notEqual(reg.listSessions()[0]!.state, "needs-you");
+});
+
+test("aggregatePetState：needs-you 优先于 working", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ session_id: "busy", payload: { source: "startup" } }));
+  reg.handle(ev({ session_id: "asking", payload: { source: "startup" } }));
+  reg.handle(ev({ session_id: "asking", event_type: "decision_required", payload: { kind: "question" } }));
+  assert.equal(reg.aggregatePetState(), "needs-you");
+  // 传入已算好的列表时结论必须一致（server 走的是这条路，避免重复查询）
+  assert.equal(reg.aggregatePetState(undefined, reg.listSessions()), "needs-you");
+  // level-up 这类覆盖态优先
+  assert.equal(reg.aggregatePetState("level-up"), "level-up");
+});
+
+test("clear 同时重置 token EXP 结算游标", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  db.prepare("UPDATE sessions SET token_exp_granted = 50000").run();
+  reg.handle(ev({ payload: { source: "clear" } }));
+  const row = db.prepare("SELECT token_exp_granted FROM sessions").get() as { token_exp_granted: number };
+  assert.equal(row.token_exp_granted, 0);
+});
+
+test("warning 只看最近 120 秒，不是「今天一整天」", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  // shown_at 落库是 ISO（带 T/Z），datetime('now') 是空格分隔 —— 直接字符串比较时
+  // 'T' > ' '，今天任何一条通知都会被算成「最近 120 秒」，宠物橙一整天。
+  db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body, status, shown_at)
+     VALUES('claude_code','s1','context','t','b','shown', ?)`,
+  ).run(new Date(Date.now() - 3 * 3600_000).toISOString());
+  assert.notEqual(reg.listSessions()[0]!.state, "warning", "3 小时前的 context 警告不该还让宠物报警");
+
+  db.prepare("UPDATE notifications SET shown_at = ?").run(new Date().toISOString());
+  assert.equal(reg.listSessions()[0]!.state, "warning", "刚刚的警告应该生效");
+});
+
+test("坏时间戳不会把宠物永久钉在 needs-you", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+  db.prepare("UPDATE sessions SET needs_input_since = 'pending'").run();
+  assert.notEqual(reg.listSessions()[0]!.state, "needs-you", "解析不出的时间戳应当按「不在等」处理");
+});

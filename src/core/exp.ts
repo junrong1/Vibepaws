@@ -33,6 +33,8 @@ const DEFAULT_DAILY_CAP = 200;
 const TOKEN_EXP_RATE = 1 / 1000;
 /** 每小时自成长 */
 const SELF_GROWTH_PER_HOUR = 0.1;
+/** 健康分低于这个值算「累了」：自成长暂停，宠物在闲下来时显示 tired（README 6.4） */
+export const TIRED_HEALTH_THRESHOLD = 0.7;
 
 export function contextMultiplier(pct: number): number {
   if (pct <= 0) return 1.0; // 未知 context（尚无事件）视为中性
@@ -105,23 +107,38 @@ export class ExpEngine {
       }
     }
     this.tickSelfGrowth();
-    this.updatePetState();
   }
 
   // ---- token EXP ----
+  /**
+   * token_update 的 `tokens` 是**累计值**（adapter 报的是 session 至今用量）。
+   * 按累计值发 EXP 会重复计数：30k → +30，紧接着 60k → +60，一共 90 EXP 却只烧了
+   * 60k tokens。所以只结算增量，并把「已结算到哪」持久化在 session 上
+   * （token_exp_granted）—— 存内存的话 Core 一重启就又从 0 开始重发一遍。
+   */
   private grantTokenExp(ev: CoreEvent, tokens: number): void {
-    const sessionId = this.sessionRowId(ev);
-    if (!sessionId) return;
-    const raw = tokens * TOKEN_EXP_RATE;
-    if (raw <= 0) return;
-    // context multiplier（用当前 context_pct）
+    if (!Number.isFinite(tokens) || tokens <= 0) return;
     const row = this.db
-      .prepare("SELECT context_pct, correction_count, goal FROM sessions WHERE id=?")
-      .get(sessionId) as { context_pct: number; correction_count: number; goal: string | null } | undefined;
-    const ctxM = contextMultiplier(row?.context_pct ?? 0);
-    const topicM = topicMultiplier(row?.correction_count ?? 0, Boolean(row?.goal));
+      .prepare(
+        `SELECT id, context_pct, correction_count, goal, token_exp_granted
+         FROM sessions WHERE agent=? AND agent_session_id=?`,
+      )
+      .get(ev.agent, ev.session_id) as
+      | { id: number; context_pct: number; correction_count: number; goal: string | null; token_exp_granted: number }
+      | undefined;
+    if (!row) return;
+    const granted = row.token_exp_granted ?? 0;
+    // 计数器倒退（clear/compact 重置用量）→ 把新值整个当成新增用量重新累计
+    const delta = tokens >= granted ? tokens - granted : tokens;
+    // 无论 daily cap 是否截断，都要记下已结算的累计值：否则第二天会补发今天烧掉的量，
+    // cap 就形同虚设。
+    this.db.prepare("UPDATE sessions SET token_exp_granted=? WHERE id=?").run(Math.round(tokens), row.id);
+    const raw = delta * TOKEN_EXP_RATE;
+    if (raw <= 0) return;
+    const ctxM = contextMultiplier(row.context_pct ?? 0);
+    const topicM = topicMultiplier(row.correction_count ?? 0, Boolean(row.goal));
     const amount = raw * ctxM * topicM;
-    this.addExp(sessionId, amount, "token", `tokens=${Math.round(tokens)} ×ctx=${ctxM} ×topic=${topicM}`);
+    this.addExp(row.id, amount, "token", `tokens=${Math.round(delta)} ×ctx=${ctxM} ×topic=${topicM}`);
   }
 
   // ---- outcome bonus ----
@@ -143,12 +160,12 @@ export class ExpEngine {
     this.lastGrowthAt = now;
     const pet = this.petRow();
     if (!pet) return;
-    if (pet.state === "tired") return; // tired 暂停自成长
+    // tired 暂停自成长。tired 不落库（它是派生态），所以这里直接看健康分 ——
+    // 原来比对 pet.state === "tired" 永远为假，这条规则等于没实现。
+    if (this.healthScore(pet.id) < TIRED_HEALTH_THRESHOLD) return;
     const hours = elapsed / 3_600_000;
     if (hours > 0.0005) {
-      const amount = hours * SELF_GROWTH_PER_HOUR;
-      const sessionId = null as unknown as number;
-      this.addExp(sessionId, amount, "self", "self growth");
+      this.addExp(null, hours * SELF_GROWTH_PER_HOUR, "self", "self growth");
     }
   }
 
@@ -192,22 +209,24 @@ export class ExpEngine {
 
   // ---- 等级 + 进化 ----
   private lastLevelUpAt = 0;
+  /** 一次大额 EXP 可能跨多级：循环结算，别把余量留在原地（levelExpRequired ≥ 100，必然收敛） */
   private checkLevelUp(petId: number, exp: number): void {
     const pet = this.petRow();
     if (!pet) return;
-    const needed = levelExpRequired(pet.level);
-    if (exp >= needed) {
-      const nextLevel = pet.level + 1;
-      this.lastLevelUpAt = Date.now(); // 用于 level-up 状态 5s 回落
-      this.db
-        .prepare("UPDATE pets SET level=?, exp=?, state='level-up' WHERE id=?")
-        .run(nextLevel, round2(exp - needed), petId);
+    let level = pet.level;
+    let remaining = exp;
+    while (remaining >= levelExpRequired(level)) {
+      remaining = round2(remaining - levelExpRequired(level));
+      level += 1;
       this.db
         .prepare("INSERT INTO exp_logs(session_id, amount, category, note) VALUES(NULL, 0, 'level', ?)")
-        .run(`level up to ${nextLevel}`);
-      console.log(`[vibepaws] 🎉 pet level up → Lv.${nextLevel}`);
-      this.checkEvolution(petId, nextLevel);
+        .run(`level up to ${level}`);
+      console.log(`[vibepaws] 🎉 pet level up → Lv.${level}`);
     }
+    if (level === pet.level) return;
+    this.lastLevelUpAt = Date.now(); // 用于 level-up 状态 5s 回落
+    this.db.prepare("UPDATE pets SET level=?, exp=?, state='level-up' WHERE id=?").run(level, remaining, petId);
+    this.checkEvolution(petId, level);
   }
 
   private checkEvolution(petId: number, level: number): void {
@@ -248,14 +267,6 @@ export class ExpEngine {
     return round2(Math.min(1, score));
   }
 
-  // ---- 宠物状态叠加 ----
-  private updatePetState(): void {
-    const pet = this.petRow();
-    if (!pet) return;
-    // level-up 状态 3 秒后回落（由读取端做，这里只置位；简化：直接由 server 端 overlay）
-    void pet;
-  }
-
   // ---- 读取 ----
   getPetSnapshot(): PetSnapshot {
     const pet = this.petRow();
@@ -276,7 +287,8 @@ export class ExpEngine {
     return {
       id: p.id,
       pet_type_id: p.pet_type_id,
-      name: type?.name ?? p.name ?? "vibepaws",
+      // 用户给宠物起的名字优先；没起过才显示物种名
+      name: p.name ?? type?.name ?? "vibepaws",
       level: p.level,
       exp: round2(p.exp),
       state,
