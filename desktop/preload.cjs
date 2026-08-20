@@ -20,8 +20,9 @@ contextBridge.exposeInMainWorld("vibepaws", {
   /** 结束拖拽：主进程停止跟随 */
   dragEnd: () => ipcRenderer.send("vibepaws:drag-end"),
   /**
-   * 浮层展开/收起：主进程据此调整窗口大小。
-   * 收起态的窗口（210×250）装不下 session 列表，浮层会把宠物整个盖住。
+   * 命中测试：光标此刻压着的是「真东西」（宠物 / 浮层 / 气泡）还是透明空白。
+   * 窗口恒为 300×430，浮层收起时宠物头顶那 180px 是空的 —— 透明不等于穿透，
+   * 不上报的话那片空白会把点击全吃掉。主进程据此开关 setIgnoreMouseEvents。
    */
-  setPanelOpen: (open) => ipcRenderer.send("vibepaws:panel", Boolean(open)),
+  setHit: (over) => ipcRenderer.send("vibepaws:hit", Boolean(over)),
 });
