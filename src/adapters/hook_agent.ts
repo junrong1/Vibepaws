@@ -8,9 +8,13 @@
  *   node src/adapters/hook_agent.ts <event-name>   （stdin 为 hook 输入 JSON）
  */
 import { readFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readApiToken } from "../core/token.ts";
 import type { CoreEvent, AgentId } from "../core/events.ts";
+
+/** 仓库根（由本文件位置反推），离线兜底缓冲固定写回 Vibepaws 仓库，任意 cwd 下都能被 bridge 找到。 */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /* ---------------- 事件映射（references/event_collection.md §3.2） ---------------- */
 
@@ -180,7 +184,7 @@ export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean>
   } catch {
     // Core 离线 → JSONL 兜底
   }
-  const dir = join(".vibepaws", "events");
+  const dir = join(REPO_ROOT, ".vibepaws", "events");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   appendFileSync(join(dir, "fallback.jsonl"), JSON.stringify(ev) + "\n");
   return false;

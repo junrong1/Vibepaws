@@ -15,6 +15,7 @@
     "db:init": "node --experimental-strip-types src/db/migrate.ts",
     "adapter:install": "node --experimental-strip-types src/adapters/install.ts",
     "hook": "node --experimental-strip-types src/adapters/hook_agent.ts",
+    "bridge": "node --experimental-strip-types src/adapters/bridge.ts",
     "ui": "node --experimental-strip-types src/ui/server.ts",
     "desktop": "electron desktop/main.js",
     "dist:mac": "electron-builder --mac --arm64",

@@ -135,12 +135,14 @@ export const MESSAGES = {
     "notif.milestone.body": "{used}k tokens · budget {budget}k",
 
     // ---- adapter 安装器 CLI ----
-    "cli.install.header": "[vibepaws] adapter install — agent={agent}{dry} repo={repo}",
+    "cli.install.header": "[vibepaws] adapter install — agent={agent}{dry} scope={scope} repo={repo}",
     "cli.backup": "  ↳ Backed up your existing config → {file}",
     "cli.dryrun.write": "[dry-run] would write {file} — {count} hook events after merge",
     "cli.capabilities": "  Capabilities: {list}",
     "cli.claude.written": "✓ Claude Code hooks written to {file}",
     "cli.claude.note": "  Claude Code loads .claude/settings.json automatically (you must trust the directory once)",
+    "cli.claude.globalNote": "  Global scope — Claude Code loads ~/.claude/settings.json for every project (no per-directory trust prompt)",
+    "cli.cleanup.project": "  Removed {n} project-level Vibepaws hook(s) from {file} to avoid double-firing in this repo",
     "cli.codex.written": "✓ Codex hooks written to {file}",
     "cli.codex.trust.written": "Project trust written to {file}",
     "cli.codex.trust.exists": "Project trust already present ({file})",
@@ -245,12 +247,14 @@ export const MESSAGES = {
     "notif.milestone.body": "{used}k tokens · 预算 {budget}k",
 
     // ---- adapter 安装器 CLI ----
-    "cli.install.header": "[vibepaws] adapter install — agent={agent}{dry} repo={repo}",
+    "cli.install.header": "[vibepaws] adapter install — agent={agent}{dry} scope={scope} repo={repo}",
     "cli.backup": "  ↳ 已备份你原来的配置 → {file}",
     "cli.dryrun.write": "[dry-run] 将写入 {file} — 合并后共 {count} 个 hook 事件",
     "cli.capabilities": "  能力声明：{list}",
     "cli.claude.written": "✓ Claude Code hooks 已写入 {file}",
     "cli.claude.note": "  Claude Code 会自动加载 .claude/settings.json（首次需信任该目录）",
+    "cli.claude.globalNote": "  全局生效 —— Claude Code 会在所有项目加载 ~/.claude/settings.json（无需逐目录信任）",
+    "cli.cleanup.project": "  已从 {file} 移除 {n} 条项目级 Vibepaws hooks，避免在本仓库内重复触发",
     "cli.codex.written": "✓ Codex hooks 已写入 {file}",
     "cli.codex.trust.written": "项目信任已写入 {file}",
     "cli.codex.trust.exists": "项目信任已存在（{file}）",

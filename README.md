@@ -392,10 +392,13 @@ VIBEPAWS_LOCALE=en npm run desktop
 ### 4. 接入真实 coding agent（adapter）
 
 ```bash
-npm run adapter:install -- --agent claude_code   # 写入 .claude/settings.json（自动备份原配置）
-npm run adapter:install -- --agent codex         # 写入 .codex/hooks.json；首次需在 codex 里运行 /hooks 授权
+npm run adapter:install -- --agent claude_code            # 项目级：写入 <repo>/.claude/settings.json（仅当前仓库生效）
+npm run adapter:install -- --agent claude_code --global   # 全局：写入 ~/.claude/settings.json（所有项目生效）
+npm run adapter:install -- --agent codex                  # 项目级：写入 .codex/hooks.json；首次需在 codex 里运行 /hooks 授权
+npm run adapter:install -- --agent codex --global         # 全局：写入 ~/.codex/hooks.json
 ```
 
+- 全局与项目级二选一；切到 `--global` 会自动移除本仓库项目级配置里 Vibepaws 的 hooks，避免重复触发（重复 EXP / 重复气泡）
 - 安装器自动发测试事件自检；Core 未启动时事件落入 `.vibepaws/events/fallback.jsonl`
 - 离线兜底：`npm run bridge` 监听该目录，把 JSONL 归一化后转发给 Core
 - 隐私：adapter 白名单提取（丢弃 tool_input/prompt/transcript_path），Core 落库前再丢未知字段，原始 hook JSON 永不落库（`src/core/privacy.test.ts` 验收）
