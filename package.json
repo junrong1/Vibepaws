@@ -6,7 +6,7 @@
   "description": "Vibepaws — AI coding pet for your coding agents (MVP)",
   "main": "desktop/main.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.6"
   },
   "scripts": {
     "core": "node --experimental-strip-types src/core/server.ts",

@@ -11,6 +11,7 @@ import { readFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readApiToken } from "../core/token.ts";
+import { adapterStatusEvent } from "./hooks.ts";
 import type { CoreEvent, AgentId } from "../core/events.ts";
 
 /** 仓库根（由本文件位置反推），离线兜底缓冲固定写回 Vibepaws 仓库，任意 cwd 下都能被 bridge 找到。 */
@@ -200,6 +201,12 @@ async function main(): Promise<void> {
   process.stdin.on("end", async () => {
     try {
       const raw = stdin.trim() ? (JSON.parse(stdin) as HookInput) : {};
+      // 每次会话开始都重新自报家门：安装时报过一次是不够的 —— 换机器、清库、
+      // 重装 Core 之后 agents 表就空了，而用户并不会想到要再跑一次安装器。
+      if (raw.hook_event_name === "SessionStart" && (agent === "claude_code" || agent === "codex")) {
+        const announced = await deliver(adapterStatusEvent(agent, raw.cwd ?? process.cwd()));
+        if (process.env.VIBEPAWS_DEBUG) console.error(`[hook] adapter_status delivered=${announced}`);
+      }
       const ev = normalizeHook(raw, agent);
       if (ev) {
         const delivered = await deliver(ev);

@@ -114,6 +114,15 @@ export interface AgentCapabilities {
   resume_command?: string;   // jump-to 模板，如 "claude --resume <id>"
 }
 
+/** 已接入的 adapter（SSE 推给界面：空数组 = 没装 hooks，不是「还没干活」） */
+export interface AdapterView {
+  agent: AgentId;
+  adapter_version: string | null;
+  capabilities: string[];
+  connected_at: string | null;
+  last_event_at: string | null;
+}
+
 /** 聚合宠物状态推送（SSE） */
 export interface PetStatePush {
   type: "pet_state";
@@ -128,6 +137,9 @@ export interface PetStatePush {
     next_level_exp: number;
   };
   sessions: SessionView[];
+  /** 已接入的 adapter。空数组 = 一个 hook 都没装 —— 界面要说的是「去装 adapter」，
+   * 而不是「还没有 session」。这两句话指向完全不同的操作。 */
+  adapters: AdapterView[];
   /** 当前静音状态：界面要能显示「还剩多久」、点亮对应按钮并原地取消（issue #7） */
   mute: { global_until: number | null; global_minutes: number | null };
   needs_you: SessionView[];

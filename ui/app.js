@@ -39,6 +39,9 @@ const STICKY_TYPES = new Set(["decision", "permission"]);
 const state = {
   pet: null,
   sessions: [],
+  /** 已接入的 adapter。null = 还不知道（老 Core 不推这个字段，不能据此说「没装」）；
+   * [] = Core 明确说一个都没有，也就是 hooks 没装上。 */
+  adapters: null,
   mute: { global_until: null, global_minutes: null },
   /** 事件流是否活着 —— 气泡只从这条流来，它断了就等于提醒功能死了 */
   streamOk: null,
@@ -123,6 +126,7 @@ function applyPush(push) {
   if (!push || typeof push !== "object") return;
   state.pet = push.pet ?? state.pet;
   state.sessions = Array.isArray(push.sessions) ? push.sessions : [];
+  if (Array.isArray(push.adapters)) state.adapters = push.adapters;
   state.mute = push.mute ?? { global_until: null, global_minutes: null };
   render();
   reconcileStickyBubbles();
@@ -433,6 +437,18 @@ const FINISHED_MAX_AGE_MS = 6 * 3_600_000;
 /** 上一次画出来的内容指纹：内容没变就不要重建 DOM（否则键盘焦点每 5 秒丢一次） */
 let lastPanelSignature = null;
 
+/**
+ * 空面板要说哪句话。三种「什么都没有」长得一模一样，但要用户做的事完全不同：
+ *   连不上 Core        → 去看 Core 起没起（issue #5：断线时说「还没有 session」是撒谎）
+ *   Core 在但没有 adapter → 去装 hooks（在这之前这种情况完全不可见，宠物只是闲着）
+ *   都正常，只是没干活   → 什么都不用做
+ */
+function emptyPanelKey() {
+  if (!coreReachable()) return "ui.panel.offline";
+  if (Array.isArray(state.adapters) && state.adapters.length === 0) return "ui.panel.noAdapter";
+  return "ui.panel.empty";
+}
+
 function renderPanel() {
   const container = $("sessions");
   const rank = { "needs-you": 0, warning: 1, working: 2, idle: 3, finished: 4 };
@@ -442,6 +458,7 @@ function renderPanel() {
   const waitTick = sorted.some((s) => s.needs_input_since) ? Math.floor(Date.now() / 60_000) : 0;
   const signature = JSON.stringify([
     coreReachable(),
+    state.adapters === null ? null : state.adapters.length,
     waitTick,
     sorted.map((s) => [s.agent, s.session_id, s.state, s.is_active, s.token_used, s.needs_input_since, s.title]),
   ]);
@@ -458,8 +475,7 @@ function renderPanel() {
   if (list.length === 0) {
     const empty = document.createElement("div");
     empty.id = "panel-empty";
-    // 断线时 sessions 也是空的，但此时说「还没有 session」是在撒谎（issue #5）。
-    empty.textContent = t(coreReachable() ? "ui.panel.empty" : "ui.panel.offline");
+    empty.textContent = t(emptyPanelKey());
     container.appendChild(empty);
     return;
   }
