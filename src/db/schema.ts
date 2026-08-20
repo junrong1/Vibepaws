@@ -5,7 +5,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   token_used    INTEGER NOT NULL DEFAULT 0,
   context_pct   REAL NOT NULL DEFAULT 0,
   correction_count INTEGER NOT NULL DEFAULT 0,
+  -- 已换算成 EXP 的累计 token 数：token_update 的 tokens 是累计值，
+  -- 不记住「已结算到哪」就会每次都按累计值再发一遍 EXP（60k tokens 发出 90 EXP）。
+  token_exp_granted INTEGER NOT NULL DEFAULT 0,
+  -- agent 卡在「等你」的起始时刻（NULL = 不在等）。
+  -- 只靠 notifications 表的 60s 时间窗推断会让宠物在 agent 仍被阻塞时安静下来。
+  needs_input_since TEXT,
+  needs_input_kind TEXT,
   parent_id     INTEGER REFERENCES sessions(id),
   branch        TEXT,
   is_active     INTEGER NOT NULL DEFAULT 1,
@@ -115,9 +122,36 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
-/** 建表（幂等）。返回当前 schema 版本。 */
-export function applySchema(db: { exec(sql: string): void }): number {
+/**
+ * v1 之后新增的列。`CREATE TABLE IF NOT EXISTS` 对已存在的库是空操作，
+ * 所以老库必须显式补列 —— 否则升级后的代码会对着 v1 的表查不存在的字段。
+ */
+const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
+  { table: "sessions", column: "token_exp_granted", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "needs_input_since", ddl: "TEXT" },
+  { table: "sessions", column: "needs_input_kind", ddl: "TEXT" },
+];
+
+interface MigrateDb {
+  exec(sql: string): void;
+  prepare?(sql: string): { all(...params: unknown[]): unknown[] };
+}
+
+/** 幂等补列：读 table_info 而不是 catch 异常，避免把真实错误也吞掉。 */
+function addMissingColumns(db: MigrateDb): void {
+  if (typeof db.prepare !== "function") return; // 测试里的假 db 只有 exec
+  for (const { table, column, ddl } of ADDED_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (cols.length === 0) continue; // 表不存在（不该发生，建表在前）
+    if (cols.some((c) => c.name === column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+/** 建表 + 补列（幂等）。返回当前 schema 版本。 */
+export function applySchema(db: MigrateDb): number {
   db.exec(SCHEMA_SQL);
+  addMissingColumns(db);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   return SCHEMA_VERSION;
 }
