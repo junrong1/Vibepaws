@@ -2,7 +2,7 @@
  * Vibepaws UI 应用逻辑 — 壳零业务逻辑：状态/气泡/浮层数据全部来自 Core（SSE）。
  * 文案全部走 i18n（issue #3 / #6）：不在本文件里写死任何一句人类可读文本。
  */
-import { getPet, renderPet } from "./pets.js";
+import { renderZaniPet } from "./pets.js";
 // 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
 import { t as translate, normalizeLocale } from "/i18n.js";
 
@@ -206,8 +206,7 @@ function stopPetLoop() {
 }
 
 function drawPetFrame(now) {
-  const pet = getPet(state.pet?.pet_type_id ?? 1);
-  renderPet($("pet"), pet, state.pet?.state ?? "idle", 10, now);
+  renderZaniPet($("pet"), state.pet?.state ?? "idle", now);
 }
 
 // 窗口被藏起来（托盘开关）时别继续烧 CPU —— backgroundThrottling 是关掉的，
@@ -876,7 +875,3 @@ applyStaticI18n();
 renderConn();
 startPetLoop();
 connectCore();
-// 宠物动画循环只启动一次（renderPetFrame 内部会自续帧）；
-// 不能放在 render() 里 —— render() 每次 SSE/轮询都会调用，会把 rAF 循环越堆越多，
-// 导致渲染进程 CPU 打满、气泡无法及时弹出（issue：其他窗口 ask 无通知）。
-renderPetFrame();
