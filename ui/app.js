@@ -39,7 +39,7 @@ const STICKY_TYPES = new Set(["decision", "permission"]);
 const state = {
   pet: null,
   sessions: [],
-  mute: { global_until: null },
+  mute: { global_until: null, global_minutes: null },
   /** 事件流是否活着 —— 气泡只从这条流来，它断了就等于提醒功能死了 */
   streamOk: null,
   /** 5s 轮询是否活着 —— 只能证明 session 列表新鲜，证明不了气泡还会来 */
@@ -123,7 +123,7 @@ function applyPush(push) {
   if (!push || typeof push !== "object") return;
   state.pet = push.pet ?? state.pet;
   state.sessions = Array.isArray(push.sessions) ? push.sessions : [];
-  state.mute = push.mute ?? { global_until: null };
+  state.mute = push.mute ?? { global_until: null, global_minutes: null };
   render();
   reconcileStickyBubbles();
 }
@@ -241,21 +241,55 @@ function muteRemainingMs() {
   return Math.max(0, until - Date.now());
 }
 
+/** 两个静音按钮：时长 → 元素 id / 文案 key */
+const MUTE_BUTTONS = [
+  { minutes: 30, id: "act-mute", label: "ui.btn.mute30", title: "ui.action.mute30" },
+  { minutes: 120, id: "act-mute2h", label: "ui.btn.mute2h", title: "ui.action.mute2h" },
+];
+
+/**
+ * 哪个按钮是「开着的」。以 Core 记下的时长为准；老数据没这个字段时按剩余时间猜
+ * （只在 2 小时静音的最后半小时会猜错，且下一次静音就会自愈）。
+ */
+function activeMuteMinutes(remaining) {
+  if (remaining <= 0) return null;
+  const chosen = Number(state.mute?.global_minutes ?? 0);
+  if (MUTE_BUTTONS.some((b) => b.minutes === chosen)) return chosen;
+  return remaining > 30 * 60_000 ? 120 : 30;
+}
+
+/**
+ * 静音是一个「选中了哪个时长」的状态，所以按钮就是单选组：选中的那个高亮，
+ * 再点一次取消；另一个保持常态（点它就换成那个时长）。
+ *
+ * 两个职责分开，这一点很要紧：
+ *   · 按钮标签 = 你选的时长，永远不变（点了 2h 就一直写着 2h）；
+ *   · 剩余时间只出现在宠物脚边的徽章和 tooltip 里。
+ * 把倒计时塞进标签里的话，它必然与你刚选的时长矛盾 —— 点完「2h」立刻变成「1h」，
+ * 看上去就是个 bug。而「🔔 On」那种写法更糟：既能读成「静音开着」，
+ * 也能读成「点它把通知打开」。
+ */
 function renderMute() {
   const remaining = muteRemainingMs();
-  const badge = $("mute-badge");
   const muted = remaining > 0;
+  const activeMinutes = activeMuteMinutes(remaining);
+  const time = fmtDuration(remaining);
+
+  const badge = $("mute-badge");
   badge.hidden = !muted;
   if (muted) {
-    badge.textContent = t("ui.badge.muted", { time: fmtDuration(remaining) });
-    badge.title = t("ui.mute.remaining", { time: fmtDuration(remaining) });
+    badge.textContent = t("ui.badge.muted", { time });
+    badge.title = t("ui.mute.remaining", { time });
   }
-  // 按钮自己就是状态：静音中时第一个按钮变成「恢复」，再点一次即解除
-  const mute30 = $("act-mute");
-  mute30.classList.toggle("active", muted);
-  mute30.textContent = muted ? t("ui.btn.unmute") : t("ui.btn.mute30");
-  mute30.title = muted ? t("ui.action.unmute", { time: fmtDuration(remaining) }) : t("ui.action.mute30");
-  $("act-mute2h").classList.toggle("active", muted);
+
+  for (const btn of MUTE_BUTTONS) {
+    const el = $(btn.id);
+    const on = btn.minutes === activeMinutes;
+    el.classList.toggle("active", on);
+    el.setAttribute("aria-pressed", String(on));
+    el.textContent = t(btn.label);
+    el.title = on ? t("ui.action.unmute", { time }) : t(btn.title);
+  }
 }
 
 /* ---------------- 气泡 ---------------- */
@@ -599,16 +633,19 @@ document.addEventListener("keydown", (e) => {
 
 $("panel-close").onclick = closePanel;
 $("mute-badge").onclick = () => setMute(null);
-$("act-mute").onclick = () => (muteRemainingMs() > 0 ? setMute(null) : setMute(30));
-$("act-mute2h").onclick = () => setMute(120);
 $("act-exp").onclick = () => loadExpLog();
+// 单选组：点已经开着的那个 = 取消静音；点另一个 = 换成那个时长
+for (const btn of MUTE_BUTTONS) {
+  $(btn.id).onclick = () =>
+    setMute(activeMuteMinutes(muteRemainingMs()) === btn.minutes ? null : btn.minutes);
+}
 
 /**
  * 静音开关。以前这里是「发出去就当成功」：Core 不在的时候照样弹「已安静 30 分钟」，
  * 而气泡还会继续来 —— 界面在撒谎。现在按响应说话，并用响应里的状态立刻回填按钮。
  */
 async function setMute(minutes) {
-  const buttons = [$("act-mute"), $("act-mute2h")];
+  const buttons = MUTE_BUTTONS.map((b) => $(b.id));
   for (const b of buttons) b.disabled = true;
   const res = minutes === null
     ? await postAction("unmute")
@@ -618,7 +655,7 @@ async function setMute(minutes) {
     flash(t("ui.toast.actionfailed"), { error: true });
     return;
   }
-  state.mute = { global_until: res.global_until ?? null };
+  state.mute = { global_until: res.global_until ?? null, global_minutes: res.global_minutes ?? null };
   renderMute();
   if (minutes === null) flash(t("ui.toast.unmuted"));
   else flash(t(minutes >= 120 ? "ui.toast.muted2h" : "ui.toast.muted30"));
@@ -787,11 +824,20 @@ function fmtTime(iso) {
   if (diff < 86_400_000) return fmtDuration(diff);
   return d.toLocaleDateString(LOCALE);
 }
-/** 时长本地化：以前直接拼 "5m"/"3h"，中文界面里就混出了英文单位（issue #6） */
+/**
+ * 时长本地化：以前直接拼 "5m"/"3h"，中文界面里就混出了英文单位（issue #6）。
+ *
+ * 整小时之外要把分钟也说出来（"1h59m"）。只报小时的话，round 会把剩 90 分钟
+ * 说成 "2h"（多报半小时），floor 会把刚点下的 2 小时说成 "1h"（少报一小时，
+ * 看着就是个 bug）—— 一个数字承担不了两小时的精度。
+ */
 function fmtDuration(ms) {
   if (ms < 60_000) return t("ui.time.seconds", { n: Math.max(1, Math.round(ms / 1000)) });
-  if (ms < 3_600_000) return t("ui.time.minutes", { n: Math.round(ms / 60_000) });
-  return t("ui.time.hours", { n: Math.round(ms / 3_600_000) });
+  const totalMinutes = Math.round(ms / 60_000);
+  if (totalMinutes < 60) return t("ui.time.minutes", { n: totalMinutes });
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return m === 0 ? t("ui.time.hours", { n: h }) : t("ui.time.hoursminutes", { h, m });
 }
 
 applyStaticI18n();

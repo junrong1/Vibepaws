@@ -49,6 +49,11 @@ function render(text: I18nText): string {
 
 const DEDUP_MS = 60_000; // 同 session 同类型 60s 合并
 const MUTE_GLOBAL_KEY = "mute.global";
+/**
+ * 用户当初选的时长（分钟）。只存截止时刻是不够的：界面要把「哪个按钮是开着的」
+ * 标出来，而从剩余时间反推会在 2 小时静音的最后半小时把 30 分钟那个按钮点亮。
+ */
+const MUTE_GLOBAL_MINUTES_KEY = "mute.global.minutes";
 const MUTE_PROJECT_PREFIX = "mute.project.";
 const MUTE_SESSION_PREFIX = "mute.session.";
 
@@ -289,6 +294,7 @@ export class NotificationEngine {
   // ---- 对外 mute 操作（浮层调用） ----
   muteGlobal(minutes: number): void {
     setSetting(this.db, MUTE_GLOBAL_KEY, until(minutes));
+    setSetting(this.db, MUTE_GLOBAL_MINUTES_KEY, String(Math.round(minutes)));
   }
   muteProject(projectId: string, minutes: number): void {
     setSetting(this.db, MUTE_PROJECT_PREFIX + projectId, until(minutes));
@@ -299,6 +305,7 @@ export class NotificationEngine {
   /** 取消静音（issue #7：静音是状态，用户必须能自己解除） */
   unmuteGlobal(): void {
     deleteSetting(this.db, MUTE_GLOBAL_KEY);
+    deleteSetting(this.db, MUTE_GLOBAL_MINUTES_KEY);
   }
   unmuteProject(projectId: string): void {
     deleteSetting(this.db, MUTE_PROJECT_PREFIX + projectId);
@@ -311,7 +318,13 @@ export class NotificationEngine {
    * 当前静音状态（进 pet_state 推送）—— 界面要能显示「还剩多久」并原地取消。
    * 返回毫秒时间戳；已过期视为未静音，并顺手把过期的 key 清掉。
    */
-  muteStatus(): { global_until: number | null; projects: string[]; sessions: string[] } {
+  muteStatus(): {
+    global_until: number | null;
+    /** 用户当初选的时长（分钟）—— 界面据此点亮对应的那个按钮 */
+    global_minutes: number | null;
+    projects: string[];
+    sessions: string[];
+  } {
     const rows = this.db
       .prepare("SELECT key, value FROM settings WHERE key = ? OR key LIKE ? OR key LIKE ?")
       .all(MUTE_GLOBAL_KEY, `${MUTE_PROJECT_PREFIX}%`, `${MUTE_SESSION_PREFIX}%`) as Array<{
@@ -324,13 +337,20 @@ export class NotificationEngine {
     for (const { key, value } of rows) {
       if (isExpired(value)) {
         deleteSetting(this.db, key);
+        if (key === MUTE_GLOBAL_KEY) deleteSetting(this.db, MUTE_GLOBAL_MINUTES_KEY);
         continue;
       }
       if (key === MUTE_GLOBAL_KEY) globalUntil = Number(value);
       else if (key.startsWith(MUTE_PROJECT_PREFIX)) projects.push(key.slice(MUTE_PROJECT_PREFIX.length));
       else if (key.startsWith(MUTE_SESSION_PREFIX)) sessions.push(key.slice(MUTE_SESSION_PREFIX.length));
     }
-    return { global_until: globalUntil, projects, sessions };
+    const rawMinutes = globalUntil === null ? null : Number(getSetting(this.db, MUTE_GLOBAL_MINUTES_KEY));
+    return {
+      global_until: globalUntil,
+      global_minutes: rawMinutes !== null && Number.isFinite(rawMinutes) && rawMinutes > 0 ? rawMinutes : null,
+      projects,
+      sessions,
+    };
   }
   dismiss(notificationId: number): void {
     this.db.prepare("UPDATE notifications SET status='dismissed' WHERE id=?").run(notificationId);

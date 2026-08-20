@@ -352,7 +352,9 @@ export class VibepawsServer {
         next_level_exp: pet.next_level_exp,
       },
       sessions,
-      mute: { global_until: this.notifications.muteStatus().global_until },
+      mute: (({ global_until, global_minutes }) => ({ global_until, global_minutes }))(
+        this.notifications.muteStatus(),
+      ),
       needs_you: sessions.filter((s) => s.is_active && s.state === "needs-you"),
       warning: sessions.filter((s) => s.is_active && s.state === "warning"),
       working: sessions.filter((s) => s.is_active && s.state === "working"),

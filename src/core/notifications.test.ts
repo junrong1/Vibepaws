@@ -202,3 +202,21 @@ test("session_finished 之后清掉该 session 的去重/闩锁记录", () => {
     "新一轮（resume 同一 session_id）不该被上一轮的去重记录压住",
   );
 });
+
+test("muteStatus 记住用户选的时长（界面据此点亮对应按钮）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  n.muteGlobal(120);
+  assert.equal(n.muteStatus().global_minutes, 120, "剩余时间反推会在最后半小时点错按钮");
+  n.muteGlobal(30);
+  assert.equal(n.muteStatus().global_minutes, 30, "换时长要覆盖");
+  n.unmuteGlobal();
+  assert.equal(n.muteStatus().global_minutes, null);
+  // 过期的静音连时长一起清掉
+  n.muteGlobal(30);
+  db.prepare("UPDATE settings SET value=? WHERE key='mute.global'").run(String(Date.now() - 1000));
+  assert.deepEqual(
+    [n.muteStatus().global_until, n.muteStatus().global_minutes],
+    [null, null],
+  );
+});
