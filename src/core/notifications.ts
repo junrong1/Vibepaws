@@ -9,7 +9,7 @@
 import type Database from "better-sqlite3";
 import type { CoreEvent } from "./events.ts";
 import { projectShortName } from "./registry.ts";
-import { getSetting, setSetting } from "./settings.ts";
+import { getSetting, setSetting, deleteSetting } from "./settings.ts";
 import { t, DEFAULT_LOCALE } from "../i18n/messages.js";
 
 /** 文案定位：渲染层用它出字，Core 用它渲染英文落库。 */
@@ -35,6 +35,12 @@ export interface Notification {
 /** 判定结果：只带 key/params，title/body 在落库前统一渲染成英文 */
 type Draft = Omit<Notification, "status" | "shown_at" | "title" | "body"> & {
   i18n: { title: I18nText; body: I18nText };
+  /**
+   * 阈值闩锁的**待提交**项。必须等 persist() 真的把气泡发出去才记账 ——
+   * 写在判定阶段的话，被 mute 或 60s 去重丢掉的那一档也会被记成「已经报过」，
+   * 于是 72%→88%→96% 连着来时只出一条 72%，更高的两档永远不再出声。
+   */
+  latch?: { key: string; tier: number };
 };
 
 function render(text: I18nText): string {
@@ -51,18 +57,35 @@ export const CONTEXT_WARN_PCTS = [70, 85, 95] as const;
 /** token 里程碑（README 6.3 usage 提醒） */
 export const TOKEN_MILESTONES = [0.25, 0.5, 0.75, 0.9] as const;
 
+export interface NotificationOptions {
+  /** 去重窗口（毫秒）。测试里设 0 才能单独验证阈值闩锁的行为。 */
+  dedupMs?: number;
+}
+
 export class NotificationEngine {
   private db: Database.Database;
+  private dedupMs: number;
   /** 由 server 注入的事件分发链（先 registry 后 exp） */
   onEvent: (ev: CoreEvent) => void = () => {};
   private lastShown = new Map<string, number>();
+  /**
+   * 阈值闩锁：记住每个 session 已经报到过的最高档位。
+   *
+   * 没有它的时候，`find()` 命中的是**最低**一档，而且每条事件都会重新命中：
+   * context 一旦过 70%，之后每 60s（去重窗口）就复读一次同样的警告，直到
+   * session 结束 —— token 里程碑同理。这正是用户会去点「全部安静」的原因
+   * （issue #7）。现在只有跨进**更高**一档才出声，回落到最低档以下则重新武装。
+   */
+  private latched = new Map<string, number>();
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, opts: NotificationOptions = {}) {
     this.db = db;
+    this.dedupMs = opts.dedupMs ?? DEDUP_MS;
   }
 
   /** 事件 → 通知判定（幂等：同一事件只判一次，用 events 表保证） */
   getForEvent(ev: CoreEvent): Notification | null {
+    if (ev.event_type === "session_finished") this.forgetSession(ev.agent, ev.session_id);
     const n = this.evaluate(ev);
     if (!n) return null;
     return this.persist(n);
@@ -102,13 +125,16 @@ export class NotificationEngine {
         };
       }
       case "context_update": {
-        const pct = ev.payload.context_pct ?? 0;
-        const hit = CONTEXT_WARN_PCTS.find((threshold) => pct >= threshold);
-        if (hit === undefined) return null;
+        const pct = ev.payload.context_pct;
+        // 没带读数的事件不是「回落」，不能动闩锁（否则下一条同档警告又会重新出声）
+        if (typeof pct !== "number") return null;
+        const latch = this.pendingThreshold("context", ev, pct, CONTEXT_WARN_PCTS);
+        if (!latch) return null;
         const severity = pct >= 95 ? "critical" : pct >= 85 ? "high" : "warn";
         return {
           ...base,
           type: "context",
+          latch,
           i18n: {
             title: { key: "notif.context.title", params: { pct: Math.round(pct) } },
             body: { key: `notif.context.body.${severity}` },
@@ -134,15 +160,19 @@ export class NotificationEngine {
         };
       }
       case "token_update": {
-        const tokens = ev.payload.tokens ?? 0;
+        const tokens = ev.payload.tokens;
+        // Claude Code 的 PostToolUse 多数不带 tokens（见 adapters/hook_agent.ts）——
+        // 把缺失当成 0 会清掉闩锁，于是 25% 里程碑每分钟复读一次，正是 issue #7 的老毛病
+        if (typeof tokens !== "number") return null;
         const budget = this.getBudget(ev.agent, ev.session_id);
         if (budget <= 0) return null;
         const ratio = tokens / budget;
-        const hit = TOKEN_MILESTONES.find((m) => ratio >= m);
-        if (hit === undefined) return null;
+        const latch = this.pendingThreshold("budget", ev, ratio, TOKEN_MILESTONES);
+        if (!latch) return null;
         return {
           ...base,
           type: "milestone",
+          latch,
           i18n: {
             title: { key: "notif.milestone.title", params: { pct: Math.round(ratio * 100) } },
             body: {
@@ -157,10 +187,42 @@ export class NotificationEngine {
     }
   }
 
+  /**
+   * 只在跨进「更高一档」时返回该档位（**不**落闩锁，交给 persist 成功后提交）。
+   * 值回落到最低档以下（compact / clear / 新 session）→ 立刻清掉闩锁重新武装。
+   */
+  private pendingThreshold(
+    kind: "context" | "budget",
+    ev: CoreEvent,
+    value: number,
+    thresholds: readonly number[],
+  ): { key: string; tier: number } | null {
+    const key = `${kind}:${ev.agent}:${ev.session_id}`;
+    // 从高到低找：0 → 96% 该报 95 那一档，而不是 70 那一档
+    const hit = [...thresholds].reverse().find((threshold) => value >= threshold);
+    if (hit === undefined) {
+      this.latched.delete(key);
+      return null;
+    }
+    if (hit <= (this.latched.get(key) ?? 0)) return null;
+    return { key, tier: hit };
+  }
+
+  /** session 结束：清掉它的去重/闩锁记录，别让长期运行的 Core 无限攒 key */
+  private forgetSession(agent: string, sessionId: string): void {
+    for (const key of [...this.latched.keys()]) {
+      if (key.endsWith(`:${agent}:${sessionId}`)) this.latched.delete(key);
+    }
+    for (const key of [...this.lastShown.keys()]) {
+      if (key.startsWith(`${agent}:${sessionId}:`)) this.lastShown.delete(key);
+    }
+  }
+
   /** 去重 + mute + 落库 */
   private persist(draft: Draft): Notification | null {
     // 落库与兜底用英文渲染；用户看到的语言由渲染层按 i18n 决定
-    const n = { ...draft, title: render(draft.i18n.title), body: render(draft.i18n.body) };
+    const { latch, ...rest } = draft;
+    const n = { ...rest, title: render(draft.i18n.title), body: render(draft.i18n.body) };
     // mute 检查
     const muted = this.isMuted(n.session_id, n.type);
     if (muted) {
@@ -172,12 +234,16 @@ export class NotificationEngine {
         .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, new Date().toISOString());
       return null;
     }
-    // 去重：同 session 同类型 60s
+    // 去重：同 session 同类型 60s。**升档除外** —— 去重是为了压住「同一件事重复说」，
+    // 而 70%→95% 是完全不同的一件事（「留意一下」变成「赶紧收尾」）。闩锁保证每档
+    // 最多说一次，所以放行升档不会变成骚扰；界面那边同 key 的气泡会原地更新文字。
     const key = `${n.agent}:${n.session_id}:${n.type}`;
     const now = Date.now();
     const last = this.lastShown.get(key) ?? 0;
-    if (now - last < DEDUP_MS) return null;
+    if (!latch && now - last < this.dedupMs) return null;
     this.lastShown.set(key, now);
+    // 真的发出去了才记「这一档已经报过」
+    if (latch) this.latched.set(latch.key, latch.tier);
 
     const shownAt = new Date().toISOString();
     const info = this.db
@@ -230,6 +296,42 @@ export class NotificationEngine {
   muteSession(sessionId: string, minutes: number): void {
     setSetting(this.db, MUTE_SESSION_PREFIX + sessionId, until(minutes));
   }
+  /** 取消静音（issue #7：静音是状态，用户必须能自己解除） */
+  unmuteGlobal(): void {
+    deleteSetting(this.db, MUTE_GLOBAL_KEY);
+  }
+  unmuteProject(projectId: string): void {
+    deleteSetting(this.db, MUTE_PROJECT_PREFIX + projectId);
+  }
+  unmuteSession(sessionId: string): void {
+    deleteSetting(this.db, MUTE_SESSION_PREFIX + sessionId);
+  }
+
+  /**
+   * 当前静音状态（进 pet_state 推送）—— 界面要能显示「还剩多久」并原地取消。
+   * 返回毫秒时间戳；已过期视为未静音，并顺手把过期的 key 清掉。
+   */
+  muteStatus(): { global_until: number | null; projects: string[]; sessions: string[] } {
+    const rows = this.db
+      .prepare("SELECT key, value FROM settings WHERE key = ? OR key LIKE ? OR key LIKE ?")
+      .all(MUTE_GLOBAL_KEY, `${MUTE_PROJECT_PREFIX}%`, `${MUTE_SESSION_PREFIX}%`) as Array<{
+      key: string;
+      value: string;
+    }>;
+    let globalUntil: number | null = null;
+    const projects: string[] = [];
+    const sessions: string[] = [];
+    for (const { key, value } of rows) {
+      if (isExpired(value)) {
+        deleteSetting(this.db, key);
+        continue;
+      }
+      if (key === MUTE_GLOBAL_KEY) globalUntil = Number(value);
+      else if (key.startsWith(MUTE_PROJECT_PREFIX)) projects.push(key.slice(MUTE_PROJECT_PREFIX.length));
+      else if (key.startsWith(MUTE_SESSION_PREFIX)) sessions.push(key.slice(MUTE_SESSION_PREFIX.length));
+    }
+    return { global_until: globalUntil, projects, sessions };
+  }
   dismiss(notificationId: number): void {
     this.db.prepare("UPDATE notifications SET status='dismissed' WHERE id=?").run(notificationId);
   }
@@ -262,9 +364,13 @@ export function shortAgent(agent: string): string {
 function until(minutes: number): string {
   return String(Date.now() + minutes * 60_000);
 }
+/**
+ * 静音是否已到期。解析不出数字的值（脏数据、手改过的 settings）算**已过期** ——
+ * 反过来写会让一个坏值把通知永久静音，而界面上看不出任何原因。
+ */
 function isExpired(v: string): boolean {
   const t = Number(v);
-  return Number.isFinite(t) && t < Date.now();
+  return !Number.isFinite(t) || t <= Date.now();
 }
 
 export { projectShortName };

@@ -17,6 +17,10 @@ export function setSetting(db: Database.Database, key: string, value: string): v
   ).run(key, value);
 }
 
+export function deleteSetting(db: Database.Database, key: string): void {
+  db.prepare("DELETE FROM settings WHERE key = ?").run(key);
+}
+
 /** 获取或生成 API token（安装时写入，防本机其他进程伪造事件） */
 export function getApiToken(db: Database.Database): string {
   const existing = getSetting(db, "api_token");
