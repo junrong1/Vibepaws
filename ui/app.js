@@ -2,7 +2,9 @@
  * Vibepaws UI 应用逻辑 — 壳零业务逻辑：状态/气泡/浮层数据全部来自 Core（SSE）。
  * 文案全部走 i18n（issue #3 / #6）：不在本文件里写死任何一句人类可读文本。
  */
-import { getPet, renderPet } from "./pets.js";
+import { drawPet } from "./pets/render.js";
+import * as petRegistry from "./pets/registry.js";
+import { BLEND_MS, MOTION } from "./pets/motion.js";
 // 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
 import { t as translate, normalizeLocale } from "/i18n.js";
 
@@ -25,6 +27,16 @@ function applyStaticI18n() {
     el.setAttribute("aria-label", t(el.dataset.i18nAria));
   }
 }
+
+/**
+ * 只给调试用的状态覆写：?petstate=warning 之类。7 个状态里有几个（tired / level-up）
+ * 靠模拟器很难稳定复现，改一次动作就得等半天 —— 视觉验收需要能直接点到。
+ * 值不在配方表里就当没写，绝不让一个拼错的参数把宠物卡在空状态。
+ */
+const PET_STATE_OVERRIDE = (() => {
+  const v = new URLSearchParams(location.search).get("petstate");
+  return v && Object.hasOwn(MOTION, v) ? v : null;
+})();
 
 /** 壳（Electron preload 暴露的桥）；纯浏览器里为 null */
 const shell = window.vibepaws ?? null;
@@ -209,9 +221,57 @@ function stopPetLoop() {
   frameHandle = null;
 }
 
+/** 放一遍就该停的动作。Core 会把 finished 推 60s、level-up 推 5s，但庆祝不该一直放。 */
+const ONE_SHOT = new Set(["finished", "level-up"]);
+
+/** 当前动作：state 从哪一刻开始（用于相位与一次性动作计时） */
+let cur = { state: "idle", since: 0, done: false };
+/** 上一个动作，只在插值窗口内存在 */
+let prevAnim = null;
+let blendStart = 0;
+/** 已经放完的一次性动作：Core 还在推同一个状态，但不该再放一遍 */
+let consumed = null;
+
+function petStateNow() {
+  const raw = PET_STATE_OVERRIDE ?? state.pet?.state ?? "idle";
+  if (ONE_SHOT.has(raw)) {
+    if (consumed === raw) return "idle"; // 放完了，安静下来
+  } else {
+    consumed = null; // 离开了一次性状态，下次再进来可以重放
+  }
+  return raw;
+}
+
 function drawPetFrame(now) {
-  const pet = getPet(state.pet?.pet_type_id ?? 1);
-  renderPet($("pet"), pet, state.pet?.state ?? "idle", 10, now);
+  // 还没收到任何状态：清空而不是先画一只**别的**宠物。pollState() 是立刻发的，
+  // 这段空白只有几毫秒，而画错宠物再换过来是看得见的。
+  const petTypeId = state.pet?.pet_type_id;
+  if (petTypeId == null) {
+    const c = $("pet");
+    c.getContext("2d").clearRect(0, 0, c.width, c.height);
+    return;
+  }
+
+  const want = petStateNow();
+  if (want !== cur.state) {
+    prevAnim = { state: cur.state, since: cur.since };
+    blendStart = now;
+    cur = { state: want, since: now, done: false };
+  }
+  const blend = prevAnim ? Math.min(1, (now - blendStart) / BLEND_MS) : 1;
+
+  const { done } = drawPet($("pet"), petTypeId, {
+    state: cur.state,
+    elapsed: now - cur.since,
+    prev: prevAnim ? { state: prevAnim.state, elapsed: now - prevAnim.since } : null,
+    blend,
+  });
+
+  if (blend >= 1) prevAnim = null;
+  if (done && !cur.done) {
+    cur.done = true;
+    if (ONE_SHOT.has(cur.state)) consumed = cur.state;
+  }
 }
 
 // 窗口被藏起来（托盘开关）时别继续烧 CPU —— backgroundThrottling 是关掉的，
@@ -890,9 +950,10 @@ function fmtDuration(ms) {
 
 applyStaticI18n();
 renderConn();
-startPetLoop();
-connectCore();
-// 宠物动画循环只启动一次（renderPetFrame 内部会自续帧）；
+// 宠物动画循环只启动一次（startPetLoop 内部会自续帧）；
 // 不能放在 render() 里 —— render() 每次 SSE/轮询都会调用，会把 rAF 循环越堆越多，
 // 导致渲染进程 CPU 打满、气泡无法及时弹出（issue：其他窗口 ask 无通知）。
-renderPetFrame();
+// 先把素材清单读进来：preload() 内部吞掉所有错误（失败就全员走程序生成兜底），
+// 所以这里不需要 catch，也不会因为素材层挂了而不启动循环。
+petRegistry.preload().then(startPetLoop);
+connectCore();

@@ -5,3 +5,5 @@ node_modules/
 ui/node_modules/
 dist/
 .DS_Store
+output/
+__pycache__/
