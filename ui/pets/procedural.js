@@ -1,7 +1,12 @@
 /**
- * Vibepaws 宠物 sprite 包（数据驱动）— ui/ 纯静态，浏览器直接加载。
- * 程序化生成 16×16 像素宠物：椭圆身体 + 耳朵 + 眼睛/嘴表情 + 装饰。
- * 7 状态 = 表情变体（normal/alert/sad/star/closed/angry）+ 动画变换（app.js）。
+ * 程序生成的宠物 —— 现在是**兜底**渲染路径。
+ *
+ * 正式素材走 ui/pets/index.json + PNG（见 ui/pets/registry.js）。这里保留下来是为了
+ * 两件事：① 老库里已经分配了 pet_type 1~6 的用户，宠物照样画得出来；② 素材缺失
+ * 或解码失败时，界面显示的是一只宠物，而不是一扇空窗。
+ *
+ * 椭圆身体 + 耳朵 + 眼睛/嘴表情 + 装饰，16×16。表情这条通道只有程序生成的宠物
+ * 才有 —— PNG 只有一张脸，所以正式素材靠动作和特效区分状态（ui/pets/motion.js）。
  */
 
 export const PET_COLORS = {
@@ -169,10 +174,10 @@ export const EVOLUTIONS = [
 ];
 
 /**
- * 按 pet_type_id 取宠物。返回的对象必须是稳定引用（渲染缓存按 id 建键）。
+ * 按 pet_type_id 取程序生成的宠物。返回的对象必须是稳定引用（渲染缓存按 id 建键）。
  * 未知 id 回落到 1 号，而不是凭空显示一只进化体 —— 后者会让「我进化了？」变成误会。
  */
-export function getPet(petTypeId) {
+export function getProceduralPet(petTypeId) {
   return (
     PETS.find((x) => x.id === petTypeId) ??
     EVOLUTIONS.find((x) => x.id === petTypeId) ??
@@ -197,36 +202,26 @@ function petGrid(pet, expr) {
   return grid;
 }
 
-export function renderPet(canvas, pet, state, scale = 10, t = 0) {
+/** 程序宠物的名义尺寸：16 × SCALE = 160，和 build_assets.py 烘出来的 PNG 同高 */
+export const PROCEDURAL_SCALE = 10;
+export const PROCEDURAL_SIZE = 16 * PROCEDURAL_SCALE;
+
+/**
+ * 把宠物画到 (x, y)（左上角）。
+ *
+ * 这里**只画**，不碰 canvas 尺寸也不做动画变换 —— 位移/缩放/旋转和一次性动作
+ * 全部归 ui/pets/render.js 管，两条渲染路径（PNG 与程序生成）因此共用同一套动作。
+ * 旧实现把这些混在一起，导致每来一次 pet_state 就多出一条 rAF 循环。
+ */
+export function drawProcedural(ctx, pet, state, x, y, scale = PROCEDURAL_SCALE) {
   const expr = pet.stateExpr[state] ?? "normal";
   const grid = petGrid(pet, expr);
-  const ctx = canvas.getContext("2d");
-  const W = 16, H = 16;
-  // 给 canvas.width 赋值会重建整个后备缓冲区，每帧做一次纯属浪费
-  if (canvas.width !== W * scale) canvas.width = W * scale;
-  if (canvas.height !== H * scale) canvas.height = H * scale;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.imageSmoothingEnabled = false;
-
-  // 动画变换
-  let ox = 0, oy = 0, rot = 0;
-  if (state === "idle") oy = Math.sin(t / 500) * scale * 0.6;
-  else if (state === "working") oy = Math.sin(t / 120) * scale * 0.9;
-  else if (state === "needs-you") ox = Math.sin(t / 90) * scale * 0.8;
-  else if (state === "warning") { ox = Math.sin(t / 60) * scale * 1.2; rot = Math.sin(t / 60) * 0.06; }
-  else if (state === "level-up") { oy = -Math.abs(Math.sin(t / 400)) * scale * 2.5; }
-
-  ctx.save();
-  ctx.translate(canvas.width / 2 + ox, canvas.height / 2 + oy);
-  ctx.rotate(rot);
-  ctx.translate(-(W * scale) / 2, -(H * scale) / 2);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const c = grid[y][x];
+  for (let gy = 0; gy < 16; gy++) {
+    for (let gx = 0; gx < 16; gx++) {
+      const c = grid[gy][gx];
       if (!c) continue;
       ctx.fillStyle = c;
-      ctx.fillRect(x * scale, y * scale, scale, scale);
+      ctx.fillRect(x + gx * scale, y + gy * scale, scale, scale);
     }
   }
-  ctx.restore();
 }

@@ -1,0 +1,10 @@
+{
+  "_comment": "Hand-authored build input for scripts/build_assets.py. Dev-only: not shipped, not read at runtime. The generated ui/pets/index.json is the runtime source of truth. ids 1-6 are the retired procedural pets, 10-12 the evolution family; the PNG roster starts at 20.",
+  "pets": [
+    { "id": 20, "slug": "embercub",     "name": "Embercub",     "rarity": "common",   "starter": true, "src": "01-embercub-fire.png" },
+    { "id": 21, "slug": "lunafang",     "name": "Lunafang",     "rarity": "uncommon", "starter": true, "src": "02-lunafang-moon-kitsune.png" },
+    { "id": 22, "slug": "sporewick",    "name": "Sporewick",    "rarity": "common",   "starter": true, "src": "04-sporewick-mushroom-mage.png" },
+    { "id": 23, "slug": "voltroc",      "name": "Voltroc",      "rarity": "uncommon", "starter": true, "src": "22-voltroc-thunderbird-chick.png" },
+    { "id": 24, "slug": "circuit-witch","name": "Circuit Witch","rarity": "rare",     "starter": true, "src": "29-circuit-witch.png" }
+  ]
+}

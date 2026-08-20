@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
-import { ExpEngine, contextMultiplier, topicMultiplier, outcomeBonus, levelExpRequired } from "./exp.ts";
+import { ExpEngine, contextMultiplier, topicMultiplier, outcomeBonus, levelExpRequired, rarityWeight } from "./exp.ts";
 import type { CoreEvent } from "./events.ts";
 
 function makeDb(): Database.Database {
@@ -157,4 +157,41 @@ test("用户给宠物起的名字优先于物种名", () => {
   const exp = new ExpEngine(db);
   db.prepare("UPDATE pets SET name='Mochi'").run();
   assert.equal(exp.getPetSnapshot().name, "Mochi");
+});
+
+/* ---------------- starter 抽取（稀有度加权） ---------------- */
+
+test("稀有度权重：越稀有越低", () => {
+  assert.ok(rarityWeight("common") > rarityWeight("uncommon"));
+  assert.ok(rarityWeight("uncommon") > rarityWeight("rare"));
+  assert.equal(rarityWeight("legendary"), rarityWeight("rare"));
+  assert.equal(rarityWeight("没见过的稀有度"), 1); // 未知值不该抽到 0 概率
+});
+
+test("首次启动只会分配到可抽的宠物，且 common 明显更常见", () => {
+  const db = makeDb();
+  const starters = db
+    .prepare("SELECT id, rarity FROM pet_types WHERE starter=1")
+    .all() as Array<{ id: number; rarity: string }>;
+  assert.ok(starters.length > 0, "starter 池是空的");
+  const rarityOf = new Map(starters.map((r) => [r.id, r.rarity]));
+
+  const counts = new Map<number, number>();
+  for (let i = 0; i < 600; i++) {
+    // ensurePet 只在 pets 为空时才抽 —— 清掉就能再抽一次，不必每轮重建库
+    db.exec("DELETE FROM pets");
+    new ExpEngine(db);
+    const row = db.prepare("SELECT pet_type_id FROM pets").get() as { pet_type_id: number };
+    assert.ok(rarityOf.has(row.pet_type_id),
+      `抽到了不可抽的 pet_type ${row.pet_type_id}`);
+    counts.set(row.pet_type_id, (counts.get(row.pet_type_id) ?? 0) + 1);
+  }
+
+  const byRarity = (want: string) =>
+    [...counts.entries()].filter(([id]) => rarityOf.get(id) === want)
+      .reduce((sum, [, n]) => sum + n, 0);
+  // 权重是 common 6 / uncommon 3 / rare 1：600 次里 common 约 380、rare 约 30。
+  // 断言留足余量，不让它变成偶发失败的测试。
+  assert.ok(byRarity("common") > byRarity("rare") * 2,
+    `加权没生效：common=${byRarity("common")} rare=${byRarity("rare")}`);
 });

@@ -36,6 +36,18 @@ const SELF_GROWTH_PER_HOUR = 0.1;
 /** 健康分低于这个值算「累了」：自成长暂停，宠物在闲下来时显示 tired（README 6.4） */
 export const TIRED_HEALTH_THRESHOLD = 0.7;
 
+/** starter 抽取权重：越稀有越难滚到 */
+export const RARITY_WEIGHT: Record<string, number> = {
+  common: 6,
+  uncommon: 3,
+  rare: 1,
+  legendary: 1,
+};
+
+export function rarityWeight(rarity: string): number {
+  return RARITY_WEIGHT[rarity] ?? 1;
+}
+
 export function contextMultiplier(pct: number): number {
   if (pct <= 0) return 1.0; // 未知 context（尚无事件）视为中性
   if (pct < 70) return 1.1;
@@ -69,18 +81,35 @@ export class ExpEngine {
     this.ensurePet();
   }
 
-  /** 方案 A：单宠物。首次启动随机分配 starter pet_type。 */
+  /** 方案 A：单宠物。首次启动按稀有度加权分配一只 starter。 */
   private ensurePet(): void {
     const has = this.db.prepare("SELECT COUNT(*) as c FROM pets").get() as { c: number };
     if ((has.c ?? 0) > 0) return;
-    const starters = this.db
-      .prepare("SELECT id FROM pet_types WHERE starter=1 ORDER BY RANDOM() LIMIT 1")
-      .get() as { id: number } | undefined;
-    const typeId = starters?.id ?? 1;
+    const typeId = this.rollStarter();
     this.db
       .prepare("INSERT INTO pets(pet_type_id, name, state) VALUES(?, NULL, 'idle')")
       .run(typeId);
     console.log(`[vibepaws] ✨ starter pet assigned (pet_type=${typeId})`);
+  }
+
+  /**
+   * 加权抽一只 starter。
+   *
+   * 原来是 `ORDER BY RANDOM() LIMIT 1` —— 那让 legendary 和 common 一样容易滚出来，
+   * 稀有度这一列等于没有意义。
+   */
+  private rollStarter(): number {
+    const rows = this.db
+      .prepare("SELECT id, rarity FROM pet_types WHERE starter=1 ORDER BY id")
+      .all() as Array<{ id: number; rarity: string }>;
+    if (rows.length === 0) return 1; // starter 池为空（素材没构建）：退到 1 号
+    const total = rows.reduce((sum, r) => sum + rarityWeight(r.rarity), 0);
+    let roll = Math.random() * total;
+    for (const r of rows) {
+      roll -= rarityWeight(r.rarity);
+      if (roll < 0) return r.id;
+    }
+    return rows[rows.length - 1]!.id; // 浮点兜底
   }
 
   handle(ev: CoreEvent): void {
