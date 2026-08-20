@@ -208,6 +208,19 @@ function flash(msg) {
 }
 
 /* ---------------- 事件绑定 ---------------- */
+/** 上一次拖拽结束的时刻：拖完松手浏览器还会补一个 click，别让它翻开/关上浮层 */
+let dragEndedAt = 0;
+
+// 捕获阶段拦截：#stage 的 capture 监听早于 #pet 自己的 click 监听。
+// 用时间戳而不是布尔 flag —— 如果松手时光标已在窗口外，click 根本不会来，
+// 布尔 flag 就会一直挂着，把下一次正经点击也吃掉。
+$("stage").addEventListener("click", (e) => {
+  if (performance.now() - dragEndedAt < 250) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+}, true);
+
 $("pet").addEventListener("click", (e) => {
   e.stopPropagation();
   state.panelOpen ? closePanel() : openPanel();
@@ -258,23 +271,74 @@ function localizedOr(key, fallback) {
   return label === key ? fallback : label;
 }
 
-/* ---------------- 拖拽（浏览器里模拟移动；Electron 用 CSS app-region 拖拽） ---------------- */
+/* ---------------- 拖拽（issue #8） ----------------
+ * 旧实现同时跑两套：CSS `-webkit-app-region: drag` 和这里的 JS 拖拽 —— 因为
+ * sandbox 下 `window.process` 恒为 undefined，本该跳过的兜底分支一直在跑。
+ * 两套机制争同一个窗口位置，就是「不跟手 + 多重残影」的来源。现在只剩一套，
+ * 且壳的存在改由 preload 暴露的 window.vibepaws 显式声明，不再靠嗅探。
+ *
+ * 坐标系分工（关键）：
+ *   · 阈值判定用 clientX/Y —— 此刻窗口还没动，窗口内坐标就是可靠的位移量；
+ *   · 一旦开拖，Electron 下位置全部由主进程按光标算（见 desktop/main.js），
+ *     渲染层不再参与；纯浏览器兜底则用 screenX/Y，绝不用 clientX/Y ——
+ *     窗口一动 clientX 跟着变，拿它算位移会形成反馈环，越拖越飘。
+ */
 (function setupDrag() {
-  const isElectron = Boolean(window.process?.versions?.electron);
-  if (isElectron) return; // Electron 由 -webkit-app-region: drag 处理
+  const shell = window.vibepaws ?? null;
   const stage = $("stage");
-  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-  stage.addEventListener("mousedown", (e) => {
-    if (e.target.closest("#panel") || e.target.closest(".bubble")) return;
-    dragging = true;
-    sx = e.clientX; sy = e.clientY;
-    ox = window.screenX || 0; oy = window.screenY || 0;
+  /** 位移小于这个像素数算「点击」，不算拖拽 —— 否则点宠物开浮层会被误判成拖 */
+  const THRESHOLD = 4;
+  let pointerId = null;
+  let clientX0 = 0, clientY0 = 0;   // 按下时的窗口内坐标 —— 只用来判阈值
+  let screenX0 = 0, screenY0 = 0;   // 按下时的屏幕坐标 —— 只给浏览器兜底算位移
+  let winX = 0, winY = 0;
+  let dragging = false;
+
+  // 只监听 #stage：浮层与气泡是它的兄弟节点，各自吃掉自己的 pointerdown，
+  // 不会冒泡到这里，所以不需要额外的 closest() 排除。
+  stage.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || pointerId !== null) return;
+    pointerId = e.pointerId;
+    clientX0 = e.clientX; clientY0 = e.clientY;
+    screenX0 = e.screenX; screenY0 = e.screenY;
+    winX = window.screenX; winY = window.screenY;
+    dragging = false;
+    // 注意：此刻**不**抓 pointer capture。capture 一旦生效，随后的 click 会被
+    // 重定向到 #stage，宠物自己的 click 就再也收不到，浮层点不开了。
   });
-  window.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    window.moveTo?.(ox + e.clientX - sx, oy + e.clientY - sy);
+
+  stage.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== pointerId) return;
+    if (!dragging) {
+      // 阈值判定用 clientX/Y：拖拽还没开始，窗口是静止的，窗口内坐标此刻等价于
+      // 屏幕坐标，而且任何输入源都保证填充它（screenX 在合成事件里可能是 0）。
+      if (Math.abs(e.clientX - clientX0) < THRESHOLD && Math.abs(e.clientY - clientY0) < THRESHOLD) return;
+      dragging = true;
+      // 过了阈值才抓 capture：这样光标移出窗口也收得到 pointerup
+      stage.setPointerCapture(pointerId);
+      document.body.classList.add("dragging");
+      shell?.dragStart();
+    }
+    // Electron 下位置由主进程跟随光标，这里不用再算。
+    // 浏览器兜底才需要自己算，且必须用屏幕坐标：窗口一动 clientX 就跟着变，
+    // 拿它算位移会形成反馈环（旧实现发飘的原因）。
+    if (!shell) window.moveTo?.(winX + e.screenX - screenX0, winY + e.screenY - screenY0);
   });
-  window.addEventListener("mouseup", () => (dragging = false));
+
+  function endDrag(e) {
+    if (pointerId === null || (e && e.pointerId !== pointerId)) return;
+    if (dragging) {
+      shell?.dragEnd();
+      document.body.classList.remove("dragging");
+      dragEndedAt = performance.now();
+    }
+    if (stage.hasPointerCapture?.(pointerId)) stage.releasePointerCapture(pointerId);
+    pointerId = null;
+    dragging = false;
+  }
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("lostpointercapture", endDrag);
 })();
 
 /* ---------------- 工具 ---------------- */

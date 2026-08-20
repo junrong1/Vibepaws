@@ -6,11 +6,11 @@
  * 说明：Tauri v2（架构 D6 首选）待本机 Rust 工具链就绪后替换本壳，
  *       渲染层（ui/）与通信协议（SSE）不变，替换成本仅壳层。
  */
-import { app, BrowserWindow, Tray, Menu, screen, nativeImage } from "electron";
+import { app, BrowserWindow, Tray, Menu, screen, nativeImage, ipcMain } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
 function log(line) {
@@ -43,6 +43,38 @@ let win = null;
 let tray = null;
 let uiServer = null;
 let clickThrough = false;
+
+/* ---------------- 壳偏好（issue #4） ----------------
+ * 只存「窗口怎么摆」这类壳层设定，与 Core 的 settings 表无关：
+ * Core 是守护进程，可能没跑；窗口行为必须在 Core 之前就能决定。
+ *
+ * allSpaces 默认 true：宠物是「活着的伙伴」，你在哪个桌面干活它就该在哪 ——
+ * 尤其是 coding agent 常年跑在全屏 iTerm2 里，那本身就是一个独立 Space，
+ * 钉死在启动那张桌面上等于永远看不见。#4 的真正诉求不是「别跟着我」，
+ * 而是「这件事得归我管」：所以默认跟随 + 托盘里随时可关。 */
+const DEFAULT_PREFS = { allSpaces: true };
+let prefs = { ...DEFAULT_PREFS };
+
+function prefsFile() {
+  return join(app.getPath("userData"), "window-prefs.json");
+}
+
+function loadPrefs() {
+  try {
+    prefs = { ...DEFAULT_PREFS, ...JSON.parse(readFileSync(prefsFile(), "utf8")) };
+  } catch {
+    prefs = { ...DEFAULT_PREFS };
+  }
+}
+
+function savePrefs() {
+  try {
+    mkdirSync(app.getPath("userData"), { recursive: true });
+    writeFileSync(prefsFile(), JSON.stringify(prefs, null, 2));
+  } catch (e) {
+    err(`[vibepaws] 偏好写入失败: ${e}`);
+  }
+}
 
 function repoRoot() {
   // dev 模式：electron desktop/main.js 的 cwd 即仓库根；packaged：资源目录
@@ -177,16 +209,24 @@ function createWindow() {
     x: workArea.x + workArea.width - WIN_W - 24,
     y: workArea.y + workArea.height - WIN_H - 40,
     transparent: true,
+    // 透明窗口显式给一个全透明底色：让合成器每帧都有东西可清，
+    // 而不是复用上一帧的 tile —— 快速拖动时的残影来源之一（issue #8）。
+    backgroundColor: "#00000000",
     frame: false,
     resizable: false,
     hasShadow: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     fullscreenable: false,
-    webPreferences: { backgroundThrottling: false },
+    webPreferences: {
+      backgroundThrottling: false,
+      preload: fileURLToPath(new URL("preload.cjs", import.meta.url)),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
   });
-  win.setAlwaysOnTop(true, "floating");
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  applyWindowLevel();
   // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
   win.loadURL(`http://127.0.0.1:${UI_PORT}/?locale=${encodeURIComponent(LOCALE)}`);
   // 渲染进程 console → 主进程日志（调试用）
@@ -197,6 +237,7 @@ function createWindow() {
     console.error(`[renderer] load failed ${code} ${desc} ${url}`);
   });
   win.on("closed", () => {
+    stopDrag();
     win = null;
   });
   // 诊断：窗口状态与 Canvas 渲染结果
@@ -219,14 +260,80 @@ function createWindow() {
       console.error(`[diag] ${e}`);
     }
   }, 3000);
-  // 保持置顶（防被其他窗口压下去）
-  setInterval(() => {
-    if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, "floating");
-  }, 30_000);
+  // 保持置顶（防被其他窗口压下去）。顺带重申 workspace 行为：
+  // setAlwaysOnTop 会重写窗口的 NSWindow level，之前只重申置顶不重申 workspace，
+  // 两者会渐渐不同步。
+  setInterval(applyWindowLevel, 30_000);
 }
+
+/**
+ * 置顶层级 + Spaces 可见性一起施加（issue #4）。
+ *
+ * 原来这两行是写死的常量，用户没有任何开关；现在读 prefs，托盘里可以随时翻转。
+ * 顺序有讲究：先 setAlwaysOnTop（它会重设 collectionBehavior），再设 workspace，
+ * 反过来写 workspace 会被随后的置顶调用抹掉 —— 这也是那个 30s 保活 tick
+ * 必须走这个函数、而不能只调 setAlwaysOnTop 的原因。
+ */
+function applyWindowLevel() {
+  if (!win || win.isDestroyed()) return;
+  win.setAlwaysOnTop(true, "floating");
+  win.setVisibleOnAllWorkspaces(prefs.allSpaces, { visibleOnFullScreen: prefs.allSpaces });
+}
+
+function toggleAllSpaces() {
+  prefs.allSpaces = !prefs.allSpaces;
+  savePrefs();
+  applyWindowLevel();
+  updateTrayMenu();
+}
+
+/* ---------------- 拖拽（issue #8） ----------------
+ * 旧实现两条腿同时跑：CSS `-webkit-app-region: drag` + 渲染层 window.moveTo
+ * （因为 sandbox 下 window.process 恒为 undefined，本该跳过的兜底分支一直在跑）。
+ * 两套机制争夺同一个窗口位置 —— 这是「拖起来不跟手」和「拖久了出现多重残影」的来源。
+ *
+ * 新实现只有一条腿，且位置计算完全在主进程：
+ * 渲染层只报「开始/结束」，主进程按住光标屏幕坐标跟随。这样绕开了旧兜底里
+ * 「用 clientX 算位移」的反馈环 —— 窗口一动 clientX 就变，位移越算越飘。
+ */
+const DRAG_TICK_MS = 8; // 125Hz，盖住 120Hz ProMotion
+let dragTimer = null;
+let dragOffset = null;
+
+function startDrag() {
+  if (!win || win.isDestroyed()) return;
+  stopDrag();
+  const cursor = screen.getCursorScreenPoint();
+  const [wx, wy] = win.getPosition();
+  dragOffset = { dx: cursor.x - wx, dy: cursor.y - wy };
+  dragTimer = setInterval(() => {
+    if (!win || win.isDestroyed() || !dragOffset) return stopDrag();
+    const p = screen.getCursorScreenPoint();
+    const x = Math.round(p.x - dragOffset.dx);
+    const y = Math.round(p.y - dragOffset.dy);
+    const [cx, cy] = win.getPosition();
+    // 位置没变就别调 setPosition：静止时这个 tick 几乎不花钱
+    if (x !== cx || y !== cy) win.setPosition(x, y, false);
+  }, DRAG_TICK_MS);
+}
+
+function stopDrag() {
+  if (dragTimer) clearInterval(dragTimer);
+  dragTimer = null;
+  dragOffset = null;
+}
+
+ipcMain.on("vibepaws:drag-start", (e) => {
+  // 只认宠物窗口自己发来的拖拽请求
+  if (win && !win.isDestroyed() && e.sender === win.webContents) startDrag();
+});
+ipcMain.on("vibepaws:drag-end", stopDrag);
 
 function toggleClickThrough() {
   clickThrough = !clickThrough;
+  // 拖到一半从托盘打开点击穿透：渲染层从此收不到 pointerup，drag-end 永远不会来，
+  // 窗口会一直黏着光标。这里主动收尾。
+  stopDrag();
   if (win && !win.isDestroyed()) {
     win.setIgnoreMouseEvents(clickThrough, { forward: true });
   }
@@ -240,15 +347,38 @@ function updateTrayMenu() {
       label: t("tray.clickthrough", { state: t(clickThrough ? "tray.state.on" : "tray.state.off") }),
       click: toggleClickThrough,
     },
+    {
+      label: t("tray.allspaces", { state: t(prefs.allSpaces ? "tray.state.on" : "tray.state.off") }),
+      click: toggleAllSpaces,
+    },
     { label: t("tray.show"), click: () => win?.show() },
     { label: t("tray.quit"), click: () => app.quit() },
   ]);
   tray.setContextMenu(menu);
 }
 
+/* 托盘图标：必须是 PNG。
+ * 这里原来喂的是 SVG data URL —— nativeImage 根本不解析 SVG，得到的是一张
+ * 0×0 的空图；Tray 照样建得出来，但菜单栏上什么都不显示，于是托盘菜单里的
+ * 点击穿透 / Spaces 开关全都无从点起（用户：「i did not see anything」）。
+ * 16px + 32px(@2x) 两个表示，黑色像素 + alpha 走 macOS template image，
+ * 深浅色菜单栏都能看清。图案与原 SVG 一致：圆角方块 + 两只挖空的眼睛。 */
+const TRAY_ICON_1X =
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAUElEQVR42mNggAADIF4PxP+JxOuheuCa35OgGYbfwwxZT4ZmZJeQrRmGB5kB84FYAIrnEyGOYYAAAwIIECFOfQMo9sIQjUaKkzLFmYmi7AwAYPXX5Tm5sIMAAAAASUVORK5CYII=";
+const TRAY_ICON_2X =
+  "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAqElEQVR42u1XwQ2AIAxkBEdhFDZjBEZiBEbBasAQURqUcDza5H4Nd6HlaJWqQxMcIRDiIIR0plaN2Ah2IOkbbOKqyP0E8gx/F2Enkpc3cdU8gnD2hAMKOLiHdvuX1wEjzxABIoB1LFMYlmEcsze/KcA/eXbDtnvzWQGm8XGZAfmsAC7+5q8vAF4CeBPCn6E4oQiYJgA+ksGHUvhYDl9MlljN4MspbD3fAWSzYQawSPtVAAAAAElFTkSuQmCC";
+
+function trayImage() {
+  const img = nativeImage.createFromDataURL(`data:image/png;base64,${TRAY_ICON_1X}`);
+  img.addRepresentation({ scaleFactor: 2, dataURL: `data:image/png;base64,${TRAY_ICON_2X}` });
+  // template image 由系统按菜单栏前景色重绘；非 macOS 没有这个概念，保持原样
+  if (process.platform === "darwin") img.setTemplateImage(true);
+  return img;
+}
+
 function createTray() {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" rx="4" fill="#58a6ff"/><circle cx="5" cy="8" r="2" fill="#fff"/><circle cx="11" cy="8" r="2" fill="#fff"/></svg>`;
-  const img = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  const img = trayImage();
+  if (img.isEmpty()) err("[vibepaws] 托盘图标为空 — 菜单栏上会看不到图标");
   tray = new Tray(img);
   tray.setToolTip(t("tray.tooltip"));
   updateTrayMenu();
@@ -260,6 +390,7 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  loadPrefs();
   await loadI18n();
   await ensureCore();
   await spawnUiServer();
@@ -275,6 +406,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  stopDrag();
   uiServer?.kill();
   coreProc?.kill();
 });

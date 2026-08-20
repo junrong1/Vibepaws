@@ -22,7 +22,11 @@ html, body {
   font-size: 12px;
 }
 
-/* ---- 舞台（整个窗口可拖拽） ---- */
+/* ---- 舞台（整个窗口可拖拽） ----
+ * 这里曾经用 `-webkit-app-region: drag` 让系统接管拖拽。已经去掉（issue #8）：
+ * ① 它和 ui/app.js 里的 JS 拖拽同时生效，两套机制抢同一个窗口位置；
+ * ② macOS 透明窗口下 app-region 拖拽本身就会拖出残影。
+ * 现在拖拽全部走 pointer 事件 + 主进程跟随光标。 */
 #stage {
   position: absolute;
   inset: 0;
@@ -32,18 +36,19 @@ html, body {
   justify-content: flex-end;
   padding-bottom: 6px;
   cursor: grab;
-  -webkit-app-region: drag;   /* Electron：整窗拖拽 */
-  app-region: drag;
+  touch-action: none;  /* 交给 pointer 事件，别让浏览器抢去做滚动手势 */
 }
-#stage:active { cursor: grabbing; }
+body.dragging #stage, body.dragging #pet { cursor: grabbing; }
 #pet {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  cursor: pointer;
+  cursor: grab;
   filter: drop-shadow(0 4px 8px rgba(0,0,0,0.45));
-  -webkit-app-region: no-drag;  /* 宠物本体可点击 */
 }
-#expbar, #nameplate, #panel, .bubble, button, .session-row { -webkit-app-region: no-drag; }
+/* 拖拽期间摘掉投影：drop-shadow 会把 canvas 提成独立合成层，窗口每移动一帧
+ * 都要重新栅格化它 —— 拖快了来不及，就留下一串「多重残影」（issue #8）。
+ * 静止时投影照常，用户看不出差别。 */
+body.dragging #pet { filter: none; }
 
 /* EXP 条 */
 #expbar {

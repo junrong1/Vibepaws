@@ -90,6 +90,7 @@ export const MESSAGES = {
     // ---- 托盘（Electron 主进程）----
     "tray.tooltip": "Vibepaws — your coding pet",
     "tray.clickthrough": "Click-through: {state}",
+    "tray.allspaces": "Show on all Spaces: {state}",
     "tray.state.on": "on",
     "tray.state.off": "off",
     "tray.show": "Show pet",
@@ -181,6 +182,7 @@ export const MESSAGES = {
     // ---- 托盘（Electron 主进程）----
     "tray.tooltip": "Vibepaws — 你的 coding pet",
     "tray.clickthrough": "点击穿透：{state}",
+    "tray.allspaces": "在所有桌面显示：{state}",
     "tray.state.on": "开",
     "tray.state.off": "关",
     "tray.show": "显示宠物",
