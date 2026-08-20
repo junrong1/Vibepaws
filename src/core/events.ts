@@ -128,6 +128,8 @@ export interface PetStatePush {
     next_level_exp: number;
   };
   sessions: SessionView[];
+  /** 当前静音状态：界面要能显示「还剩多久」并原地取消（issue #7） */
+  mute: { global_until: number | null };
   needs_you: SessionView[];
   warning: SessionView[];
   working: SessionView[];
