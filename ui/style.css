@@ -22,14 +22,22 @@ html, body {
   font-size: 12px;
 }
 
-/* ---- 舞台（整个窗口可拖拽） ----
+/* ---- 舞台（宠物本体 + 拖拽区） ----
  * 这里曾经用 `-webkit-app-region: drag` 让系统接管拖拽。已经去掉（issue #8）：
  * ① 它和 ui/app.js 里的 JS 拖拽同时生效，两套机制抢同一个窗口位置；
  * ② macOS 透明窗口下 app-region 拖拽本身就会拖出残影。
- * 现在拖拽全部走 pointer 事件 + 主进程跟随光标。 */
+ * 现在拖拽全部走 pointer 事件 + 主进程跟随光标。
+ *
+ * 尺寸写死 210×250 并贴在底部中央，**不再** inset:0 铺满窗口：窗口恒为 300×430，
+ * 上面那 180px 是留给浮层的（见 desktop/main.js 的 PANEL_GEOMETRY_NOTE）。
+ * 铺满会让整扇窗都变成命中区，宠物头顶那片空白就把桌面的点击全吃掉了。
+ * 这两个数字必须和 main.js 的 PET_BOX 一致 —— 连接指示灯、静音徽章都按它定位。 */
 #stage {
   position: absolute;
-  inset: 0;
+  bottom: 0;
+  left: calc(50% - 105px);
+  width: 210px;
+  height: 250px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -134,7 +142,9 @@ body.dragging #pet { filter: none; }
   gap: 6px;
   z-index: 5;
 }
-#bubbles { top: 0; padding-top: 8px; }
+/* 贴在舞台**上沿**往上长，而不是钉在窗口顶部：窗口比宠物高 180px，
+ * 钉窗口顶部的话气泡会飘在宠物头顶老远的地方，看着不像它说的话。 */
+#bubbles { bottom: 250px; padding-bottom: 8px; }
 /* 操作确认单独一层，贴着宠物上方：通知气泡的数量上限不该把它挤掉 */
 #toasts { bottom: 8px; z-index: 11; padding-bottom: 2px; }
 .bubble {
@@ -167,9 +177,10 @@ body.dragging #pet { filter: none; }
 }
 
 /* ---- 浮层 ---- */
-/* 浮层不再压在宠物身上：窗口只有 210×250，浮层一开宠物就整个被盖住 ——
+/* 浮层不再压在宠物身上：宠物本体只有 210×250，浮层一开就把它整个盖住 ——
  * 「再点一次宠物关掉浮层」这个最自然的操作直接失效，只剩右上角那个小 ×。
- * 现在浮层占据宠物**上方**的区域（Electron 下由主进程把窗口撑高，见 desktop/main.js）。 */
+ * 现在浮层占据宠物**上方**那 180px：那片空间在窗口里一直是留好的，
+ * 开关浮层不碰任何窗口几何（见 desktop/main.js 的 PANEL_GEOMETRY_NOTE）。 */
 #panel {
   position: absolute;
   left: 8px; right: 8px; top: 8px; bottom: 186px;
@@ -187,8 +198,8 @@ body.dragging #pet { filter: none; }
  * 会盖掉 UA 样式表的 [hidden]{display:none}，于是 hidden 完全失效 ——
  * 浮层从启动起就一直挂在屏幕上，× 也关不掉（issue #2 / #5）。 */
 #panel[hidden] { display: none; }
-/* 壳没能把窗口撑高时（纯浏览器预览，或 setPanelOpen 不可用）：宁可让浮层
- * 压住宠物头顶，也不要缩成一条 56px 的缝什么都看不见。 */
+/* 视口本来就不够高时（纯浏览器预览：窗口高度由浏览器说了算，不是壳的 430）：
+ * 宁可让浮层压住宠物头顶，也不要缩成一条 56px 的缝什么都看不见。 */
 @media (max-height: 320px) {
   #panel { bottom: 96px; }
 }

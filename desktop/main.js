@@ -37,17 +37,21 @@ const PREFERRED_UI_PORT = 5173;
 /** UI server 的身份标记路由（见 src/ui/server.ts）：确认端口上的服务是我们自己 */
 const UI_MARKER_PATH = "/__vibepaws";
 
-/** 收起态：只放得下宠物本体 */
-const COMPACT_SIZE = { width: 210, height: 250 };
-/** 展开态：浮层要装下 session 列表 + 操作按钮（宠物位置不动，窗口向上长） */
-const EXPANDED_SIZE = { width: 300, height: 430 };
+/** 宠物本体占的那一块，贴在窗口底部（= 从前的「收起态窗口」）。CSS 里 #stage 的高度必须与之一致。 */
+const PET_BOX = { width: 210, height: 250 };
+/**
+ * 窗口尺寸**恒定**：浮层那份高度永远留着，开关浮层只改 CSS，不动窗口。
+ * 为什么不能跟着浮层缩放，见下面 PANEL_GEOMETRY_NOTE。
+ */
+const WINDOW_SIZE = { width: 300, height: 430 };
 
 let win = null;
 let tray = null;
 let uiServer = null;
 let uiPort = PREFERRED_UI_PORT;
 let clickThrough = false;
-let panelExpanded = false;
+/** 光标此刻是否压在「真的要吃点击」的东西上（宠物 / 浮层 / 气泡）。见 applyMouseIgnore */
+let cursorOverHit = true;
 /** UI server 就绪前不许建窗口：那时 uiPort 还是默认值，会加载错的地址 */
 let uiReady = false;
 let levelKeepAlive = null;
@@ -64,7 +68,8 @@ let levelKeepAlive = null;
  * 等于让宠物在全屏终端里彻底消失，而 coding agent 基本都活在全屏终端里。
  *
  * anchor 存的是窗口**底部中心**（= 宠物脚下那一点）的屏幕坐标，而不是左上角：
- * 浮层展开时窗口会变大，用左上角存位置的话宠物每次开关浮层都会跳一下。 */
+ * 位置的语义是「宠物站在哪」，而不是「窗口的左上角在哪」—— 窗口的宽高里有一大半
+ * 是留给浮层的透明空间，拿左上角当位置，换个尺寸就对不上了。 */
 const DEFAULT_PREFS = { allSpaces: true, anchor: null };
 let prefs = { ...DEFAULT_PREFS };
 
@@ -269,29 +274,36 @@ function waitForUiServer(port, child) {
 }
 
 /* ---------------- 窗口 ---------------- */
-function clampToArea(x, y, width, height, area) {
-  return {
-    x: Math.round(Math.max(area.x, Math.min(x, area.x + area.width - width))),
-    y: Math.round(Math.max(area.y, Math.min(y, area.y + area.height - height))),
-  };
+function clamp(v, lo, hi) {
+  return Math.round(Math.max(lo, Math.min(v, hi)));
 }
 
 function areaForPoint(point) {
   return screen.getDisplayNearestPoint(point).workArea;
 }
 
-/** 由「底部中心锚点 + 尺寸」算出窗口左上角，并夹在所在屏幕的可用区域内 */
-function boundsFromAnchor(anchor, size) {
+/**
+ * 由「宠物脚下的锚点」算出窗口左上角。
+ *
+ * 横向按**宠物盒子**夹、纵向按**窗口**夹，两条边界故意不一样：
+ * 窗口比宠物宽 90px，多出来的是全透明且点击穿透的空白，按窗口夹的话宠物就贴不到
+ * 屏幕左右边缘了（每边少 45px）。纵向多出来的 180px 是浮层要用的，探出屏幕会被裁掉，
+ * 所以纵向必须按整个窗口夹。
+ */
+function boundsFromAnchor(anchor, size = WINDOW_SIZE) {
   const point = { x: Math.round(anchor.x), y: Math.round(anchor.y) };
   const area = areaForPoint(point);
-  const { x, y } = clampToArea(point.x - size.width / 2, point.y - size.height, size.width, size.height, area);
-  return { x, y, width: size.width, height: size.height };
+  const cx = clamp(point.x, area.x + PET_BOX.width / 2, area.x + area.width - PET_BOX.width / 2);
+  const y = clamp(point.y - size.height, area.y, area.y + area.height - size.height);
+  return { x: Math.round(cx - size.width / 2), y, width: size.width, height: size.height };
 }
 
 function defaultAnchor() {
   const { workArea } = screen.getPrimaryDisplay();
   return {
-    x: workArea.x + workArea.width - 24 - COMPACT_SIZE.width / 2,
+    // 用 PET_BOX 而不是 WINDOW_SIZE：默认位置说的是「宠物离右下角多远」，
+    // 拿窗口宽度算会把宠物往左推 45px（那 45px 是透明的，用户只看得见宠物）。
+    x: workArea.x + workArea.width - 24 - PET_BOX.width / 2,
     y: workArea.y + workArea.height - 40,
   };
 }
@@ -328,10 +340,9 @@ function ensureWindow() {
 }
 
 function createWindow() {
-  const size = panelExpanded ? EXPANDED_SIZE : COMPACT_SIZE;
   // 上次放在哪就还在哪（换过显示器 / 分辨率变了会被 clamp 回可见区域）
   const anchor = prefs.anchor ?? defaultAnchor();
-  const bounds = boundsFromAnchor(anchor, size);
+  const bounds = boundsFromAnchor(anchor);
   win = new BrowserWindow({
     ...bounds,
     transparent: true,
@@ -353,6 +364,7 @@ function createWindow() {
     },
   });
   applyWindowLevel();
+  applyMouseIgnore();
   // 「宠物不见了」最难查的一点是壳层状态完全不可见 —— 把它打出来
   log(`[vibepaws] window level=screen-saver allSpaces=${prefs.allSpaces} fullScreen=always`);
   // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
@@ -371,6 +383,7 @@ function createWindow() {
   });
   win.on("closed", () => {
     stopDrag();
+    stopHitRescue();
     win = null;
   });
   if (process.env.VIBEPAWS_DEBUG) runCanvasDiagnostic();
@@ -447,23 +460,75 @@ function toggleAllSpaces() {
   updateTrayMenu();
 }
 
+/* ---------------- PANEL_GEOMETRY_NOTE：窗口为什么不跟着浮层缩放 ----------------
+ * 浮层要占宠物**上方**的空间，而宠物脚下那一点必须钉死不动 —— 这两条加起来，
+ * 意味着窗口一变高，左上角就得同时往上挪同样的距离。
+ *
+ * 而 macOS 上「改尺寸」和「改原点」落到窗口服务器时不保证在同一个事务里。
+ * setBounds 只是一次调用，合成器却会出现一帧「新尺寸 + 旧原点」：窗口高度已经
+ * 从 430 变成 250，左上角还停在 anchor−430，于是底部对齐的内容整块往上跳
+ * 180px，下一帧才回到正确位置。一帧 16ms 的位移看起来就是宠物「闪」了一下 ——
+ * 关浮层大概三次里有两次会闪。（实测：录屏 60fps，第 186、287 帧各一帧。）
+ *
+ * 两个端点状态都是「底部对齐」，所以任何中间态都必然错位 —— 换句话说，只要窗口
+ * 在开关浮层时改变几何形状，这一帧就消不掉。于是这里的选择是让它**不改**：
+ * 窗口恒为 300×430，浮层那 180px 高度一直留着，开关浮层纯粹是 CSS 的事，
+ * 主进程一次几何调用都不发。
+ *
+ * 代价是收起时宠物头顶多出一片透明区域。透明不等于穿透，所以配一套命中测试
+ * （applyMouseIgnore）把它交回桌面 —— 顺带把收起态本来就存在的那圈死区也一起消了。 */
+
 /**
- * 浮层展开/收起时改窗口大小（渲染层通过 preload 报告）。
- * 210×250 的窗口里，浮层会把宠物整个盖住 —— 于是「再点一次宠物关掉浮层」
- * 这个最自然的操作直接失效。窗口向**上**长，宠物脚下那一点保持不动。
+ * 点击穿透的唯一出口。两个来源合成一个结论：
+ *   · 托盘开关 clickThrough：用户主动要「整扇窗都别挡我」；
+ *   · cursorOverHit：光标压着的是空白还是真东西（渲染层每次 mousemove 报一次）。
+ *
+ * forward:true 是这套东西能成立的前提 —— 穿透期间 Chromium 依然收得到 mousemove，
+ * 渲染层才有机会发现「光标进宠物了」并把交互要回来。没有它，一旦穿透就再也没有
+ * 任何事件能把状态翻回来，宠物会彻底点不动。
  */
-function setPanelExpanded(expanded) {
-  panelExpanded = expanded;
+function applyMouseIgnore() {
   if (!win || win.isDestroyed()) return;
-  const size = expanded ? EXPANDED_SIZE : COMPACT_SIZE;
-  const b = win.getBounds();
-  if (b.width === size.width && b.height === size.height) return;
-  const anchor = { x: b.x + b.width / 2, y: b.y + b.height };
-  const bounds = boundsFromAnchor(anchor, size);
-  // resizable:false 的窗口在部分平台会忽略 setBounds，临时放开再收回
-  win.setResizable(true);
-  win.setBounds(bounds, false);
-  win.setResizable(false);
+  const ignore = clickThrough || !cursorOverHit;
+  win.setIgnoreMouseEvents(ignore, { forward: true });
+  // 只有「因为压在空白处才穿透」需要兜底；托盘开关是用户主动要的，不许抢回来
+  if (ignore && !clickThrough) startHitRescue();
+  else stopHitRescue();
+  if (process.env.VIBEPAWS_DEBUG) log(`[hit] ignore=${ignore} overHit=${cursorOverHit} clickThrough=${clickThrough}`);
+}
+
+/**
+ * 命中测试的兜底。
+ *
+ * 穿透期间，唯一能把交互要回来的信道就是 forward 过来的 mousemove。万一它在某个
+ * 系统版本上不来，状态就永久卡在穿透 —— 宠物再也点不动，而且从日志上完全看不出来。
+ * 所以这里不信那条信道：光标只要落进宠物那 210×250 的盒子，就无条件恢复交互。
+ * 纯几何判断，不依赖渲染层。
+ *
+ * 两种失败模式不对称：多挡住一点桌面只是烦，宠物点不动是这个 app 没法用了。
+ * 20Hz 且只在穿透期间跑；getCursorScreenPoint 是同步 CG 调用，几微秒。
+ */
+const HIT_RESCUE_MS = 50;
+let hitRescueTimer = null;
+
+function startHitRescue() {
+  if (hitRescueTimer || !win || win.isDestroyed()) return;
+  hitRescueTimer = setInterval(() => {
+    if (!win || win.isDestroyed()) return stopHitRescue();
+    const b = win.getBounds();
+    // 宠物盒子贴在窗口底部中央（与 CSS 里的 #stage 一致）
+    const x = b.x + (b.width - PET_BOX.width) / 2;
+    const y = b.y + b.height - PET_BOX.height;
+    const p = screen.getCursorScreenPoint();
+    if (p.x < x || p.x >= x + PET_BOX.width || p.y < y || p.y >= y + PET_BOX.height) return;
+    cursorOverHit = true;
+    applyMouseIgnore(); // 里面会把这个 timer 停掉
+  }, HIT_RESCUE_MS);
+}
+
+function stopHitRescue() {
+  if (hitRescueTimer) clearInterval(hitRescueTimer);
+  hitRescueTimer = null;
 }
 
 function resetWindowPosition() {
@@ -471,9 +536,9 @@ function resetWindowPosition() {
   savePrefs();
   const target = ensureWindow();
   if (!target || target.isDestroyed()) return;
-  target.setResizable(true);
-  target.setBounds(boundsFromAnchor(prefs.anchor, panelExpanded ? EXPANDED_SIZE : COMPACT_SIZE), false);
-  target.setResizable(false);
+  // 只挪位置、不改尺寸：纯粹的移动是原子的，不会出现 PANEL_GEOMETRY_NOTE 里那一帧错位
+  const { x, y } = boundsFromAnchor(prefs.anchor);
+  target.setPosition(x, y, false);
   target.show();
 }
 
@@ -490,19 +555,18 @@ const DRAG_TICK_MS = 8; // 125Hz，盖住 120Hz ProMotion
 let dragTimer = null;
 let dragOffset = null;
 
+/** 拖拽跟的是**锚点**（宠物脚下那一点），不是窗口左上角 —— 这样边界判定和
+ *  boundsFromAnchor 共用同一套规则：宠物贴得到屏幕左右边缘，也不会被拖进菜单栏。 */
 function startDrag() {
   if (!win || win.isDestroyed()) return;
   stopDrag();
   const cursor = screen.getCursorScreenPoint();
-  const [wx, wy] = win.getPosition();
-  dragOffset = { dx: cursor.x - wx, dy: cursor.y - wy };
+  const b = win.getBounds();
+  dragOffset = { dx: cursor.x - (b.x + b.width / 2), dy: cursor.y - (b.y + b.height) };
   dragTimer = setInterval(() => {
     if (!win || win.isDestroyed() || !dragOffset) return stopDrag();
     const p = screen.getCursorScreenPoint();
-    const [w, h] = win.getSize();
-    // 夹在光标所在屏幕的可用区域内：否则宠物可以被拖到屏幕外／菜单栏底下，
-    // 而窗口没有边框也没有任务栏入口，等于把它弄丢了。
-    const { x, y } = clampToArea(p.x - dragOffset.dx, p.y - dragOffset.dy, w, h, areaForPoint(p));
+    const { x, y } = boundsFromAnchor({ x: p.x - dragOffset.dx, y: p.y - dragOffset.dy });
     const [cx, cy] = win.getPosition();
     // 位置没变就别调 setPosition：静止时这个 tick 几乎不花钱
     if (x !== cx || y !== cy) win.setPosition(x, y, false);
@@ -513,6 +577,8 @@ function stopDrag() {
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = null;
   dragOffset = null;
+  // 拖拽期间命中测试是冻结的（见 vibepaws:hit），松手后按最后一次上报的状态收尾
+  applyMouseIgnore();
 }
 
 ipcMain.on("vibepaws:drag-start", (e) => {
@@ -524,19 +590,20 @@ ipcMain.on("vibepaws:drag-end", (e) => {
   stopDrag();
   scheduleAnchorSave(); // 松手即记住新位置
 });
-ipcMain.on("vibepaws:panel", (e, open) => {
+ipcMain.on("vibepaws:hit", (e, over) => {
   if (win && !win.isDestroyed() && e.sender !== win.webContents) return;
-  setPanelExpanded(Boolean(open));
+  cursorOverHit = Boolean(over);
+  // 拖拽中一律不动：这时候光标经常已经滑出宠物本体，一穿透就收不到 pointerup，
+  // drag-end 永远不来，窗口从此黏着光标。
+  if (dragOffset) return;
+  applyMouseIgnore();
 });
 
 function toggleClickThrough() {
   clickThrough = !clickThrough;
   // 拖到一半从托盘打开点击穿透：渲染层从此收不到 pointerup，drag-end 永远不会来，
-  // 窗口会一直黏着光标。这里主动收尾。
+  // 窗口会一直黏着光标。这里主动收尾（stopDrag 末尾会重算穿透状态）。
   stopDrag();
-  if (win && !win.isDestroyed()) {
-    win.setIgnoreMouseEvents(clickThrough, { forward: true });
-  }
   updateTrayMenu();
 }
 
@@ -625,6 +692,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   stopDrag();
+  stopHitRescue(); // stopDrag 末尾会重算穿透状态，可能又把兜底 timer 拉起来
   if (levelKeepAlive) clearInterval(levelKeepAlive);
   if (anchorSaveTimer) {
     clearTimeout(anchorSaveTimer);

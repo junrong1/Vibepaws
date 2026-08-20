@@ -400,12 +400,14 @@ function reconcileStickyBubbles() {
 }
 
 /* ---------------- 浮层 ---------------- */
+/* 开关浮层只改 DOM，一个字节的窗口几何都不碰：壳的窗口恒为 300×430，
+ * 浮层的位置早就留好了。以前这里会让壳把窗口撑高/收回，而那次尺寸变化会在
+ * 合成器里漏出一帧「新尺寸 + 旧原点」，宠物整块上跳 180px 再跳回来 ——
+ * 关浮层时看到的那一下「闪」。详见 desktop/main.js 的 PANEL_GEOMETRY_NOTE。 */
 function openPanel() {
   if (state.panelOpen) return;
   state.panelOpen = true;
   $("panel").hidden = false;
-  // 210×250 的窗口装不下一个 session 列表：让壳把窗口撑高（宠物位置不动）
-  shell?.setPanelOpen?.(true);
   renderPanel();
   $("panel-close").focus({ preventScroll: true });
 }
@@ -414,7 +416,6 @@ function closePanel() {
   if (!state.panelOpen) return;
   state.panelOpen = false;
   $("panel").hidden = true;
-  shell?.setPanelOpen?.(false);
 }
 
 function togglePanel() {
@@ -806,6 +807,37 @@ function localizedOr(key, fallback) {
   stage.addEventListener("pointerup", endDrag);
   stage.addEventListener("pointercancel", endDrag);
   stage.addEventListener("lostpointercapture", endDrag);
+})();
+
+/* ---------------- 命中测试（点击穿透） ----------------
+ * 壳的窗口恒为 300×430，但真正要吃点击的只有宠物那 210×250、展开时的浮层、以及气泡。
+ * 剩下全是透明空白 —— 而透明不等于穿透：不管的话宠物头顶那一大片会把桌面的点击全吃掉。
+ *
+ * 判据就是 elementFromPoint 落在谁身上：气泡层是 pointer-events:none，浮层收起时是
+ * hidden，所以空白处命中的必然是 body/html。不用维护选择器白名单，加了新元素也不会漏。
+ *
+ * 光标离开窗口时一律报「可交互」：穿透状态下唯一能把交互要回来的信道就是 mousemove，
+ * 万一它没来，停在「可交互」最坏只是短暂挡住桌面（= 修好前的老行为），
+ * 停在「穿透」则是宠物彻底点不动。两种失败模式不对称，所以默认值只能取前者。 */
+(function setupHitTest() {
+  if (!shell?.setHit) return; // 纯浏览器预览：没有壳，也没有穿透这回事
+  let last = null;
+  function report(over) {
+    if (over === last) return; // mousemove 是高频事件，只在翻转时才发 IPC
+    last = over;
+    shell.setHit(over);
+  }
+  function isHit(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return !!el && el !== document.body && el !== document.documentElement;
+  }
+  // capture 阶段：拖拽/浮层里的监听会 stopPropagation，别让它们把上报吃掉
+  window.addEventListener("mousemove", (e) => report(isHit(e.clientX, e.clientY)), true);
+  // relatedTarget 为空 = 光标离开了整个文档（mouseleave 在 document 上不总触发）
+  document.addEventListener("mouseout", (e) => {
+    if (!e.relatedTarget) report(true);
+  }, true);
+  window.addEventListener("blur", () => report(true));
 })();
 
 /* ---------------- 工具 ---------------- */
