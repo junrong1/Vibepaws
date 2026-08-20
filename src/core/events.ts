@@ -99,6 +99,9 @@ export interface SessionView {
   context_pct: number;
   correction_count: number;
   last_event_at: string;
+  finished_at: string | null;
+  /** agent 卡在「等你」的起始时刻（ISO），null = 不在等 */
+  needs_input_since: string | null;
   is_active: boolean;
   parent_id: number | null;
   outcome?: string;
