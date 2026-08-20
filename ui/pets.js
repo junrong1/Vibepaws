@@ -12,7 +12,11 @@ export const PET_COLORS = {
   fox: { body: "#e07a5f", dark: "#b85c42", accent: "#f2cc8f", belly: "#fae1dd" },
   slug: { body: "#9b7ed8", dark: "#7b5fc0", accent: "#e8a5ff", belly: "#e5d8f8" },
   sprite: { body: "#ffd166", dark: "#f0b429", accent: "#ef476f", belly: "#fff3c4" },
-} ;
+  // 进化家族的后两阶原来共用 sprite 配色 —— 进化完看起来一模一样，
+  // 「宠物变了」这件事在界面上完全看不出来。
+  flare: { body: "#ff9f45", dark: "#e2701a", accent: "#ff4d6d", belly: "#ffe0b2" },
+  nova: { body: "#b39dff", dark: "#7c5cff", accent: "#7ef9ff", belly: "#f0eaff" },
+};
 
 /** 16×16 像素画程序生成 */
 export function makePetFrame(palette, opts) {
@@ -20,20 +24,19 @@ export function makePetFrame(palette, opts) {
   const grid = Array.from({ length: H }, () => Array(W).fill(null));
   const { ears = "round", earsColor = palette.dark, tail = null, spot = null } = opts;
 
-  // 耳朵
-  const earY0 = 1;
+  // 耳朵。ears: null 表示「这个物种没有耳朵」（乌龟、鼻涕虫）——
+  // 原来的 else 分支会给它们画上圆耳朵，因为默认值只在 undefined 时生效。
   if (ears === "pointy") {
     for (let y = 0; y < 4; y++) {
       for (let x = 3 - y; x <= 4 + y; x++) grid[y][x] = earsColor;
       for (let x = 11 - y; x <= 12 + y; x++) grid[y][x] = earsColor;
     }
-  } else { // round
+  } else if (ears === "round") {
     for (let y = 0; y < 3; y++) {
       for (let x = 2 + y; x <= 5 - y; x++) grid[y][x] = earsColor;
       for (let x = 10 + y; x <= 13 - y; x++) grid[y][x] = earsColor;
     }
   }
-  void earY0;
 
   // 身体椭圆（中心 8, 9，半宽 6，半高 5）
   for (let y = 3; y <= 14; y++) {
@@ -158,22 +161,50 @@ export const PETS = [
   { id: 6, name: "Shell Slug", kind: "slug", palette: PET_COLORS.slug, shape: { ears: null, tail: null, spot: "stripe" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
 ];
 
-/** 按 pet_type_id 取宠物（10-12 为进化家族，回退到 6 的变体） */
+/** 进化家族（DB seed 里的 pet_type 10/11/12），三阶各有配色 */
+export const EVOLUTIONS = [
+  { id: 10, name: "Spark Sprite", kind: "sprite", palette: PET_COLORS.sprite, shape: { ears: "pointy", tail: "curly", spot: "heart" }, stateExpr: PETS[0].stateExpr },
+  { id: 11, name: "Flare Sprite", kind: "flare", palette: PET_COLORS.flare, shape: { ears: "pointy", tail: "curly", spot: "stripe" }, stateExpr: PETS[0].stateExpr },
+  { id: 12, name: "Nova Sprite", kind: "nova", palette: PET_COLORS.nova, shape: { ears: "pointy", tail: "curly", spot: "shell" }, stateExpr: PETS[0].stateExpr },
+];
+
+/**
+ * 按 pet_type_id 取宠物。返回的对象必须是稳定引用（渲染缓存按 id 建键）。
+ * 未知 id 回落到 1 号，而不是凭空显示一只进化体 —— 后者会让「我进化了？」变成误会。
+ */
 export function getPet(petTypeId) {
-  const p = PETS.find((x) => x.id === petTypeId);
-  if (p) return p;
-  // 进化家族（10-12）用 Sprite 配色
-  return { id: petTypeId, name: "Spark Sprite", kind: "sprite", palette: PET_COLORS.sprite, shape: { ears: "pointy", tail: "curly", spot: "heart" }, stateExpr: PETS[0].stateExpr };
+  return (
+    PETS.find((x) => x.id === petTypeId) ??
+    EVOLUTIONS.find((x) => x.id === petTypeId) ??
+    PETS[0]
+  );
+}
+
+/**
+ * (pet, 表情) → 像素网格 的缓存。网格是纯函数产物，但每帧重算要新建
+ * 两个 16×16 二维数组、跑上千次循环 —— 一个 always-on 的桌面宠物没必要
+ * 拿电池去换这个。
+ */
+const frameCache = new Map();
+
+function petGrid(pet, expr) {
+  const key = `${pet.id}:${expr}`;
+  let grid = frameCache.get(key);
+  if (!grid) {
+    grid = applyExpression(makePetFrame(pet.palette, pet.shape), expr);
+    frameCache.set(key, grid);
+  }
+  return grid;
 }
 
 export function renderPet(canvas, pet, state, scale = 10, t = 0) {
-  const base = makePetFrame(pet.palette, pet.shape);
   const expr = pet.stateExpr[state] ?? "normal";
-  const grid = applyExpression(base, expr);
+  const grid = petGrid(pet, expr);
   const ctx = canvas.getContext("2d");
   const W = 16, H = 16;
-  canvas.width = W * scale;
-  canvas.height = H * scale;
+  // 给 canvas.width 赋值会重建整个后备缓冲区，每帧做一次纯属浪费
+  if (canvas.width !== W * scale) canvas.width = W * scale;
+  if (canvas.height !== H * scale) canvas.height = H * scale;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.imageSmoothingEnabled = false;
 
