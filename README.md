@@ -335,8 +335,12 @@ session_exp =
 ### 0. 安装
 
 ```bash
-npm install          # Node ≥ 20
+npm install          # Node ≥ 22.6
 ```
+
+> Node **22.6** 是硬性下限，不是建议值：Core、UI server 和写进 hooks 配置的采集命令
+> 全都跑 `node --experimental-strip-types`，这个 flag 在 22.6 之前不存在。Node 20 上
+> 什么都起不来，而 hook 那条路径是静默失败的 —— 宠物只是一直闲着，不会报错。
 
 ### 1. 启动 Core（守护进程）
 

@@ -9,9 +9,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { claudeHooksConfig, codexHooksConfig, capabilities } from "./hooks.ts";
+import { claudeHooksConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
 import { deliver } from "./hook_agent.ts";
-import type { CoreEvent } from "../core/events.ts";
 import { t as translate, detectNodeLocale } from "../i18n/messages.js";
 
 /** 安装向导是 onboarding 的第一屏，跟着系统语言走（issue #3）；VIBEPAWS_LOCALE 可覆盖。 */
@@ -167,19 +166,10 @@ function installCodex(): void {
 
 async function selfCheck(): Promise<void> {
   console.log(t("cli.selfcheck.start"));
-  const testEvent: CoreEvent = {
-    event_id: `install-test-${Date.now()}`,
-    seq: 0,
-    agent: AGENT,
-    session_id: "install-probe",
-    project_id: REPO,
-    event_type: "session_started",
-    severity: "low",
-    safe_summary: "Adapter install self-check",
-    timestamp: new Date().toISOString(),
-    payload: { source: "startup", cwd: REPO, title: "install-probe" },
-  };
-  const ok = await deliver(testEvent);
+  // 自检发 adapter_status 而不是假的 session_started：既证明 Core 收得到，
+  // 又让 Core 记住「这个 agent 的 adapter 装好了」。发假 session 只会在
+  // 宠物面板里多出一条永远不结束的 "install-probe"。
+  const ok = await deliver(adapterStatusEvent(AGENT, REPO));
   if (ok) {
     console.log(t("cli.selfcheck.ok"));
     console.log(t("cli.selfcheck.next"));

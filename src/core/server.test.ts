@@ -129,3 +129,56 @@ test("健康分低且没有活跃 session 时宠物是 tired（README 6.4，不�
   }
   assert.equal(server.stateSnapshot().pet.state, "tired");
 })
+
+/**
+ * adapter 可见性：装没装 hooks，界面必须分得出来。
+ *
+ * 在这之前 adapter_status 这条通路是「只有接收端」的：events.ts 声明了类型、
+ * ingress 有 upsertAgent、registry 和 server 都有分支，但没有任何代码发出过这条事件
+ * —— 安装器把 capabilities() 打进了 console.log 就完事。于是「hooks 没装」和
+ * 「装了但 agent 还没干活」在界面上是同一只闲着的宠物，用户无从排查。
+ */
+test("没有 adapter 上报过时 adapters 为空 —— 界面据此说「去装 adapter」而不是「还没有 session」", () => {
+  const server = makeServer();
+  assert.deepEqual(server.stateSnapshot().adapters, []);
+});
+
+test("adapter_status 落库后出现在 stateSnapshot，且不会伪造出一条 session", () => {
+  const server = makeServer();
+  const r = server.handleEvent(
+    ev({
+      event_type: "adapter_status",
+      session_id: "adapter-claude_code",
+      payload: { capabilities: ["decision_required", "session_finished"], adapter_version: "9.9.9" },
+    }),
+  );
+  assert.equal(r.ok, true);
+
+  const snap = server.stateSnapshot();
+  assert.equal(snap.adapters.length, 1);
+  assert.equal(snap.adapters[0]!.agent, "claude_code");
+  assert.equal(snap.adapters[0]!.adapter_version, "9.9.9");
+  assert.deepEqual(snap.adapters[0]!.capabilities, ["decision_required", "session_finished"]);
+  // 安装自检曾经发假的 session_started，在宠物面板里留下一条永不结束的 "install-probe"
+  assert.equal(snap.sessions.length, 0, "adapter_status 不该产生 session 行");
+});
+
+test("同一 agent 重复上报只占一行（每次会话开始都会重新自报家门）", () => {
+  const server = makeServer();
+  for (const v of ["0.1.0", "0.2.0"]) {
+    server.handleEvent(
+      ev({ event_type: "adapter_status", session_id: "adapter-claude_code", payload: { adapter_version: v } }),
+    );
+  }
+  const adapters = server.stateSnapshot().adapters;
+  assert.equal(adapters.length, 1);
+  assert.equal(adapters[0]!.adapter_version, "0.2.0", "版本要跟着最新一次上报走");
+});
+
+test("capabilities 列是脏数据时状态推送不炸（老库 / 手改过的行）", () => {
+  const server = makeServer();
+  server.db
+    .prepare("INSERT INTO agents(agent, capabilities, connected_at, last_event_at) VALUES(?,?,?,?)")
+    .run("codex", "not json{", "t", "t");
+  assert.deepEqual(server.stateSnapshot().adapters[0]!.capabilities, []);
+});

@@ -18,7 +18,7 @@ import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
-import type { CoreEvent, PetState, PetStatePush, SessionView } from "./events.ts";
+import type { AdapterView, AgentId, CoreEvent, PetState, PetStatePush, SessionView } from "./events.ts";
 
 export interface ServerConfig {
   port?: number;
@@ -336,6 +336,29 @@ export class VibepawsServer {
     return healthScore < TIRED_HEALTH_THRESHOLD ? "tired" : "idle";
   }
 
+  /**
+   * 已接入的 adapter。界面靠它区分「没装 hooks」和「装了但 agent 还没动」——
+   * 在这之前两者都是一只闲着的宠物，用户没有任何办法看出自己装漏了。
+   */
+  listAdapters(): AdapterView[] {
+    const rows = this.db
+      .prepare(`SELECT agent, adapter_version, capabilities, connected_at, last_event_at FROM agents ORDER BY agent`)
+      .all() as Array<{
+        agent: AgentId;
+        adapter_version: string | null;
+        capabilities: string;
+        connected_at: string | null;
+        last_event_at: string | null;
+      }>;
+    return rows.map((r) => ({
+      agent: r.agent,
+      adapter_version: r.adapter_version,
+      capabilities: safeParseArray(r.capabilities),
+      connected_at: r.connected_at,
+      last_event_at: r.last_event_at,
+    }));
+  }
+
   /** 当前聚合状态（/api/state 与 SSE 推送共用；测试直接读它） */
   stateSnapshot(): PetStatePush {
     const pet = this.exp.getPetSnapshot();
@@ -352,6 +375,7 @@ export class VibepawsServer {
         next_level_exp: pet.next_level_exp,
       },
       sessions,
+      adapters: this.listAdapters(),
       mute: (({ global_until, global_minutes }) => ({ global_until, global_minutes }))(
         this.notifications.muteStatus(),
       ),
@@ -360,6 +384,16 @@ export class VibepawsServer {
       working: sessions.filter((s) => s.is_active && s.state === "working"),
       idle: sessions.filter((s) => s.is_active && s.state === "idle"),
     };
+  }
+}
+
+/** capabilities 列是 JSON 文本：老库里可能是脏值，解析失败当没有能力声明，别让状态推送整个炸掉 */
+function safeParseArray(raw: string | null): string[] {
+  try {
+    const v = JSON.parse(raw ?? "[]") as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
   }
 }
 
