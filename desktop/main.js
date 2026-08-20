@@ -56,10 +56,12 @@ let levelKeepAlive = null;
  * 只存「窗口怎么摆」这类壳层设定，与 Core 的 settings 表无关：
  * Core 是守护进程，可能没跑；窗口行为必须在 Core 之前就能决定。
  *
- * allSpaces 默认 true：宠物是「活着的伙伴」，你在哪个桌面干活它就该在哪 ——
- * 尤其是 coding agent 常年跑在全屏 iTerm2 里，那本身就是一个独立 Space，
- * 钉死在启动那张桌面上等于永远看不见。#4 的真正诉求不是「别跟着我」，
- * 而是「这件事得归我管」：所以默认跟随 + 托盘里随时可关。
+ * allSpaces 默认 true：宠物是「活着的伙伴」，你在哪个桌面干活它就该在哪。
+ * #4 的真正诉求不是「别跟着我」，而是「这件事得归我管」：默认跟随 + 托盘里随时可关。
+ *
+ * 它只管「跟不跟着你换桌面」这一件事。「你全屏时我还在不在」由 applyWindowLevel
+ * 无条件保证，不受这个开关影响 —— 这两件事曾经是同一个布尔值，于是把开关关掉
+ * 等于让宠物在全屏终端里彻底消失，而 coding agent 基本都活在全屏终端里。
  *
  * anchor 存的是窗口**底部中心**（= 宠物脚下那一点）的屏幕坐标，而不是左上角：
  * 浮层展开时窗口会变大，用左上角存位置的话宠物每次开关浮层都会跳一下。 */
@@ -351,6 +353,8 @@ function createWindow() {
     },
   });
   applyWindowLevel();
+  // 「宠物不见了」最难查的一点是壳层状态完全不可见 —— 把它打出来
+  log(`[vibepaws] window level=screen-saver allSpaces=${prefs.allSpaces} fullScreen=always`);
   // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
   win.loadURL(`http://127.0.0.1:${uiPort}/?locale=${encodeURIComponent(LOCALE)}`);
   // 渲染进程 console → 主进程日志（调试用）。Electron 28+ 传的是单个 details 对象，
@@ -398,17 +402,42 @@ function runCanvasDiagnostic() {
 }
 
 /**
+ * 让壳进程定档 accessory（= NSUIElement）：不占 Dock、没有菜单栏。
+ *
+ * 这不是「桌宠不该有 Dock 图标」的洁癖。macOS 10.14 起，regular 档的进程拿不到
+ * NSWindowCollectionBehaviorFullScreenAuxiliary —— 窗口在别人的全屏 Space 里
+ * 根本不会出现。Electron 知道这件事，所以 setVisibleOnAllWorkspaces 会私自
+ * TransformProcessType 来回切档；代价是每次调用窗口和 Dock 都闪一下，而我们有个
+ * 30s 保活 tick 在调它，等于每 30 秒闪一次宠物。
+ * 启动时一次性定档，之后所有调用都带 skipTransformProcessType，两个问题一起了结。
+ */
+function becomeAccessoryApp() {
+  if (process.platform !== "darwin") return;
+  app.setActivationPolicy("accessory");
+}
+
+/**
  * 置顶层级 + Spaces 可见性一起施加（issue #4）。
  *
  * 原来这两行是写死的常量，用户没有任何开关；现在读 prefs，托盘里可以随时翻转。
  * 顺序有讲究：先 setAlwaysOnTop（它会重设 collectionBehavior），再设 workspace，
  * 反过来写 workspace 会被随后的置顶调用抹掉 —— 这也是那个 30s 保活 tick
  * 必须走这个函数、而不能只调 setAlwaysOnTop 的原因。
+ *
+ * level 从 floating 提到 screen-saver：floating 是 NSFloatingWindowLevel(3)，
+ * 只压得住**同一个 Space 里**的普通窗口。别的 app 进原生全屏后独占一个 Space，
+ * level 3 在那儿排不上号。桌宠这类常驻浮层的通行做法就是顶到 screen-saver(1000)。
+ *
+ * visibleOnFullScreen 恒为 true，不再跟着 allSpaces 走 —— 这是两个不同的问题，
+ * 见 DEFAULT_PREFS 上面那段。
  */
 function applyWindowLevel() {
   if (!win || win.isDestroyed()) return;
-  win.setAlwaysOnTop(true, "floating");
-  win.setVisibleOnAllWorkspaces(prefs.allSpaces, { visibleOnFullScreen: prefs.allSpaces });
+  win.setAlwaysOnTop(true, "screen-saver");
+  win.setVisibleOnAllWorkspaces(prefs.allSpaces, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
 }
 
 function toggleAllSpaces() {
@@ -564,6 +593,8 @@ function createTray() {
 /* ---------------- 启动 ---------------- */
 async function boot() {
   loadPrefs();
+  // 必须在建窗口之前：accessory 档决定了窗口能不能出现在别人的全屏 Space 里
+  becomeAccessoryApp();
   await loadI18n();
   // 托盘先建：UI server 起不来时至少还有个出口（退出 / 重试），
   // 而不是「点了图标什么都没发生」。
