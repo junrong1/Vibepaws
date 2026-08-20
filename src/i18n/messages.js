@@ -51,21 +51,32 @@ export const MESSAGES = {
   en: {
     // ---- 宠物窗口 ----
     "ui.drag": "Drag me",
+    "ui.pet.aria": "Pet — click to open the session panel",
     "ui.conn.title": "Core connection",
     "ui.conn.ok": "Core connected",
     "ui.conn.off": "Core offline",
+    "ui.conn.degraded": "Session list is live, but the event stream is down — bubbles won't arrive",
 
     // ---- 浮层 ----
     "ui.panel.close": "Close",
     "ui.panel.empty": "No sessions yet — start your coding agent",
     "ui.panel.offline": "Can't reach Vibepaws Core — session list unavailable",
+    "ui.panel.more": "+{count} older sessions",
     "ui.action.mute30": "Mute everything for 30 minutes",
     "ui.action.mute2h": "Mute everything for 2 hours",
+    "ui.action.unmute": "Muted · {time} left — click to turn notifications back on",
     "ui.action.exp": "EXP breakdown",
+    "ui.btn.mute30": "🔕 30m",
+    "ui.btn.unmute": "🔔 On",
+    "ui.badge.muted": "🔕 {time}",
+    "ui.mute.remaining": "Everything muted · {time} left — click to undo",
+    "ui.bubble.dismiss": "Dismiss",
     "ui.toast.muted30": "🔕 Muted everything for 30 minutes",
     "ui.toast.muted2h": "😴 Muted everything for 2 hours",
+    "ui.toast.unmuted": "🔔 Notifications are back on",
+    "ui.toast.actionfailed": "Couldn't reach Core — nothing changed",
     "ui.toast.copied": "Copied: {cmd}",
-    "ui.toast.command": "Command: {cmd}",
+    "ui.toast.command": "Copy this: {cmd}",
     "ui.session.tooltip": "{project} · last activity {time}",
 
     // ---- EXP 明细表 ----
@@ -85,6 +96,9 @@ export const MESSAGES = {
 
     // ---- 时间 ----
     "ui.time.justnow": "just now",
+    "ui.time.seconds": "{n}s",
+    "ui.time.minutes": "{n}m",
+    "ui.time.hours": "{n}h",
     "ui.time.unknown": "—",
 
     // ---- 托盘（Electron 主进程）----
@@ -94,7 +108,10 @@ export const MESSAGES = {
     "tray.state.on": "on",
     "tray.state.off": "off",
     "tray.show": "Show pet",
+    "tray.reset": "Reset pet position",
     "tray.quit": "Quit Vibepaws",
+    "tray.startfailed.title": "Vibepaws could not start",
+    "tray.startfailed.body": "The pet window needs its local UI server.\n\n{error}",
 
     // ---- 通知气泡 ----
     "notif.decision.title": "{agent} needs you",
@@ -143,21 +160,32 @@ export const MESSAGES = {
   "zh-CN": {
     // ---- 宠物窗口 ----
     "ui.drag": "拖动我",
+    "ui.pet.aria": "宠物 — 点击打开 session 浮层",
     "ui.conn.title": "Core 连接状态",
     "ui.conn.ok": "Core 已连接",
     "ui.conn.off": "Core 未连接",
+    "ui.conn.degraded": "session 列表在刷新，但事件流已断 — 气泡不会再来",
 
     // ---- 浮层 ----
     "ui.panel.close": "关闭",
     "ui.panel.empty": "还没有 session — 启动你的 coding agent 试试",
     "ui.panel.offline": "连不上 Vibepaws Core — session 列表暂不可用",
+    "ui.panel.more": "还有 {count} 个较早的 session",
     "ui.action.mute30": "全部安静 30 分钟",
     "ui.action.mute2h": "全部安静 2 小时",
+    "ui.action.unmute": "安静中 · 还剩 {time} — 点一下恢复通知",
     "ui.action.exp": "EXP 明细",
+    "ui.btn.mute30": "🔕 30分",
+    "ui.btn.unmute": "🔔 恢复",
+    "ui.badge.muted": "🔕 {time}",
+    "ui.mute.remaining": "全部安静中 · 还剩 {time} — 点一下恢复",
+    "ui.bubble.dismiss": "关闭",
     "ui.toast.muted30": "🔕 已安静 30 分钟",
     "ui.toast.muted2h": "😴 已安静 2 小时",
+    "ui.toast.unmuted": "🔔 通知已恢复",
+    "ui.toast.actionfailed": "连不上 Core — 这次操作没有生效",
     "ui.toast.copied": "已复制：{cmd}",
-    "ui.toast.command": "命令：{cmd}",
+    "ui.toast.command": "手动复制：{cmd}",
     "ui.session.tooltip": "{project} · 最后活动 {time}",
 
     // ---- EXP 明细表 ----
@@ -177,6 +205,9 @@ export const MESSAGES = {
 
     // ---- 时间 ----
     "ui.time.justnow": "刚刚",
+    "ui.time.seconds": "{n} 秒",
+    "ui.time.minutes": "{n} 分钟",
+    "ui.time.hours": "{n} 小时",
     "ui.time.unknown": "—",
 
     // ---- 托盘（Electron 主进程）----
@@ -186,7 +217,10 @@ export const MESSAGES = {
     "tray.state.on": "开",
     "tray.state.off": "关",
     "tray.show": "显示宠物",
+    "tray.reset": "把宠物放回右下角",
     "tray.quit": "退出 Vibepaws",
+    "tray.startfailed.title": "Vibepaws 启动失败",
+    "tray.startfailed.body": "宠物窗口依赖本机 UI 服务。\n\n{error}",
 
     // ---- 通知气泡 ----
     "notif.decision.title": "{agent} 需要你",

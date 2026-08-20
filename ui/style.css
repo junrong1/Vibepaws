@@ -100,19 +100,43 @@ body.dragging #pet { filter: none; }
 .conn-ok { background: var(--ok); }
 .conn-off { background: var(--danger); }
 .conn-unknown { background: var(--warn); }
+/* 「轮询活着但事件流断了」：session 列表照样刷新，气泡却一条都不会来。
+ * 这种半死状态过去显示成绿灯，用户根本不知道提醒已经失效了。 */
+.conn-degraded { background: var(--warn); animation: pulse 1.4s infinite; }
+
+/* 静音徽章：常驻提示 + 一点就恢复（issue #7） */
+#mute-badge {
+  position: absolute;
+  /* 贴在宠物脚边而不是窗口顶部：浮层展开时会盖住顶部，
+   * 而「我现在是静音的」这条提示恰恰不能被盖住（issue #7）。 */
+  bottom: 4px; right: 6px;
+  padding: 1px 6px;
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--warn);
+  background: rgba(13,17,23,0.9);
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  cursor: pointer;
+  z-index: 6;
+}
+#mute-badge[hidden] { display: none; }
+#mute-badge:hover { color: var(--text); border-color: var(--text); }
 
 /* ---- 气泡层 ---- */
-#bubbles {
+#bubbles, #toasts {
   position: absolute;
-  top: 0; left: 0; right: 0;
+  left: 0; right: 0;
   pointer-events: none;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding-top: 8px;
   z-index: 5;
 }
+#bubbles { top: 0; padding-top: 8px; }
+/* 操作确认单独一层，贴着宠物上方：通知气泡的数量上限不该把它挤掉 */
+#toasts { bottom: 8px; z-index: 11; padding-bottom: 2px; }
 .bubble {
   pointer-events: auto;
   max-width: 210px;
@@ -132,22 +156,30 @@ body.dragging #pet { filter: none; }
 .bubble .b-body { font-size: 10px; color: var(--dim); margin-top: 2px; }
 .bubble .b-meta { font-size: 9px; color: #6e7681; margin-top: 2px; }
 .bubble .b-dismiss { float: right; color: var(--dim); border: none; background: none; cursor: pointer; font-size: 11px; }
+.bubble .b-dismiss:hover { color: var(--danger); }
+/* 「等你」类气泡不自动消失：错过它就等于错过了这个产品唯一的核心提醒 */
+.bubble.sticky { border-left-width: 4px; }
+/* 复制失败时把命令原样显示出来 —— 全局 user-select:none 会让它连手动复制都做不到 */
+.toast-copy { user-select: text; -webkit-user-select: text; max-width: 240px; word-break: break-all; }
 @keyframes bubble-in {
   from { opacity: 0; transform: translateY(-8px) scale(0.94); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* ---- 浮层 ---- */
+/* 浮层不再压在宠物身上：窗口只有 210×250，浮层一开宠物就整个被盖住 ——
+ * 「再点一次宠物关掉浮层」这个最自然的操作直接失效，只剩右上角那个小 ×。
+ * 现在浮层占据宠物**上方**的区域（Electron 下由主进程把窗口撑高，见 desktop/main.js）。 */
 #panel {
   position: absolute;
-  left: 8px; right: 8px; bottom: 8px;
+  left: 8px; right: 8px; top: 8px; bottom: 186px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 6px 24px rgba(0,0,0,0.6);
   z-index: 10;
   animation: panel-in 0.18s ease;
-  max-height: 70%;
+  min-height: 96px;
   display: flex;
   flex-direction: column;
 }
@@ -155,6 +187,11 @@ body.dragging #pet { filter: none; }
  * 会盖掉 UA 样式表的 [hidden]{display:none}，于是 hidden 完全失效 ——
  * 浮层从启动起就一直挂在屏幕上，× 也关不掉（issue #2 / #5）。 */
 #panel[hidden] { display: none; }
+/* 壳没能把窗口撑高时（纯浏览器预览，或 setPanelOpen 不可用）：宁可让浮层
+ * 压住宠物头顶，也不要缩成一条 56px 的缝什么都看不见。 */
+@media (max-height: 320px) {
+  #panel { bottom: 96px; }
+}
 @keyframes panel-in {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
@@ -170,6 +207,8 @@ body.dragging #pet { filter: none; }
 #panel-close { background: none; border: none; color: var(--dim); font-size: 15px; cursor: pointer; }
 #panel-close:hover { color: var(--danger); }
 #panel-body { overflow-y: auto; padding: 8px 12px 10px; }
+#panel-empty { color: var(--dim); padding: 6px; }
+#panel-more { color: var(--dim); padding: 4px 6px; font-size: 9px; }
 
 .session-row {
   display: flex;
@@ -183,6 +222,12 @@ body.dragging #pet { filter: none; }
   background: rgba(255,255,255,0.02);
 }
 .session-row:hover { border-color: var(--accent); }
+.session-row:focus-visible, #panel-actions button:focus-visible, #panel-close:focus-visible,
+#pet:focus-visible, #mute-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.session-row .s-wait { font-size: 9px; color: var(--danger); flex-shrink: 0; }
 .agent-badge {
   font-size: 9px;
   padding: 2px 5px;
@@ -214,6 +259,13 @@ body.dragging #pet { filter: none; }
   cursor: pointer;
 }
 #panel-actions button:hover { border-color: var(--accent); background: #2a313c; }
+#panel-actions button[disabled] { opacity: 0.5; cursor: progress; }
+/* 静音生效时按钮自己就是状态显示（issue #7：别让用户猜有没有生效） */
+#panel-actions button.active {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: #2a2419;
+}
 
 #explog { margin-top: 8px; font-size: 10px; color: var(--dim); }
 #explog table { width: 100%; border-collapse: collapse; }

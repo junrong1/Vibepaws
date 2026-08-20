@@ -10,7 +10,7 @@
 <body>
   <!-- 宠物舞台（拖拽区）；data-i18n-title 由 app.js 的 applyStaticI18n 填充 -->
   <div id="stage" data-i18n-title="ui.drag">
-    <canvas id="pet" width="160" height="160"></canvas>
+    <canvas id="pet" width="160" height="160" role="button" tabindex="0" data-i18n-aria="ui.pet.aria"></canvas>
     <!-- EXP 条 -->
     <div id="expbar">
       <div id="expfill"></div>
@@ -20,23 +20,27 @@
     <div id="nameplate"></div>
     <!-- 连接状态点 -->
     <div id="conn" class="conn-unknown" data-i18n-title="ui.conn.title"></div>
+    <!-- 静音徽章（issue #7：静音必须是看得见、点得掉的状态） -->
+    <button id="mute-badge" type="button" hidden></button>
   </div>
 
-  <!-- 气泡层 -->
-  <div id="bubbles"></div>
+  <!-- 气泡层（Core 的通知） -->
+  <div id="bubbles" aria-live="polite"></div>
+  <!-- 提示层（本机操作确认）：和通知分开，否则一串通知会把「已复制」顶掉 -->
+  <div id="toasts" aria-live="polite"></div>
 
   <!-- 浮层（点击宠物弹出） -->
-  <div id="panel" hidden>
+  <div id="panel" role="dialog" aria-modal="false" hidden>
     <div id="panel-head">
       <span id="panel-title">Vibepaws</span>
-      <button id="panel-close" data-i18n-title="ui.panel.close">×</button>
+      <button id="panel-close" type="button" data-i18n-title="ui.panel.close" data-i18n-aria="ui.panel.close">×</button>
     </div>
     <div id="panel-body">
       <div id="sessions"></div>
       <div id="panel-actions">
-        <button id="act-mute" data-i18n-title="ui.action.mute30">🔕 30m</button>
-        <button id="act-mute2h" data-i18n-title="ui.action.mute2h">😴 2h</button>
-        <button id="act-exp" data-i18n-title="ui.action.exp">📈 EXP</button>
+        <button id="act-mute" type="button" data-i18n-title="ui.action.mute30">🔕 30m</button>
+        <button id="act-mute2h" type="button" data-i18n-title="ui.action.mute2h">😴 2h</button>
+        <button id="act-exp" type="button" data-i18n-title="ui.action.exp" aria-expanded="false">📈 EXP</button>
       </div>
       <div id="explog" hidden></div>
     </div>
