@@ -364,9 +364,15 @@ npm run desktop     # Electron 透明桌宠窗口（右下角、always-on-top、
 
 - 宠物 7 状态动画（idle/working/needs-you/warning/finished/tired/level-up）
 - 气泡：需要你/权限/context 警告/出错/token 里程碑
-- 点击宠物 → 浮层：session 列表（点击行复制 jump-to 恢复命令）、全部静音 30m/2h、EXP 明细
-- 拖拽：按住宠物窗口空白处拖动；托盘菜单：点击穿透开关 / 显示 / 退出
+- 点击宠物 → 浮层（窗口自动向上展开，宠物不动）：session 列表（点击行复制 jump-to 恢复命令，
+  needs-you 行显示已经等了多久）、全部静音、EXP 明细。关闭：再点宠物 / 点空白处 / `Esc` / 右上角 ×
+- 静音是**可见且可撤销的状态**：静音期间宠物脚边有 🔕 徽章（显示剩余时间），
+  点徽章或再点一次按钮即恢复通知
+- 连接指示灯三态：绿=事件流正常；橙（闪烁）=状态还在轮询但事件流已断（此时气泡不会来）；红=连不上 Core
+- 拖拽：按住宠物窗口空白处拖动（位置会记住，且始终夹在屏幕可见区域内）；
+  托盘菜单：点击穿透开关 / 所有桌面显示 / 显示 / 放回右下角 / 退出
 - 浏览器预览（可选）：`npm run ui` 后打开 http://127.0.0.1:5173
+  （5173 被占用时桌面壳会自动改用空闲端口）
 
 > 桌面壳当前用 Electron（环境无 Rust 工具链）；Tauri v2 待 Rust 就绪后替换，仅换壳层，渲染与 SSE 协议不变。
 
@@ -389,9 +395,23 @@ npm run adapter:install -- --agent codex         # 写入 .codex/hooks.json；�
 - 离线兜底：`npm run bridge` 监听该目录，把 JSONL 归一化后转发给 Core
 - 隐私：adapter 白名单提取（丢弃 tool_input/prompt/transcript_path），Core 落库前再丢未知字段，原始 hook JSON 永不落库（`src/core/privacy.test.ts` 验收）
 
+### 5. 打包 .app（可选）
+
+```bash
+npm run dist:mac     # 产物在 dist/
+```
+
+> **未签名产物在 macOS 上会被判定为「已损坏」**（issue #1）。这不是产物坏了，
+> 而是 Gatekeeper 对没有 Apple 开发者签名 + 公证的 app 一律隔离。两条路：
+>
+> - 自己用：装好后解除隔离标记
+>   `xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
+> - 要分发给别人：需要 Apple Developer 证书，给 `package.json` 的 `build.mac`
+>   补上 `hardenedRuntime` + `entitlements` 并做 notarize（需要签名凭据，本仓库未内置）。
+
 ### 测试
 
 ```bash
-npm test          # 45 项：registry 状态机 / 通知引擎 / EXP 引擎 / hook 归一化 / bridge / 隐私 / i18n
+npm test          # registry 状态机 / 通知引擎 / EXP 引擎 / 聚合状态 / 迁移 / hook 归一化 / bridge / 隐私 / i18n
 npm run typecheck
 ```
