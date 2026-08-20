@@ -844,3 +844,7 @@ applyStaticI18n();
 renderConn();
 startPetLoop();
 connectCore();
+// 宠物动画循环只启动一次（renderPetFrame 内部会自续帧）；
+// 不能放在 render() 里 —— render() 每次 SSE/轮询都会调用，会把 rAF 循环越堆越多，
+// 导致渲染进程 CPU 打满、气泡无法及时弹出（issue：其他窗口 ask 无通知）。
+renderPetFrame();
