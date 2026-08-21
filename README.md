@@ -1,491 +1,483 @@
+<div align="center">
+
+<img src="ui/pets/embercub/idle.png" width="120" alt="Embercub" />
+<img src="ui/pets/lunafang/needs-you.png" width="120" alt="Lunafang" />
+<img src="ui/pets/voltroc/working.png" width="120" alt="Voltroc" />
+<img src="ui/pets/circuit-witch/level-up.png" width="120" alt="Circuit Witch" />
+<img src="ui/pets/sporewick/tired.png" width="120" alt="Sporewick" />
+
 # Vibepaws
 
-> 一个可爱的编程宠物:帮你看着 AI agents,在它们需要你时提醒你,并从健康的 vibe-coding session 中成长。
+**A cute coding pet that watches your AI agents, pings you when they need you, and grows from healthy vibe-coding sessions.**
 
-**状态:** 草案 v0.1 — 范围已冻结,代码尚未开始
-**发布窗口:** 2026-08-18 → 2026-09-01
-**规格来源:** MVP 发布 PRD(`mvp_release_prd_zh.html`),工作名「AI 编程宠物 / AI Coding Pet」
+Local-first · always-on-top · never reads your code
+
+[Quick start](#quick-start-3-minutes) · [Connect your agent](#connect-your-coding-agent) · [How growth works](#how-your-pet-grows) · [Privacy](#privacy-what-leaves-your-machine) · [中文文档](README.zh-CN.md)
+
+</div>
 
 ---
 
-## 这是什么
+## The problem
 
-Vibepaws 是一个本地运行、always-on-top 的桌面宠物。它读取你的 coding agent(Claude Code、Codex,以及通过 generic bridge 接入的其他工具)发出的事件,把 agent 状态转成一眼能看懂的信息。
+You start Claude Code, it runs for four minutes, and then it stops — waiting for you to approve one file write. You're in another window. You find out six minutes later.
 
-MVP 刻意做成**「带成长系统的 agent 注意力宠物」**,而不是宠物市场。桌面宠物、编程宠物、状态反应型 mascot 已经很常见 —— 差异化不在于「有一个可爱的宠物」。真正的切入点是:宠物能帮你抓住 AI agent session 里的关键时刻,奖励健康的 agent 使用方式,并逐渐成为你工作成果的长期记录。
+Or: the session has been going great, you're deep in it, and you don't notice that context is at 94% until the agent starts forgetting the constraint you set twenty messages ago.
 
-## 问题描述
+Coding agents are good at working. They're bad at getting your attention, and terrible at telling you when they've stopped being useful.
 
-coding agent 用户经常运行长会话,同时切换窗口、等待工具授权、关注 token/context 使用量,并靠感觉判断什么时候该开新会话。结果是错过决策、上下文窗口浪费、主题漂移和空等时间。
+## What Vibepaws does
 
-Vibepaws 把这些状态显性化:agent 需要你时提醒你,在 context 变得不健康前给出警告,并从你的 AI 编程活动中成长。
+A small pet sits on your desktop, above your fullscreen terminal. It reads events from your coding agents and turns them into something you can catch out of the corner of your eye:
 
-## 目标用户
+- **The agent needs you** → the pet looks up at you and a bubble appears, within seconds
+- **Context is filling up** → warning at 70%, 85%, 95%, each fired once, not nagged
+- **Token budget milestones** → 25% / 50% / 75% / 90% of the budget you set
+- **The agent errored or stalled** → you find out now, not on your next window switch
+- **The session finished** → the pet earns EXP, levels up, and eventually evolves
 
-**主要用户**
+The pet also grows — but the growth loop is deliberately built so that **burning tokens does not level up your pet**. Sloppy sessions (context at 96%, correction loops) earn a fraction of the EXP that clean ones do. Healthy usage is the only fast path. See [How your pet grows](#how-your-pet-grows).
 
-- 每天使用 AI coding agent 的 vibe coder
-- 同时运行 1 到 4 个 agent session 的 solo builder / indie hacker
-- 能接受安装本地桌面工具的人
-- 喜欢有趣反馈,但仍然需要真实工作流价值的人
+And it never sees your code. Prompts, diffs, file paths, and tool inputs are dropped at the adapter and dropped again at the database. See [Privacy](#privacy-what-leaves-your-machine).
 
-**次要用户**
+## Status
 
-- 管理多个 session 的 coding-agent power user
-- 希望展示进度的 streamer 或 build-in-public 创作者
+**MVP alpha 0.1** — the core loop works end to end on Claude Code, Codex, and pi-coding-agent. Honest state of things:
 
-**MVP 暂不服务**
-
-- 企业团队
-- 只手写代码、不使用 coding agent 的用户
-- 想要完整 AI 聊天伴侣的用户
-- 主要想玩完整游戏经济系统的用户
-
-## MVP 目标
-
-在两周内发布一个可用 alpha,验证四件事:
-
-1. 用户在 vibe coding 时是否愿意一直开着宠物?
-2. 用户是否能更快注意到并处理 agent 决策通知?
-3. 升级循环是否有趣,同时**不**鼓励浪费 token?
-4. 产品是否能通过统一事件桥接支持多个 coding agent?
-
-## 基于研究的范围决策
-
-| 功能 | MVP 决策 | 原因 |
-| --- | --- | --- |
-| 常见 coding pet 行为 | P0 | 桌面宠物的基础门槛。宠物必须「活着」。 |
-| 决策通知气泡 | P0 | 核心工作流价值最高。 |
-| 使用量 / token 通知 | P0 | 支撑 token feeding 循环,也帮助用户控制成本。 |
-| context window 过大警告 | P0 | 对 agent 用户很有差异化。 |
-| 主题漂移 / 建议新会话 | P0 alpha | 有价值,但第一版应使用保守启发式规则。 |
-| 100 个可爱 pixel pet | P0 架构,P1 内容 | 两周内做 100 个高质量宠物不现实。支持 100 个 ID,先发布少量完成度高的宠物。 |
-| 随机分配宠物 | P0 | 成本低,惊喜感强。 |
-| 等级和 EXP 进度条 | P0 | 核心留存循环。 |
-| token cost feeding pet | P0,但必须加上限 | 主题很好,但不能奖励浪费 token。 |
-| 隐藏质量 EXP 机制 | P0 | 让成长循环更健康的关键。 |
-| 宠物死亡 | MVP 不做 | 容易制造焦虑。改为 tired / hibernation 状态。 |
-| 自我成长 | P0 轻量版 | 减少焦虑,提供被动惊喜。 |
-| 进化 | P0 限量版 | 先做一个完整进化家族,架构上支持更多。 |
-| STT 语音命令 | P1 alpha | 有用,但集成和安全风险高于通知核心循环。 |
-| Claude Code + Codex 支持 | P0 | 前两个 agent adapter。 |
-| Pi Agent + DeepSeek Harness 支持 | P1 / generic bridge | 除非有稳定 hook,否则先通过通用事件桥支持。 |
-| 社区贡献宠物 | P1.5 | 重要,但需要审核、版权和素材质量规则。 |
-| 排行榜 / PVP / 稀有宠物售卖 | 后续 | 范围大,并带来经济系统、信任、防作弊和审核问题。 |
-
-## MVP 功能需求
-
-### 6.1 桌面宠物表层 — P0
-
-> 作为 vibe coder,我希望在 AI agent 工作时看到一个可爱的宠物,这样 coding 过程不那么冷冰冰,并且我能一眼看出状态。
-
-- always-on-top 桌面宠物窗口,pixel style 视觉语言
-- 可拖拽位置、click-through mode、Do Not Disturb mode、reduced-motion mode
-- 状态:`idle`、`working`、`needs-you`、`warning`、`finished`、`tired`、`level-up`
-- 点击宠物可以打开当前活跃 session 或 notification panel
-
-MVP 内容要求:
-
-- 至少发布 **12 个**高质量 starter pets
-- 数据模型必须支持至少 **100 个** pet ID
-- 用户首次启动时随机分配一个 starter pet
-- 从第一天开始包含 rarity metadata:`common`、`uncommon`、`rare`、`legendary`
-- MVP 不做 marketplace 或 trading
-
-第一版更重要的是完成度,而不是宠物数量。
-
-### 6.2 通知气泡 — P0
-
-> 作为 coding-agent 用户,我希望当 agent 需要我时,宠物显示气泡提醒,这样我做别的事情时不会错过决策。
-
-通知类型:需要决策 · 需要工具权限 · usage/token 达到阈值 · context window 过大 · topic drift / 建议开启新 session · session 完成 · agent 错误或卡住。
-
-气泡行为:
-
-- 气泡出现在宠物附近,包含短状态标签和一行原因
-- 点击气泡打开相关 session 或 panel
-- 气泡**绝不**显示原始 prompt、源代码、secret path 或私有文件内容
-- 用户可以 mute 所有气泡 30 分钟、2 小时,或当前 project
-
-验收标准:事件进入后 **5 秒内**显示决策气泡;用户可以 dismiss 气泡;用户可以从气泡跳转到 session;通知记录在本地 event history。
-
-### 6.3 使用量与 Context 健康 — P0
-
-> 作为 agent 用户,我希望宠物在 token 使用量或 context 不健康时提醒我,这样我可以控制成本和 session 质量。
-
-**Usage notification** —— 显示 token/cost 里程碑通知,默认阈值为配置 session budget 的 25%、50%、75%、90%。用户可以按 session 设置 budget。
-
-**Context warning**
-
-| Context 使用量 | 提醒文案 |
+| | |
 | --- | --- |
-| 70% | "context getting full." |
-| 85% | "consider summarizing or new session." |
-| 95% | "new session strongly recommended." |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
+| ⚠️ **Partial** | 5 of 12 planned starter pets · token budget has an engine but no settings UI · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
+| ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
-**Topic consistency warning** —— MVP 默认**不**读取完整 prompt history,只使用安全的本地信号:用户定义的 session goal、project path 变化、文件区域突然大幅变化、重复 correction、context 使用量,以及用户 opt in 后的新任务关键词。只建议,不强制开启新 session。
+Full requirement-by-requirement status: [PRD §15](docs/prd_mvp_en.md#15-implementation-status-as-of-2026-08-21).
 
-验收标准:用户可以看到当前 token budget 和 context health;当 context 不健康时宠物状态会变化;warning 可以按 session mute。
+---
 
-### 6.4 等级与 EXP 系统 — P0
+## Quick start (3 minutes)
 
-> 作为用户,我希望宠物从 AI coding 活动中成长,让 vibe-coding session 更有奖励感。
+### Requirements
 
-**核心原则:** token 可以喂养宠物,但产品不能奖励浪费 token。
+**Node ≥ 22.6.** This is a hard floor, not a suggestion. Core, the UI server, and the collector command written into your agent's hook config all run under `node --experimental-strip-types`, and that flag doesn't exist before 22.6. On Node 20 nothing starts — and the hook path fails *silently*, so the pet just sits there idle instead of telling you anything is wrong.
 
-```text
-session_exp =
-  capped_token_exp
-  * context_health_multiplier
-  * topic_consistency_multiplier
-  + outcome_bonus
-  + daily_care_bonus
+```bash
+node --version   # must be v22.6.0 or higher
+npm install
 ```
 
-基础 token EXP:每 **1,000 tokens 给 1 EXP**,每只宠物有 **daily token EXP cap**,防止用户通过浪费 token 刷等级。
+macOS is the tested platform today. Windows and Linux aren't blocked by design, but haven't been exercised.
 
-质量倍率:
+### 1. Start Core
 
-| 信号 | 倍率 |
-| --- | --- |
-| Context 低于 70% | 1.10× |
-| Context 70–85% | 1.00× |
-| Context 85–95% | 0.75× |
-| Context 超过 95% | 0.50× |
-| Topic 与 session goal 一致 | 1.10× |
-| 重复 correction loop | 0.80× |
-| Session 产生 accepted diff、test pass、commit 或明确 "shipped" | +20 到 +100 EXP |
+Core is the daemon: it ingests events, tracks sessions, runs the notification and EXP engines, and owns the SQLite database.
 
-宠物健康:**MVP 不做永久死亡。** 如果使用方式不健康,宠物变成 `tired`,EXP 增长变慢;如果用户休息、开启新 session 或 ship 了东西,宠物恢复。宠物每天还会缓慢自我成长,避免用户因为不用 agent 而感到被惩罚。
+```bash
+npm run core     # listens on 127.0.0.1:17893
+```
 
-验收标准:EXP bar 可见;用户可以查看 EXP 为什么变化;有 level-up 动画;有 tired 状态;没有永久死亡。
+First run initializes `.vibepaws/vibepaws.db`, rolls you a **random starter pet**, and writes an API token to `.vibepaws/api_token`. Core binds localhost only, and every route except `/health` requires that token.
 
-### 6.5 进化 — P0 限量版
+### 2. Start the pet
 
-> 作为用户,我希望宠物在健康使用 agent 后进化,这样它更像长期陪伴。
+In a second terminal:
 
-发布**一个完整进化家族**:基础形态、进化形态,以及质量阈值高时出现的 rare alternate form。所有 pet ID 都支持 evolution metadata。进化由 level 和质量条件**共同**触发。
+```bash
+npm run desktop  # transparent always-on-top window, bottom-right, with a tray icon
+```
 
-| 条件 | 结果 |
-| --- | --- |
-| Level 1–9 | starter form |
-| Level 10+ | evolved form |
-| Level 10+ 且 context-health score 高 | clean / calm evolution |
-| Level 10+ 且使用量高但 session hygiene 差 | tired variant(不是死亡) |
+> In dev mode Core and the pet are separate processes — start Core first. A packaged `.app` launches Core for you.
 
-不在范围内:100 条完整进化线、trading evolution、battle stats。
+### 3. Watch it work, without an agent
 
-### 6.6 STT 语音命令 — P1 Alpha
+The simulator emits real events into Core, so you can see every behavior before wiring up anything:
 
-> 作为用户,当 agent 需要决策时,我希望可以直接对宠物说话,而不需要切换窗口。
+```bash
+npm run sim -- --scenario normal              # normal session → working → finished
+npm run sim -- --scenario frequent_decisions  # repeated "needs you" → bubbles
+npm run sim -- --scenario context_overload    # context 88% → 96% → warnings + EXP penalty
+npm run sim -- --scenario correction_loop     # same file edited over and over → correction count
+npm run sim -- --scenario multi_session       # 3 parallel sessions → aggregated state + carousel
+```
 
-- push-to-talk 按钮或 hotkey,面向短命令的 speech-to-text
-- 支持命令:`approve`、`reject`、`continue`、`open session`、`new session`、`mute`、`summarize`
-- 对 destructive 或 permission-sensitive 命令,**必须**先显示确认
+If the pet reacts to `normal`, your install is good. Now connect a real agent.
 
-隐私:优先使用本地 / 设备端 transcription;如果使用 cloud STT,用户必须明确 opt in;**永远不要**把代码或 prompt context 发送给 STT provider。
+---
 
-验收标准:语音命令可以 dismiss 或打开一个 decision notification;危险决策需要确认;用户可以完全关闭 STT。
+## Connect your coding agent
 
-### 6.7 Agent 集成 — P0 / P1
+One command per agent. The installer backs up your existing config, writes the hook entries, and fires a self-test event so you know immediately whether the channel is live.
 
-先构建统一本地 event bridge。各工具的 adapter 只负责把事件转成标准格式后发入 bridge。
+```bash
+# Claude Code — hooks + statusLine (the live token channel)
+npm run adapter:install -- --agent claude_code            # this repo only  → <repo>/.claude/settings.json
+npm run adapter:install -- --agent claude_code --global   # all projects    → ~/.claude/settings.json
+
+# Codex
+npm run adapter:install -- --agent codex                  # this repo only  → <repo>/.codex/hooks.json
+npm run adapter:install -- --agent codex --global         # all projects    → ~/.codex/hooks.json
+
+# pi-coding-agent — installed as a pi extension, not a hook config
+npm run adapter:install -- --agent pi                     # this repo only  → <repo>/.pi/extensions/vibepaws.ts
+npm run adapter:install -- --agent pi --global            # all projects    → ~/.pi/agent/extensions/vibepaws.ts
+```
+
+**Global or project — pick one.** Switching to `--global` automatically removes Vibepaws' project-level hooks from this repo, because running both means duplicate events: double EXP, double bubbles.
+
+**Per-agent notes:**
+
+- **Claude Code** — `statusLine` is where live token counts come from. It's a Claude-only capability, and it's what makes the token channel real-time instead of end-of-session.
+- **Codex** — run `/hooks` inside Codex once to authorize hooks. Tokens are extracted from the SessionEnd transcript, so they arrive at the end of a session rather than continuously.
+- **pi-coding-agent** — pi has no config-style hooks, so the stable integration is a **pi extension**. The installer copies `src/adapters/pi_extension.ts` into pi's plugin directory, where it binds to pi lifecycle events and reports state deterministically — same tier as Claude/Codex hooks, not something the model has to remember to do. Any exception inside the plugin is swallowed so it can never interrupt pi. **Open a new `pi` session (or `/reload`) for it to take effect.** A project-level plugin also requires the project to be trusted by pi (confirm at first launch).
+
+  For other harnesses, or an environment where plugins aren't available, there's a manual emitter:
+
+  ```bash
+  node --experimental-strip-types src/adapters/pi_agent.ts --event=decision_required
+  ```
+
+<details>
+<summary><strong>What each agent event maps to</strong></summary>
+
+| Vibepaws event | Claude Code | Codex | pi |
+| --- | --- | --- | --- |
+| `session_started` | `SessionStart` | `SessionStart` | `session_start` (startup/resume/fork/reload) |
+| `agent_working` | `UserPromptSubmit`, `PreToolUse` | `UserPromptSubmit`, `PreToolUse` | `before_agent_start`, `tool_execution_start` |
+| `decision_required` | `Stop`, `Notification` | `Stop` | `agent_settled` (agent is idle, waiting on you) |
+| `permission_required` | `PermissionRequest` | `PermissionRequest` | tool approval path |
+| `token_update` | **statusLine (live)**, `PostToolUse` | `SessionEnd` transcript extraction | `message_end` usage (**real tokens/cost**) |
+| `context_update` | statusLine `used_percentage`, `PreCompact`/`PostCompact` | `PreCompact`/`PostCompact` | `session_compact` |
+| `session_error` | `PostToolUseFailure`, `PostToolUse` (error) | `PostToolUse` (error) | `tool_execution_end` (isError) |
+| `session_finished` | `SessionEnd` | `SessionEnd` | `session_shutdown` |
+
+`Stop` is the important one on Claude Code: it's the only immediate "your turn" signal. `SessionEnd` only fires when the session actually exits, and `Notification` is either a permission popup or a 60-second idle timeout.
+
+`SubagentStart` / `SubagentStop` are also collected on both hook-based agents.
+
+Missing events degrade, they don't break: if an agent version stops emitting something, Vibepaws skips that signal or approximates it, and the core loop keeps running.
+
+</details>
+
+### If Core isn't running
+
+Adapters never block your agent and never lose events. When Core is unreachable they append to local JSONL:
+
+- Claude/Codex hooks → `.vibepaws/events/fallback.jsonl` (repo root)
+- pi extension → `~/.vibepaws/events/pi_*.jsonl` (user-level — the plugin is self-contained and doesn't know your repo path)
+
+Then backfill:
+
+```bash
+npm run bridge   # watches both directories, normalizes, forwards to Core
+```
+
+The same bridge is the **generic integration path** for any tool that isn't Claude/Codex/pi: write normalized JSON lines into `.vibepaws/events/`, and they become pet state. The envelope:
 
 ```json
 {
   "event": "decision_required",
-  "agent": "claude_code",
+  "agent": "my_tool",
   "session_id": "local-session-id",
-  "project_id": "local-project-id",
+  "project_id": "/Users/me/my-app",
   "severity": "high",
   "safe_summary": "Tool permission needed",
-  "timestamp": "2026-08-18T10:00:00Z"
+  "timestamp": "2026-08-21T10:00:00Z"
 }
 ```
 
-必要事件:
-
-`session_started` · `agent_working` · `decision_required` · `permission_required` · `token_update` · `context_update` · `topic_drift_warning` · `session_finished` · `session_error`
-
-集成优先级:
-
-- **P0** —— Claude Code adapter
-- **P0** —— Codex adapter
-- **P0** —— 用于其他工具的 generic JSON/file/socket bridge
-- **P0** —— Pi Agent adapter（extension 插件，见下方「运行指南」）
-- **P1** —— DeepSeek Harness adapter,如果有可靠 hooks/logs
-
-验收标准:alpha 中至少两个真实 adapter 可用,**或**一个真实 adapter 加一个 generic bridge 可用;simulator 可以发出所有核心事件用于 QA;事件不包含原始代码、prompt text 或 secrets。
-
-## 社区与游戏经济路线
-
-社区很重要,但不是 MVP 核心。
-
-- **MVP** —— 本地 pet assignment、本地 pet profile、milestone 后可导出的 pet card
-- **Post-MVP** —— 社区 pet submission form、有审核的 pet gallery、skin packs、public profile pages
-- **后续** —— leaderboard、PVP、rare pet selling、trading、seasonal events
-
-⚠️ marketplace、leaderboard、PVP 和稀有宠物售卖会带来防作弊、IP、审核和信任问题。不要在 retention 和 daily usage 被验证前加入这些功能。
-
-## 用户体验流程
-
-**首次启动** → 用户打开 Vibepaws → 获得一个随机 starter pet → 连接 Claude Code、Codex 或 generic bridge → 设置可选 token budget → 宠物进入 `idle` 状态。
-
-**Coding 中** → Agent 开始工作 → 宠物切换到 `working` → Agent 需要决策 → 宠物显示气泡 → 用户点击气泡或使用语音命令 → Agent 继续 → Token/context 使用量更新宠物 EXP 和 health → Session 完成 → 宠物获得 EXP,并可能获得 memory。
-
-**Level-up** → 用户获得足够 EXP → 宠物显示 level-up 动画 → 用户可以查看 EXP explanation → 如果满足进化条件,宠物进化。
-
-## MVP 指标
-
-| 类别 | 目标 |
-| --- | --- |
-| Activation | 60% alpha 用户至少连接一个 agent |
-| Activation | 50% 用户至少收到一个有用通知 |
-| Activation | 40% 用户设置或查看 token/context budget |
-| Utility | Decision notification 在 5 秒内出现 |
-| Utility | 70% decision notifications 从宠物处被处理 |
-| Utility | false positive warning rate 低于 20% |
-| Retention | D7 active usage 达到 25% |
-| Retention | 40% retained users 查看过宠物 level 或 EXP history |
-| Retention | 30% retained users 表示宠物帮助他们注意到了 agent state |
-
-**Monetization signal:** 两周 alpha 不建议收费,除非 onboarding 已经稳定。alpha 后,对至少返回 3 个 session 的用户测试 **$19 founder lifetime license**。
-
-## MVP Non-Goals
-
-两周 MVP 不做:完整 100 个高质量宠物素材 · public pet marketplace · PVP · leaderboard · rare pet selling · trading · 完整 LLM chat companion · mobile app · hardware pet · team dashboard · enterprise admin · 默认 cloud sync。
-
-## 发布标准
-
-满足以下条件时,MVP 可以发布到 alpha:
-
-- [ ] 桌面宠物可以本地运行
-- [ ] 随机 pet assignment 可用
-- [ ] EXP bar 和 level-up 可用
-- [ ] Decision bubble 可用
-- [ ] Usage notification 可用
-- [ ] Context warning 可用
-- [ ] 基础 topic drift / new session recommendation 可用
-- [ ] Claude Code 或 Codex adapter 可用
-- [ ] Generic bridge 可用于其他 agents
-- [ ] 默认不存储原始代码或 prompt text
-- [ ] 用户可以 mute notifications
-- [ ] 用户可以删除本地 pet data
-- [ ] App 有简单 onboarding flow
-
-## 两周路线图
-
-### Week 1:构建核心循环
-
-| 日期 | 重点 | 交付物 |
-| --- | --- | --- |
-| 8/18 周二 | 锁定范围与架构:冻结 MVP 范围、最终确定 normalized event schema、定义 pet / EXP / sessions / notifications / memories 的本地数据模型、决定 desktop framework 和 local storage、创建 agent events simulator | Technical spec、Event simulator、初始 app shell |
-| 8/19 周三 | 宠物表层:always-on pet window、draggable position 和 click-through toggle、七种状态、前 6 个高质量 pet sprites、支持 100 pet IDs 的 pet registry format | 宠物可以在桌面显示,并能展示模拟状态 |
-| 8/20 周四 | 通知系统:notification bubble UI、decision-needed bubble、dismiss / mute / click-to-session action、本地 notification history | 宠物可以显示并处理模拟 decision notifications |
-| 8/21 周五 | Usage、Context 与 EXP:token budget 设置、usage thresholds、context thresholds、带 daily token cap 的 EXP 公式、EXP explanation panel | 宠物可以基于模拟 usage 和质量信号升级 |
-| 8/22 周六 | Agent Bridge:实现本地 event bridge、支持 JSON/file/socket event ingestion、将 simulator 接入 bridge、根据最快最可靠的 hook 开始 Claude Code 或 Codex adapter | 真实或接近真实的 agent events 可以更新宠物状态 |
-| 8/23 周日 | 恢复日 / Buffer:修复前五天问题、如果 art pipeline 顺利则完成前 12 个 starter pets、打磨 onboarding 文案、添加 local delete/reset | internal alpha build |
-
-### Week 2:集成、打磨与 Alpha 发布
-
-| 日期 | 重点 | 交付物 |
-| --- | --- | --- |
-| 8/24 周一 | 第一个真实 adapter(Claude Code 或 Codex);确认 decision、working、token/context 和 finish events;当 agent hooks 不完整时添加 manual fallback event trigger | 一个 agent 可以端到端工作 |
-| 8/25 周二 | 第二个 adapter 或 generic integration;补齐 Codex/Claude 和 generic bridge 的 setup instructions;如果没有稳定 hooks,将 Pi Agent 和 DeepSeek Harness 先作为 generic bridge configs 准备 | 双 agent 路径,或一个真实 agent 加 generic bridge 路径 |
-| 8/26 周三 | Topic Drift 与新 Session 警告:实现 session-goal 字段、添加保守 drift warning rules、添加 "open new session" recommendation、添加 mute 和 "not useful" feedback | 当 context 和 session direction 看起来不健康时,宠物可以提醒用户 |
-| 8/27 周四 | 进化与自我成长:添加一个完整 evolution family、passive self-growth、tired/hibernation recovery、session finish 时的 memory earned | 宠物可以在一条路径上 level、recover、evolve |
-| 8/28 周五 | STT Alpha 与安全:核心循环稳定则添加 push-to-talk prototype、支持 approve/reject/open/mute commands、对敏感命令添加 confirmation;如果 STT 不稳定,作为 hidden experimental flag 发布 | Voice command alpha,或有记录的延期决定 |
-| 8/29 周六 | Alpha QA:测试 onboarding、notification latency、不存储 raw prompt/code、mute / DND / click-through / reset / delete、两种屏幕尺寸和 light/dark mode | Release candidate |
-| 8/30 周日 | Private Alpha:把 build 发给 5–10 个目标用户;收集 activation、notification usefulness、annoyance、pet attachment feedback;观察 adapter setup 失败的位置 | Alpha feedback report |
-| 8/31 周一 | 修复与 Cut:修复关键 onboarding 和 adapter 问题、调整 notification thresholds、调整 EXP formula、移除或隐藏不稳定 STT 路径 | MVP alpha build |
-| 9/1 周二 | 发布决策:如果发布标准通过,ship alpha 给更广的 beta list;如果没通过,只为 adapter reliability 和 notification quality 延长一周 | Ship / hold decision |
-
-## 最大产品风险
-
-| 风险 | 控制方式 |
-| --- | --- |
-| **Token farming** —— 用户为了升级宠物而浪费 token | daily caps、quality multipliers、outcome bonuses |
-| **通知焦虑** —— warning 让 agent 使用变得紧张 | 柔和文案、mute、DND、无永久死亡 |
-| **内容范围** —— 100 个宠物压垮第一版 | 先发布更少但完成度高的宠物,用架构支持 100 个 |
-| **Adapter 脆弱性** —— Agent hooks 可能变化或不完整 | generic bridge 和 simulator |
-| **隐私不信任** —— 用户担心宠物读取代码或 prompt | local-first architecture 和可见 data boundaries |
-
-## 推荐 MVP 定位
-
-> 「一个可爱的编程宠物:帮你看着 AI agents,在它们需要你时提醒你,并从健康的 vibe-coding session 中成长。」
-
-避免这样定位:
-
-- **「AI companion」** —— 暗示聊天和情感依赖
-- **「coding 版 Pokemon」** —— 有 IP 风险,也会制造游戏期待
-- **「token-burning game」** —— 鼓励我们正要限制的坏行为
-
-## 最终建议:两周 alpha 应发布
-
-一个高完成度 desktop pet loop · 12 个 starter pets(而不是 100 个) · 支持 100-pet registry 的架构 · decision bubbles · usage/context/topic warnings · EXP bar 和 level-up · healthy-session multipliers · 无永久死亡 · 一个 evolution family · Claude Code 或 Codex adapter · 用于其他 agents 的 generic bridge · 只有在核心循环稳定时,才把 STT 作为 P1 alpha。
-
-两周后的下一次决策,应基于 **retention 和 notification usefulness**,而不是宠物数量。
+Valid `event` values: `session_started` · `agent_working` · `decision_required` · `permission_required` · `token_update` · `context_update` · `topic_drift_warning` · `session_finished` · `session_error`
 
 ---
 
-## 运行指南（MVP 0.1）
+## Using the pet
 
-> 技术架构见 `docs/mvp_architecture.html`。Core 为 Node 守护进程，UI 为浏览器 Canvas 宠物壳（Tauri 壳待 Rust 工具链就绪后包装）。
+### Seven states, seven drawings
 
-### 0. 安装
+Each state is a separate hand-checked portrait of the same pet, generated image-to-image. This is on purpose: posture and expression carry information that a jiggle animation and a corner badge can't. `tired` is heavy eyelids and a slumped body. `needs-you` is looking up, right at you.
 
-```bash
-npm install          # Node ≥ 22.6
-```
+<table>
+<tr>
+<td align="center"><img src="ui/pets/embercub/idle.png" width="76"><br><code>idle</code></td>
+<td align="center"><img src="ui/pets/embercub/working.png" width="76"><br><code>working</code></td>
+<td align="center"><img src="ui/pets/embercub/needs-you.png" width="76"><br><code>needs-you</code></td>
+<td align="center"><img src="ui/pets/embercub/warning.png" width="76"><br><code>warning</code></td>
+<td align="center"><img src="ui/pets/embercub/finished.png" width="76"><br><code>finished</code></td>
+<td align="center"><img src="ui/pets/embercub/tired.png" width="76"><br><code>tired</code></td>
+<td align="center"><img src="ui/pets/embercub/level-up.png" width="76"><br><code>level-up</code></td>
+</tr>
+</table>
 
-> Node **22.6** 是硬性下限，不是建议值：Core、UI server 和写进 hooks 配置的采集命令
-> 全都跑 `node --experimental-strip-types`，这个 flag 在 22.6 之前不存在。Node 20 上
-> 什么都起不来，而 hook 那条路径是静默失败的 —— 宠物只是一直闲着，不会报错。
+With several sessions running, the pet shows the **most urgent** state across all of them; the flyout breaks them down individually.
 
-### 1. 启动 Core（守护进程）
+### Click the pet
 
-```bash
-npm run core         # 监听 127.0.0.1:17893，初始化 SQLite（.vibepaws/vibepaws.db）
-```
+The window expands *upward* — the pet itself doesn't move — and you get:
 
-首次启动会随机分配一只 starter pet；API token 写入 `.vibepaws/api_token`。
+- **Session list** — click a row to copy that session's jump-back command. `needs-you` rows show how long the agent has been waiting on you.
+- **Mute everything** — with a duration
+- **EXP breakdown** — where the numbers came from
 
-### 2. 用 simulator 试玩（无需真实 agent）
+Close it by clicking the pet again, clicking empty space, pressing `Esc`, or hitting the × in the corner.
 
-```bash
-npm run sim -- --scenario normal             # 正常会话 → 宠物 working → finished
-npm run sim -- --scenario frequent_decisions # 多次需要你 → needs-you 气泡
-npm run sim -- --scenario context_overload   # context 88/96% → warning + EXP 倍率下降
-npm run sim -- --scenario correction_loop    # 反复改同一文件 → correction 计数
-npm run sim -- --scenario multi_session      # 3 个 session 并行 → 聚合/轮播
-```
+### Mute is a visible state, not a silent switch
 
-### 3. 启动桌面宠物（UI 壳）
+While muted, a 🔕 badge sits at the pet's feet showing the remaining time. Click the badge (or the button again) to bring notifications back. A mute you can't see is a mute you forget you set.
 
-```bash
-npm run desktop     # Electron 透明桌宠窗口（右下角、always-on-top、托盘）
-```
+### The connection light
 
-- 宠物 7 状态动画（idle/working/needs-you/warning/finished/tired/level-up）
-- 气泡：需要你/权限/context 警告/出错/token 里程碑
-- 点击宠物 → 浮层（窗口自动向上展开，宠物不动）：session 列表（点击行复制 jump-to 恢复命令，
-  needs-you 行显示已经等了多久）、全部静音、EXP 明细。关闭：再点宠物 / 点空白处 / `Esc` / 右上角 ×
-- 静音是**可见且可撤销的状态**：静音期间宠物脚边有 🔕 徽章（显示剩余时间），
-  点徽章或再点一次按钮即恢复通知
-- 连接指示灯三态：绿=事件流正常；橙（闪烁）=状态还在轮询但事件流已断（此时气泡不会来）；红=连不上 Core
-- 拖拽：按住宠物窗口空白处拖动（位置会记住，且始终夹在屏幕可见区域内）；
-  托盘菜单：点击穿透开关 / 所有桌面显示 / 显示 / 放回右下角 / 退出
-- 宠物身体以外的空白区域点击会直接落到下面的应用上（浮层要占宠物上方的空间，
-  那块空间平时是空的）；托盘里的「点击穿透」开关仍然管整扇窗，包括宠物本体
-- 全屏应用（全屏 iTerm2、全屏编辑器…）之上宠物依然可见，这一条不受托盘开关影响；
-  「所有桌面显示」只管「你换桌面时它跟不跟过来」。为此壳进程不占 Dock 图标，
-  出口在托盘菜单里（这是 macOS 的硬性要求：占 Dock 的进程无法浮在别人的全屏 Space 上）
-- 浏览器预览（可选）：`npm run ui` 后打开 http://127.0.0.1:5173
-  （5173 被占用时桌面壳会自动改用空闲端口）
+| Light | Meaning |
+| --- | --- |
+| 🟢 Green | Event stream healthy |
+| 🟠 Amber (blinking) | State polling still works, but the event stream is dead — **bubbles won't arrive** |
+| 🔴 Red | Can't reach Core at all |
 
-> 桌面壳当前用 Electron（环境无 Rust 工具链）；Tauri v2 待 Rust 就绪后替换，仅换壳层，渲染与 SSE 协议不变。
+Amber is the important one: without it, a broken hook looks exactly like a quiet afternoon.
 
-**界面语言**：跟随操作系统语言自动选择 —— 中文（任意变体）走简体中文，其余一律英文。
-托盘菜单、宠物界面、通知气泡与 adapter 安装向导共用同一份文案目录（`src/i18n/messages.js`），
-不会出现中英混排。想强制某种语言时设 `VIBEPAWS_LOCALE=en`（或 `zh-CN`）后再启动：
+### Window behavior
+
+- **Drag** — grab empty space in the pet window. Position is remembered, and always clamped to the visible screen area.
+- **Clicks pass through** the empty area around the pet's body, straight to the app underneath. The flyout needs room above the pet, and that room is normally empty space.
+- **Tray menu** — click-through toggle · show on all desktops · show · snap back to bottom-right · quit
+- **Above fullscreen apps** — the pet stays visible over fullscreen iTerm2, fullscreen editors, and so on. This is not affected by the tray toggles. To make it possible the shell keeps no Dock icon, so **quit lives in the tray menu** — a macOS requirement: a process with a Dock icon cannot float over someone else's fullscreen Space.
+- **Browser preview** (optional) — `npm run ui`, then open http://127.0.0.1:5173. If 5173 is busy the desktop shell picks a free port automatically (it's Vite's default port, so a stray dev server is likely).
+
+> The shell is Electron today because this environment has no Rust toolchain. Tauri v2 replaces it once Rust is ready — shell layer only; rendering and the SSE protocol don't change.
+
+### Language
+
+The UI follows your OS language: any Chinese variant → Simplified Chinese, everything else → English. Tray menu, pet UI, bubbles, and the adapter installer all share one message catalog (`src/i18n/messages.js`), so you never get a half-translated screen. To force one:
 
 ```bash
-VIBEPAWS_LOCALE=en npm run desktop
+VIBEPAWS_LOCALE=en npm run desktop      # or zh-CN
 ```
 
-### 4. 接入真实 coding agent（adapter）
+---
+
+## How your pet grows
+
+The design constraint that shapes everything else: **tokens feed the pet, but wasting tokens must not level it up.**
+
+```text
+session_exp = capped_token_exp
+            × context_health_multiplier
+            × topic_consistency_multiplier
+            + outcome_bonus
+            + daily_care_bonus
+```
+
+**Base rate** — 1 EXP per 1,000 tokens, with a **daily cap of 200 EXP** per pet. Past the cap, more tokens buy you nothing.
+
+**Quality multipliers** — this is where a sloppy session gets expensive:
+
+| Signal | Multiplier |
+| --- | --- |
+| Context under 70% | **1.10×** |
+| Context 70–85% | 1.00× |
+| Context 85–95% | 0.75× |
+| Context over 95% | **0.50×** |
+| Topic consistent with your session goal | 1.10× |
+| Repeated correction loop | 0.80× |
+| Accepted diff · passing tests · commit · explicit "shipped" | **+20 to +100 EXP** |
+
+**Levels** — Lv1 needs 100 EXP, then +50 per level (Lv2 → 150, Lv3 → 200, …).
+
+**No permadeath.** Unhealthy usage turns the pet `tired` and slows EXP; a break, a fresh session, or shipping something brings it back. The pet also grows a little on its own each day, so a week off your agent isn't a punishment.
+
+**Notification thresholds:**
+
+| Kind | Fires at |
+| --- | --- |
+| Context warning | 70% · 85% · 95% |
+| Token budget milestone | 25% · 50% · 75% · 90% of budget |
+
+Each tier latches — you get 70% once, not every 60 seconds. But 70% and 95% are genuinely different messages ("keep an eye on it" vs. "wrap up now"), so both land.
+
+> ⚠️ Setting a token budget currently requires writing the `budget_tokens` setting or the session's `budget_tokens` column directly — there's no UI for it yet. Without a budget, milestone notifications stay off. Context warnings work regardless.
+
+---
+
+## Privacy: what leaves your machine
+
+Nothing. There is no cloud sync, no telemetry, and no network destination other than `127.0.0.1`.
+
+Inside your machine, there are two independent gates:
+
+1. **At the adapter** — fields are extracted by allowlist. `tool_input`, prompt text, and `transcript_path` are dropped before anything is sent.
+2. **At Core, before persistence** — unknown fields are dropped again by schema. Raw hook JSON is never written to the database.
+
+What that means concretely: bubbles never show raw prompts, source code, secret paths, or file contents. `safe_summary` uses fixed wording (`"Tool permission needed"`), not agent output. This is enforced by tests — see `src/core/privacy.test.ts`.
+
+To delete everything, delete the `.vibepaws/` directory. The database, your pet, its EXP history, and the API token all live there.
+
+---
+
+## How it works
+
+```
+Your agents                          Vibepaws Core (Node daemon)              Pet shell
+─────────────                        ───────────────────────────              ─────────
+claude_code hooks ─┐                 ┌──────────────────────────┐
+codex hooks ───────┤  HTTP + token   │ Event ingress             │             ┌───────────┐
+pi extension ──────┼───────────────► │  ↓ validate / dedup       │   SSE       │ pet state │
+generic JSONL ─────┤  127.0.0.1      │ Session registry          │ ──────────► │ bubbles   │
+simulator ─────────┘                 │  ↓ aggregate 7 states     │             │ flyout    │
+                                     │ Notification engine       │             │ EXP bar   │
+        (Core offline?               │ EXP / health / evolution  │             └───────────┘
+         → JSONL + bridge)           │ SQLite: pets, sessions,   │
+                                     │  events, notifications,   │
+                                     │  exp_logs, memories       │
+                                     └──────────────────────────┘
+```
+
+Core is a standalone daemon and can run headless. The pet shell is just a client — one of several possible ones. Adapters are independent and may be absent; a missing adapter degrades a signal, it doesn't break the loop.
+
+Core's HTTP surface (all routes but `/health` need `X-Vibepaws-Token`):
+
+| Route | Purpose |
+| --- | --- |
+| `POST /events` | Ingest an event |
+| `GET /sse` | Event stream (pet state, notifications, raw events) |
+| `GET /api/state` | Current aggregated state |
+| `GET /api/sessions` | Session list |
+| `GET /api/exp` | EXP breakdown |
+| `POST /api/action` | mute / unmute / dismiss / actioned |
+
+Design decisions and module-level detail: [`docs/mvp_architecture.md`](docs/mvp_architecture.md) (Chinese).
+
+---
+
+## The pets
+
+Five starter pets ship today, each with all seven state portraits. The registry supports 100 IDs with rarity and evolution metadata from day one.
+
+| Pet | Rarity |
+| --- | --- |
+| <img src="ui/pets/embercub/idle.png" width="52"> **Embercub** | common |
+| <img src="ui/pets/sporewick/idle.png" width="52"> **Sporewick** | common |
+| <img src="ui/pets/lunafang/idle.png" width="52"> **Lunafang** | uncommon |
+| <img src="ui/pets/voltroc/idle.png" width="52"> **Voltroc** | uncommon |
+| <img src="ui/pets/circuit-witch/idle.png" width="52"> **Circuit Witch** | rare |
+
+You get one at random on first launch.
+
+### Adding your own pet
+
+The built assets in `ui/pets/` are **committed to the repo** — running the app and installing dependencies need no Python. You only need the pipeline when adding a pet.
 
 ```bash
-npm run adapter:install -- --agent claude_code            # 项目级：写入 <repo>/.claude/settings.json（仅当前仓库生效）
-npm run adapter:install -- --agent claude_code --global   # 全局：写入 ~/.claude/settings.json（所有项目生效）
-npm run adapter:install -- --agent codex                  # 项目级：写入 .codex/hooks.json；首次需在 codex 里运行 /hooks 授权
-npm run adapter:install -- --agent codex --global         # 全局：写入 ~/.codex/hooks.json
-npm run adapter:install -- --agent pi                     # pi-coding-agent：写入 <repo>/.pi/extensions/vibepaws.ts（pi 插件，自动发现）
-npm run adapter:install -- --agent pi --global            # 全局：写入 ~/.pi/agent/extensions/vibepaws.ts
+# 1. Drop your source image into pet_assests/ and add a row to pet_assests/roster.json
+#    (id / slug / name / rarity / starter / src)
+
+export POE_API_KEY=...                      # read from the environment only, never committed
+npm run states -- --dry-run                 # print what would be generated
+npm run states                              # generate all 7 state portraits (skips existing)
+
+npm run assets -- --check                   # inspect only: cutout, components, anchor, accent color
+npm run assets                              # write ui/pets/<slug>/*.png and ui/pets/index.json
+npm run db:init                             # bring the pet_types table in line
 ```
 
-#### pi-coding-agent（extension 插件）
+`ui/pets/index.json` is the single runtime source of truth — both the renderer (`ui/pets/registry.js`) and `src/db/seed.ts` read it.
 
-pi 没有 Claude/Codex 那种配置式 hooks，它的稳定集成方式是 **pi 插件（extension）**：安装器把 `src/adapters/pi_extension.ts` 复制到 pi 的插件目录，插件挂到 pi 生命周期事件上，把真实状态确定性地上报 Core（`agent="pi"`）——和 Claude/Codex 的 hooks 同一层级，不依赖模型自觉：
+**Check the contact sheet.** `npm run assets` also assembles `output/imagegen/pet-states/contact-sheet.png` (checkerboard behind the alpha) — **look at it after every generation run.** The model occasionally paints a ground shadow under the pet's feet despite the prompt forbidding it, and numerically that shadow is indistinguishable from the pet's own large pale areas (saturation, alpha, and flatness heuristics were all tried; each gives either false negatives or false positives). So there's no automated check here: the dirty frame is obvious to your eye on the contact sheet. Delete it and regenerate.
 
-- `session_start` → `session_started`（source 按 startup/resume/fork/reload 映射）+ `adapter_status`（让界面显示「Pi 已接入」）
-- `before_agent_start` → `agent_working`；`tool_execution_start` → `agent_working`（带工具名）
-- `tool_execution_end`（isError）→ `session_error`
-- `message_end`（assistant usage）→ `token_update`（**真实 token/cost**，来自 pi 的消息用量）
-- `session_compact` → `context_update`；`agent_settled` → `decision_required`（agent 忙完在等你 = Claude 的 Stop）
-- `session_shutdown` → `session_finished`
-- 隐私：payload 只进白名单字段，safe_summary 固定措辞，绝不带 prompt/代码/路径；插件任何异常都不会打断 pi
-- 兜底：Core 离线时插件把事件留在 `~/.vibepaws/events/pi_*.jsonl`（用户级目录，插件自包含、不知道仓库路径也能写）；`npm run bridge` 会同时监听仓库根 `.vibepaws/events` 与 `~/.vibepaws/events` 两处，自动补收
-- 安装后**新开** `pi` 会话（或 `/reload`）生效；项目级插件要求项目被 pi 信任（首次启动时确认即可）
-- 手动兜底：`node --experimental-strip-types src/adapters/pi_agent.ts --event=...` 可手工补发事件（其他 harness / 无插件环境；它的离线兜底走 hook_agent 的 `fallback.jsonl`，bridge 在仓库根就能补收）
+Default model is `nano-banana-pro`. `gpt-image-2` doesn't currently work — Poe's Images API isn't enabled on this account (`403 Images API is not enabled for this user`, for every image model), and `gpt-image-*` over chat/completions disconnects outright. Once it's enabled, `--model gpt-image-2` is all you need.
 
-- 全局与项目级二选一；切到 `--global` 会自动移除本仓库项目级配置里 Vibepaws 的 hooks，避免重复触发（重复 EXP / 重复气泡）
-- 安装器自动发测试事件自检；Core 未启动时事件落入 `.vibepaws/events/fallback.jsonl`
-- 离线兜底：`npm run bridge` 监听该目录，把 JSONL 归一化后转发给 Core
-- 隐私：adapter 白名单提取（丢弃 tool_input/prompt/transcript_path），Core 落库前再丢未知字段，原始 hook JSON 永不落库（`src/core/privacy.test.ts` 验收）
+If an asset is missing, fails to decode, or a `pet_type_id` has no art, the pet falls back to a procedurally drawn form (`ui/pets/procedural.js`). The UI always shows a pet — never an empty window.
 
-### 5. 打包 .app（可选）
+State-to-motion mapping lives in the `MOTION` recipe table in `ui/pets/motion.js`. To eyeball one state directly, append `?petstate=<state>` to the pet window's URL instead of reproducing it with the simulator.
+
+---
+
+## Packaging a `.app`
 
 ```bash
-npm run dist:mac     # 产物在 dist/
+npm run dist:mac     # output in dist/
 ```
 
-> **未签名产物在 macOS 上会被判定为「已损坏」**（issue #1）。这不是产物坏了，
-> 而是 Gatekeeper 对没有 Apple 开发者签名 + 公证的 app 一律隔离。两条路：
+> **An unsigned build shows up as "damaged" on macOS** ([#1](https://github.com/junrong1/Vibepaws/issues/1)). The build isn't broken — Gatekeeper quarantines any app without an Apple Developer signature and notarization. Two options:
 >
-> - 自己用：装好后解除隔离标记
+> - **For yourself** — clear the quarantine flag after installing:
 >   `xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
-> - 要分发给别人：需要 Apple Developer 证书，给 `package.json` 的 `build.mac`
->   补上 `hardenedRuntime` + `entitlements` 并做 notarize（需要签名凭据，本仓库未内置）。
+> - **To distribute** — you need an Apple Developer certificate, plus `hardenedRuntime` and `entitlements` added to `build.mac` in `package.json`, plus notarization. Signing credentials are not bundled in this repo.
 
-### 宠物素材
+---
 
-宠物是 `pet_assests/` 里的 PNG，构建产物（`ui/pets/`）**已提交进仓库** —— 跑应用、
-装依赖都不需要 Python，只有**加新宠物**时才需要跑这一步。
+## Troubleshooting
 
-```bash
-npm run assets -- --check   # 只体检：抠底结果、连通域、锚点、主色，不写盘
-npm run assets              # 生成 ui/pets/<slug>/base.png 与 ui/pets/index.json
-```
+| Symptom | Cause and fix |
+| --- | --- |
+| Pet never leaves `idle` while an agent is clearly working | Almost always Node < 22.6 — the hook path fails silently. Check `node --version`. |
+| Connection light is amber | Event stream is dead while polling still works, so bubbles can't arrive. Restart Core, then re-run the adapter installer to re-fire its self-test. |
+| Nothing happened after installing the pi adapter | Open a **new** `pi` session or `/reload`. Project-level plugins also need the project trusted by pi. |
+| Codex sends nothing | Run `/hooks` inside Codex once to authorize. |
+| Double EXP, double bubbles | Both global and project-level hooks are installed. Re-run with `--global`, which cleans up the project-level entries. |
+| Token count stays 0 | On Claude Code, tokens come from `statusLine` — reinstall the adapter so it gets configured. On Codex, tokens only arrive at SessionEnd. |
+| No token milestone bubbles | No budget is set. Milestones are relative to a budget; context warnings work without one. |
+| Pet disappears over a fullscreen terminal | Shouldn't happen — file it. Note that "show on all desktops" only controls whether it follows you between Spaces. |
+| Pet is off-screen after switching monitors | Use tray → snap back to bottom-right. |
 
-加一只宠物：把原图丢进 `pet_assests/`，在 `pet_assests/roster.json` 里加一行
-（id / slug / name / rarity / starter / src），跑 `npm run states` 生成 7 个状态的立绘，
-再跑 `npm run assets`，最后 `npm run db:init` 让 `pet_types` 表跟上。
-`ui/pets/index.json` 是运行时唯一的真相来源，渲染层（`ui/pets/registry.js`）和
-`src/db/seed.ts` 读的都是它。
+---
 
-### 逐状态立绘
-
-7 个状态各有一张立绘，靠 image-to-image 保证是同一只宠物 —— 姿态和表情这条通道，
-位移和角标替代不了（tired 是耷着眼皮塌下去，needs-you 是抬头看着你）。
+## Development
 
 ```bash
-export POE_API_KEY=...                        # 只从环境变量读，不写进仓库
-npm run states -- --dry-run                   # 只打印要生成什么
-npm run states -- --pet embercub --state tired
-npm run states                                # 全量；已存在的自动跳过
-```
-
-生成完 `npm run assets` 会顺手拼一张
-`output/imagegen/pet-states/contact-sheet.png`（棋盘垫底）—— **每次生成后过一眼**。
-模型偶尔会在脚下画一片提示词里明令禁止的地面阴影，而它在数值上和宠物自身的大片
-浅色分不开（饱和度 / alpha / 平坦度三种判据都试过，非漏报即误报），所以这里不做
-自动质检：脏的那一帧在联络表上一眼可见，删掉重新生成就好。
-
-模型默认 `nano-banana-pro`。`gpt-image-2` 目前不可用 —— Poe 的 Images API 在这个
-账号上没开通（`403 Images API is not enabled for this user`，对所有图像模型一视同仁），
-而 `gpt-image-*` 走 chat/completions 会直接断连。开通之后 `--model gpt-image-2` 即可。
-
-素材缺失、解码失败或 `pet_type_id` 没有对应素材时，宠物回落到程序生成的兜底形象
-（`ui/pets/procedural.js`）—— 界面上永远是一只宠物，不会是一扇空窗。
-
-状态到动作的映射集中在 `ui/pets/motion.js` 的 `MOTION` 配方表里。想直接验收某个状态，
-给宠物窗口的 URL 加 `?petstate=<state>`（7 个状态之一）即可，不必用模拟器复现。
-
-### 测试
-
-```bash
-npm test          # registry 状态机 / 通知引擎 / EXP 引擎 / 聚合状态 / 迁移 / hook 归一化 /
-                  # bridge / 隐私 / i18n / 宠物类型种子 / 动作配方（含越界与切换连续性）
+npm test          # registry state machine · notification engine · EXP engine · aggregated state ·
+                  # migrations · hook normalization · bridge · privacy · i18n · pet type seed ·
+                  # motion recipes (including out-of-range and transition continuity)
 npm run typecheck
+npm run core:watch
 ```
+
+Layout:
+
+```
+src/core/        daemon: ingress, session registry, notifications, EXP, settings, HTTP + SSE
+src/adapters/    claude/codex hook template, pi extension, statusline, generic bridge, installer
+src/db/          SQLite schema, migrations, pet type seed
+src/simulator/   scenario-driven event generator for QA
+src/i18n/        one shared message catalog (zh-CN / en)
+ui/              pet renderer: canvas, motion recipes, fx, pet registry, procedural fallback
+desktop/         Electron shell: transparent window, tray, click-through, positioning
+scripts/         Python asset pipeline (only needed when adding pets)
+docs/            PRD (en/zh) and technical architecture
+```
+
+Tests are Node's built-in runner over `--experimental-strip-types` TypeScript — no build step, no test framework.
+
+---
+
+## Roadmap
+
+**Rest of the MVP window** — remaining starter pets (5 → 12) · budget and drift settings UI · evolved-form art · STT voice commands as a P1 experiment.
+
+**After that**, gated on retention rather than pet count — exportable pet cards, community pet submissions with moderation, skin packs, public profiles.
+
+**Deliberately deferred** — leaderboards, PVP, trading, rare pet sales. Each brings anti-cheat, IP, moderation, and trust problems, and none of them are worth taking on before daily usage is validated.
+
+Full reasoning, metrics, and release criteria: **[PRD (English)](docs/prd_mvp_en.md)** · **[PRD (中文)](docs/prd_mvp_zh.md)**
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [`docs/prd_mvp_en.md`](docs/prd_mvp_en.md) | Product requirements, scope decisions, metrics, roadmap, implementation status |
+| [`docs/prd_mvp_zh.md`](docs/prd_mvp_zh.md) | Same, in Chinese |
+| [`docs/mvp_architecture.md`](docs/mvp_architecture.md) | Technical architecture: decision log, module design, event schema, data model, degradation |
+| [`references/event_collection.md`](references/event_collection.md) | Claude Code / Codex hook event research |
+| [`references/cc-session.md`](references/cc-session.md) | Session management research across pi / Claude Code / Codex |
+
+## Contributing
+
+The MVP is moving fast and scope is frozen through 2026-09-01, so the most useful contributions right now are **bug reports from real agent sessions** — especially adapter breakage on agent versions other than the ones tested here. Include your agent, its version, and `node --version`.
+
+Pet art contributions are planned but not open yet: they need moderation, copyright, and asset-quality rules first (PRD §16).
+
+## License
+
+Not yet chosen. Until a license file lands, all rights are reserved by the author — treat this repository as source-available for evaluation, not as open source.
+
+<div align="center">
+
+**[中文文档 →](README.zh-CN.md)**
+
+</div>
