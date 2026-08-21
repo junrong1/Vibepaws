@@ -335,8 +335,12 @@ session_exp =
 ### 0. 安装
 
 ```bash
-npm install          # Node ≥ 20
+npm install          # Node ≥ 22.6
 ```
+
+> Node **22.6** 是硬性下限，不是建议值：Core、UI server 和写进 hooks 配置的采集命令
+> 全都跑 `node --experimental-strip-types`，这个 flag 在 22.6 之前不存在。Node 20 上
+> 什么都起不来，而 hook 那条路径是静默失败的 —— 宠物只是一直闲着，不会报错。
 
 ### 1. 启动 Core（守护进程）
 
@@ -417,9 +421,54 @@ npm run dist:mac     # 产物在 dist/
 > - 要分发给别人：需要 Apple Developer 证书，给 `package.json` 的 `build.mac`
 >   补上 `hardenedRuntime` + `entitlements` 并做 notarize（需要签名凭据，本仓库未内置）。
 
+### 宠物素材
+
+宠物是 `pet_assests/` 里的 PNG，构建产物（`ui/pets/`）**已提交进仓库** —— 跑应用、
+装依赖都不需要 Python，只有**加新宠物**时才需要跑这一步。
+
+```bash
+npm run assets -- --check   # 只体检：抠底结果、连通域、锚点、主色，不写盘
+npm run assets              # 生成 ui/pets/<slug>/base.png 与 ui/pets/index.json
+```
+
+加一只宠物：把原图丢进 `pet_assests/`，在 `pet_assests/roster.json` 里加一行
+（id / slug / name / rarity / starter / src），跑 `npm run states` 生成 7 个状态的立绘，
+再跑 `npm run assets`，最后 `npm run db:init` 让 `pet_types` 表跟上。
+`ui/pets/index.json` 是运行时唯一的真相来源，渲染层（`ui/pets/registry.js`）和
+`src/db/seed.ts` 读的都是它。
+
+### 逐状态立绘
+
+7 个状态各有一张立绘，靠 image-to-image 保证是同一只宠物 —— 姿态和表情这条通道，
+位移和角标替代不了（tired 是耷着眼皮塌下去，needs-you 是抬头看着你）。
+
+```bash
+export POE_API_KEY=...                        # 只从环境变量读，不写进仓库
+npm run states -- --dry-run                   # 只打印要生成什么
+npm run states -- --pet embercub --state tired
+npm run states                                # 全量；已存在的自动跳过
+```
+
+生成完 `npm run assets` 会顺手拼一张
+`output/imagegen/pet-states/contact-sheet.png`（棋盘垫底）—— **每次生成后过一眼**。
+模型偶尔会在脚下画一片提示词里明令禁止的地面阴影，而它在数值上和宠物自身的大片
+浅色分不开（饱和度 / alpha / 平坦度三种判据都试过，非漏报即误报），所以这里不做
+自动质检：脏的那一帧在联络表上一眼可见，删掉重新生成就好。
+
+模型默认 `nano-banana-pro`。`gpt-image-2` 目前不可用 —— Poe 的 Images API 在这个
+账号上没开通（`403 Images API is not enabled for this user`，对所有图像模型一视同仁），
+而 `gpt-image-*` 走 chat/completions 会直接断连。开通之后 `--model gpt-image-2` 即可。
+
+素材缺失、解码失败或 `pet_type_id` 没有对应素材时，宠物回落到程序生成的兜底形象
+（`ui/pets/procedural.js`）—— 界面上永远是一只宠物，不会是一扇空窗。
+
+状态到动作的映射集中在 `ui/pets/motion.js` 的 `MOTION` 配方表里。想直接验收某个状态，
+给宠物窗口的 URL 加 `?petstate=<state>`（7 个状态之一）即可，不必用模拟器复现。
+
 ### 测试
 
 ```bash
-npm test          # registry 状态机 / 通知引擎 / EXP 引擎 / 聚合状态 / 迁移 / hook 归一化 / bridge / 隐私 / i18n
+npm test          # registry 状态机 / 通知引擎 / EXP 引擎 / 聚合状态 / 迁移 / hook 归一化 /
+                  # bridge / 隐私 / i18n / 宠物类型种子 / 动作配方（含越界与切换连续性）
 npm run typecheck
 ```

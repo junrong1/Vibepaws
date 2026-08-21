@@ -6,7 +6,7 @@
   "description": "Vibepaws — AI coding pet for your coding agents (MVP)",
   "main": "desktop/main.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.6"
   },
   "scripts": {
     "core": "node --experimental-strip-types src/core/server.ts",
@@ -17,10 +17,12 @@
     "hook": "node --experimental-strip-types src/adapters/hook_agent.ts",
     "bridge": "node --experimental-strip-types src/adapters/bridge.ts",
     "ui": "node --experimental-strip-types src/ui/server.ts",
+    "assets": "python3 scripts/build_assets.py",
+    "states": "python3 scripts/gen_states.py",
     "desktop": "electron desktop/main.js",
     "dist:mac": "electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types src/**/*.test.ts"
+    "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"

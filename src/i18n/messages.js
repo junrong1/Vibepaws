@@ -61,6 +61,8 @@ export const MESSAGES = {
     "ui.panel.close": "Close",
     "ui.panel.empty": "No sessions yet — start your coding agent",
     "ui.panel.offline": "Can't reach Vibepaws Core — session list unavailable",
+    "ui.panel.noAdapter":
+      "No coding agent connected — run `npm run adapter:install -- --agent claude_code --global`, then restart your agent",
     "ui.panel.more": "+{count} older sessions",
     "ui.action.mute30": "Mute everything for 30 minutes",
     "ui.action.mute2h": "Mute everything for 2 hours",
@@ -153,8 +155,10 @@ export const MESSAGES = {
       "    ② Headless:     codex exec --dangerously-bypass-hook-trust …\n" +
       "  💡 Global install (optional): merge {file} into ~/.codex/hooks.json",
     "cli.selfcheck.start": "\n[self-check] sending a test event to Core…",
-    "cli.selfcheck.ok": "✓ Core received the test event (session_started)",
-    "cli.selfcheck.next": "  Next: start your coding agent and the pet will come alive 🐾",
+    "cli.selfcheck.ok": "✓ Core registered this adapter (adapter_status)",
+    "cli.selfcheck.next":
+      "  Next: RESTART your coding agent — hooks are read once at session start,\n" +
+      "        so a session that is already running will not pick them up 🐾",
     "cli.selfcheck.fail":
       "✗ Core did not respond — run `npm run core` first (the event was buffered to .vibepaws/events/fallback.jsonl and the generic bridge replays it once Core is up)",
     "cli.unknownAgent": "Unknown agent: {agent}",
@@ -173,6 +177,8 @@ export const MESSAGES = {
     "ui.panel.close": "关闭",
     "ui.panel.empty": "还没有 session — 启动你的 coding agent 试试",
     "ui.panel.offline": "连不上 Vibepaws Core — session 列表暂不可用",
+    "ui.panel.noAdapter":
+      "还没有接入 coding agent — 先跑 `npm run adapter:install -- --agent claude_code --global`，然后重启 agent",
     "ui.panel.more": "还有 {count} 个较早的 session",
     "ui.action.mute30": "全部安静 30 分钟",
     "ui.action.mute2h": "全部安静 2 小时",
@@ -265,8 +271,10 @@ export const MESSAGES = {
       "    ② headless：codex exec --dangerously-bypass-hook-trust …\n" +
       "  💡 全局安装（可选）：把 {file} 的内容合并到 ~/.codex/hooks.json",
     "cli.selfcheck.start": "\n[自检] 发送测试事件到 Core…",
-    "cli.selfcheck.ok": "✓ Core 已收到测试事件（session_started）",
-    "cli.selfcheck.next": "  下一步：启动 coding agent 开始干活，宠物就会动起来 🐾",
+    "cli.selfcheck.ok": "✓ Core 已记录这个 adapter（adapter_status）",
+    "cli.selfcheck.next":
+      "  下一步：重启你的 coding agent —— hooks 只在会话开始时读一次，\n" +
+      "          已经在跑的会话不会生效 🐾",
     "cli.selfcheck.fail":
       "✗ Core 未响应 — 请先运行 `npm run core`（事件已写入 .vibepaws/events/fallback.jsonl，Core 启动后由 generic bridge 补收）",
     "cli.unknownAgent": "未知 agent：{agent}",

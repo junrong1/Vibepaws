@@ -1,0 +1,135 @@
+{
+  "version": 2,
+  "pets": [
+    {
+      "id": 20,
+      "slug": "embercub",
+      "name": "Embercub",
+      "rarity": "common",
+      "starter": true,
+      "w": 160,
+      "h": 158,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#f89828",
+      "base": "embercub/idle.png",
+      "frames": {
+        "idle": "embercub/idle.png",
+        "working": "embercub/working.png",
+        "needs-you": "embercub/needs-you.png",
+        "warning": "embercub/warning.png",
+        "finished": "embercub/finished.png",
+        "tired": "embercub/tired.png",
+        "level-up": "embercub/level-up.png"
+      },
+      "components": 1,
+      "motion": {}
+    },
+    {
+      "id": 21,
+      "slug": "lunafang",
+      "name": "Lunafang",
+      "rarity": "uncommon",
+      "starter": true,
+      "w": 160,
+      "h": 158,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#182848",
+      "base": "lunafang/idle.png",
+      "frames": {
+        "idle": "lunafang/idle.png",
+        "working": "lunafang/working.png",
+        "needs-you": "lunafang/needs-you.png",
+        "warning": "lunafang/warning.png",
+        "finished": "lunafang/finished.png",
+        "tired": "lunafang/tired.png",
+        "level-up": "lunafang/level-up.png"
+      },
+      "components": 1,
+      "motion": {}
+    },
+    {
+      "id": 22,
+      "slug": "sporewick",
+      "name": "Sporewick",
+      "rarity": "common",
+      "starter": true,
+      "w": 138,
+      "h": 160,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#b83818",
+      "base": "sporewick/idle.png",
+      "frames": {
+        "idle": "sporewick/idle.png",
+        "working": "sporewick/working.png",
+        "needs-you": "sporewick/needs-you.png",
+        "warning": "sporewick/warning.png",
+        "finished": "sporewick/finished.png",
+        "tired": "sporewick/tired.png",
+        "level-up": "sporewick/level-up.png"
+      },
+      "components": 1,
+      "motion": {}
+    },
+    {
+      "id": 23,
+      "slug": "voltroc",
+      "name": "Voltroc",
+      "rarity": "uncommon",
+      "starter": true,
+      "w": 158,
+      "h": 160,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#f8d838",
+      "base": "voltroc/idle.png",
+      "frames": {
+        "idle": "voltroc/idle.png",
+        "working": "voltroc/working.png",
+        "needs-you": "voltroc/needs-you.png",
+        "warning": "voltroc/warning.png",
+        "finished": "voltroc/finished.png",
+        "tired": "voltroc/tired.png",
+        "level-up": "voltroc/level-up.png"
+      },
+      "components": 1,
+      "motion": {}
+    },
+    {
+      "id": 24,
+      "slug": "circuit-witch",
+      "name": "Circuit Witch",
+      "rarity": "rare",
+      "starter": true,
+      "w": 152,
+      "h": 160,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#281848",
+      "base": "circuit-witch/idle.png",
+      "frames": {
+        "idle": "circuit-witch/idle.png",
+        "working": "circuit-witch/working.png",
+        "needs-you": "circuit-witch/needs-you.png",
+        "warning": "circuit-witch/warning.png",
+        "finished": "circuit-witch/finished.png",
+        "tired": "circuit-witch/tired.png",
+        "level-up": "circuit-witch/level-up.png"
+      },
+      "components": 1,
+      "motion": {}
+    }
+  ]
+}
