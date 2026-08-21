@@ -9,7 +9,14 @@
 import type Database from "better-sqlite3";
 import type { CoreEvent } from "./events.ts";
 import { projectShortName } from "./registry.ts";
-import { getSetting, setSetting, deleteSetting } from "./settings.ts";
+import {
+  getSetting,
+  setSetting,
+  deleteSetting,
+  getContextWarnPcts,
+  getDefaultBudgetTokens,
+  DEFAULT_CONTEXT_WARN_PCTS,
+} from "./settings.ts";
 import { t, DEFAULT_LOCALE } from "../i18n/messages.js";
 
 /** 文案定位：渲染层用它出字，Core 用它渲染英文落库。 */
@@ -57,8 +64,11 @@ const MUTE_GLOBAL_MINUTES_KEY = "mute.global.minutes";
 const MUTE_PROJECT_PREFIX = "mute.project.";
 const MUTE_SESSION_PREFIX = "mute.session.";
 
-/** context 阈值（README 6.3） */
-export const CONTEXT_WARN_PCTS = [70, 85, 95] as const;
+/**
+ * context 阈值的**默认值**（README 6.3）。真正生效的那份由设置窗口决定，
+ * 见 settings.ts 的 getContextWarnPcts —— 这里只是「用户没表态时用什么」。
+ */
+export const CONTEXT_WARN_PCTS = DEFAULT_CONTEXT_WARN_PCTS;
 /** token 里程碑（README 6.3 usage 提醒） */
 export const TOKEN_MILESTONES = [0.25, 0.5, 0.75, 0.9] as const;
 
@@ -133,7 +143,9 @@ export class NotificationEngine {
         const pct = ev.payload.context_pct;
         // 没带读数的事件不是「回落」，不能动闩锁（否则下一条同档警告又会重新出声）
         if (typeof pct !== "number") return null;
-        const latch = this.pendingThreshold("context", ev, pct, CONTEXT_WARN_PCTS);
+        // 阈值由设置窗口决定；空列表 = 用户把 context 警告关了（pendingThreshold
+        // 会顺手把闩锁清掉，重新打开后从第一档重新开始报）
+        const latch = this.pendingThreshold("context", ev, pct, getContextWarnPcts(this.db));
         if (!latch) return null;
         const severity = pct >= 95 ? "critical" : pct >= 85 ? "high" : "warn";
         return {
@@ -213,6 +225,20 @@ export class NotificationEngine {
     return { key, tier: hit };
   }
 
+  /**
+   * 重新武装阈值闩锁（设置窗口改完预算 / 阈值后调用）。
+   *
+   * 不做这一步的话，新设置要等到下一个 session 才有效果：用户刚在设置里把预算填上，
+   * 这个 session 已经烧掉的量却一条里程碑都不会报 —— 从界面上看就是「填了没用」。
+   * 不传 agent/session 就是全清。
+   */
+  resetLatches(kind: "context" | "budget", agent?: string, sessionId?: string): void {
+    const prefix = agent && sessionId ? `${kind}:${agent}:${sessionId}` : `${kind}:`;
+    for (const key of [...this.latched.keys()]) {
+      if (key === prefix || key.startsWith(prefix)) this.latched.delete(key);
+    }
+  }
+
   /** session 结束：清掉它的去重/闩锁记录，别让长期运行的 Core 无限攒 key */
   private forgetSession(agent: string, sessionId: string): void {
     for (const key of [...this.latched.keys()]) {
@@ -287,8 +313,7 @@ export class NotificationEngine {
       .prepare("SELECT budget_tokens FROM sessions WHERE agent=? AND agent_session_id=?")
       .get(agent, sessionId) as { budget_tokens: number } | undefined;
     if (row?.budget_tokens) return row.budget_tokens;
-    const def = Number(getSetting(this.db, "budget_tokens") ?? "0");
-    return def;
+    return getDefaultBudgetTokens(this.db);
   }
 
   // ---- 对外 mute 操作（浮层调用） ----

@@ -46,8 +46,8 @@ And it never sees your code. Prompts, diffs, file paths, and tool inputs are dro
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
-| ⚠️ **Partial** | 5 of 12 planned starter pets · token budget has an engine but no settings UI · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
+| ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
 Full requirement-by-requirement status: [PRD §15](docs/prd_mvp_en.md#15-implementation-status-as-of-2026-08-21).
@@ -215,8 +215,28 @@ The window expands *upward* — the pet itself doesn't move — and you get:
 - **Session list** — click a row to copy that session's jump-back command. `needs-you` rows show how long the agent has been waiting on you.
 - **Mute everything** — with a duration
 - **EXP breakdown** — where the numbers came from
+- **⚙ Settings** — opens the settings window (below)
 
 Close it by clicking the pet again, clicking empty space, pressing `Esc`, or hitting the × in the corner.
+
+### Settings
+
+Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal window, not a flyout page — the pet window is 300px wide and click-through, which is no place for a form.
+
+| Section | What's in it |
+| --- | --- |
+| **Pet** | Name it. Empty falls back to the species name. |
+| **Budget & warnings** | Default token budget (in k tokens; `0` turns milestones off) · context warning thresholds (off / early / default / late) · daily EXP cap |
+| **Running sessions** | Per-session **goal** and **budget** for every agent session that's currently live |
+| **Window** | Show on all Spaces · click-through · language · snap the pet back to the bottom-right |
+
+Two things there are worth calling out:
+
+**A session goal is not decoration.** It's the baseline for drift detection and it pays 1.1× EXP (see [How your pet grows](#how-your-pet-grows)). Sessions are born in your terminal, so the settings window is the only place to attach one — set it when you start something you care about.
+
+**Changes take effect immediately, including mid-session.** Set a budget on a session that's already burned 60% and you get the 50% milestone on its next token update, not silence until tomorrow. Everything saves as you leave each field; out-of-range values are clamped and the field shows you what was actually stored.
+
+The Core half of this window (budget, thresholds, goals, pet name) also works from the browser preview at http://127.0.0.1:5173/settings.html. The Window section needs the desktop shell and says so when it can't reach it.
 
 ### Mute is a visible state, not a silent switch
 
@@ -236,7 +256,7 @@ Amber is the important one: without it, a broken hook looks exactly like a quiet
 
 - **Drag** — grab empty space in the pet window. Position is remembered, and always clamped to the visible screen area.
 - **Clicks pass through** the empty area around the pet's body, straight to the app underneath. The flyout needs room above the pet, and that room is normally empty space.
-- **Tray menu** — click-through toggle · show on all desktops · show · snap back to bottom-right · quit
+- **Tray menu** — click-through toggle · show on all desktops · show · settings · snap back to bottom-right · quit
 - **Above fullscreen apps** — the pet stays visible over fullscreen iTerm2, fullscreen editors, and so on. This is not affected by the tray toggles. To make it possible the shell keeps no Dock icon, so **quit lives in the tray menu** — a macOS requirement: a process with a Dock icon cannot float over someone else's fullscreen Space.
 - **Browser preview** (optional) — `npm run ui`, then open http://127.0.0.1:5173. If 5173 is busy the desktop shell picks a free port automatically (it's Vite's default port, so a stray dev server is likely).
 
@@ -244,7 +264,9 @@ Amber is the important one: without it, a broken hook looks exactly like a quiet
 
 ### Language
 
-The UI follows your OS language: any Chinese variant → Simplified Chinese, everything else → English. Tray menu, pet UI, bubbles, and the adapter installer all share one message catalog (`src/i18n/messages.js`), so you never get a half-translated screen. To force one:
+The UI follows your OS language: any Chinese variant → Simplified Chinese, everything else → English. Tray menu, pet UI, bubbles, settings window, and the adapter installer all share one message catalog (`src/i18n/messages.js`), so you never get a half-translated screen.
+
+To pick one explicitly, use **Settings → Language** — the tray menu, pet window, and settings window all switch on the spot, no restart. The environment variable still wins over that choice, for scripted runs:
 
 ```bash
 VIBEPAWS_LOCALE=en npm run desktop      # or zh-CN
@@ -286,12 +308,12 @@ session_exp = capped_token_exp
 
 | Kind | Fires at |
 | --- | --- |
-| Context warning | 70% · 85% · 95% |
+| Context warning | 70% · 85% · 95% (configurable, or off) |
 | Token budget milestone | 25% · 50% · 75% · 90% of budget |
 
 Each tier latches — you get 70% once, not every 60 seconds. But 70% and 95% are genuinely different messages ("keep an eye on it" vs. "wrap up now"), so both land.
 
-> ⚠️ Setting a token budget currently requires writing the `budget_tokens` setting or the session's `budget_tokens` column directly — there's no UI for it yet. Without a budget, milestone notifications stay off. Context warnings work regardless.
+Milestones need a budget to be a percentage of, and there is no default one — set it in [Settings](#settings), globally or per session. Context warnings work without a budget.
 
 ---
 
@@ -412,7 +434,7 @@ npm run dist:mac     # output in dist/
 | Codex sends nothing | Run `/hooks` inside Codex once to authorize. |
 | Double EXP, double bubbles | Both global and project-level hooks are installed. Re-run with `--global`, which cleans up the project-level entries. |
 | Token count stays 0 | On Claude Code, tokens come from `statusLine` — reinstall the adapter so it gets configured. On Codex, tokens only arrive at SessionEnd. |
-| No token milestone bubbles | No budget is set. Milestones are relative to a budget; context warnings work without one. |
+| No token milestone bubbles | No budget is set — set one in Settings (tray → Settings…), globally or on that session. Milestones are relative to a budget; context warnings work without one. |
 | Pet disappears over a fullscreen terminal | Shouldn't happen — file it. Note that "show on all desktops" only controls whether it follows you between Spaces. |
 | Pet is off-screen after switching monitors | Use tray → snap back to bottom-right. |
 
@@ -437,7 +459,8 @@ src/db/          SQLite schema, migrations, pet type seed
 src/simulator/   scenario-driven event generator for QA
 src/i18n/        one shared message catalog (zh-CN / en)
 ui/              pet renderer: canvas, motion recipes, fx, pet registry, procedural fallback
-desktop/         Electron shell: transparent window, tray, click-through, positioning
+                 + the settings page (settings.html / .js / .css)
+desktop/         Electron shell: transparent window, tray, click-through, positioning, settings window
 scripts/         Python asset pipeline (only needed when adding pets)
 docs/            PRD (en/zh) and technical architecture
 ```
@@ -448,7 +471,7 @@ Tests are Node's built-in runner over `--experimental-strip-types` TypeScript �
 
 ## Roadmap
 
-**Rest of the MVP window** — remaining starter pets (5 → 12) · budget and drift settings UI · evolved-form art · STT voice commands as a P1 experiment.
+**Rest of the MVP window** — remaining starter pets (5 → 12) · evolved-form art · sound cues · drift tuning · STT voice commands as a P1 experiment.
 
 **After that**, gated on retention rather than pet count — exportable pet cards, community pet submissions with moderation, skin packs, public profiles.
 
@@ -465,6 +488,8 @@ Full reasoning, metrics, and release criteria: **[PRD (English)](docs/prd_mvp_en
 | [`docs/mvp_architecture.md`](docs/mvp_architecture.md) | Technical architecture: decision log, module design, event schema, data model, degradation |
 | [`references/event_collection.md`](references/event_collection.md) | Claude Code / Codex hook event research |
 | [`references/cc-session.md`](references/cc-session.md) | Session management research across pi / Claude Code / Codex |
+| [`references/desktop_pet_landscape.md`](references/desktop_pet_landscape.md) | Competitive research: 35 desktop pets, 1,300+ issues across 8 trackers, and a 39-item prioritized feature roadmap |
+| [`references/desktop_pet_landscape.zh-CN.md`](references/desktop_pet_landscape.zh-CN.md) | Same, in Chinese |
 
 ## Contributing
 

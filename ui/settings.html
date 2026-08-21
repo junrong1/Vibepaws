@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!--
+  Vibepaws 设置窗口（landscape 表格第 13 项）。
+
+  为什么它是一扇**独立**窗口，而不是宠物浮层里的一页：宠物窗口恒为 300×430、
+  无边框、透明、还要靠命中测试来放过桌面的点击 —— 表单要的每一样东西
+  （宽度、可聚焦的输入框、系统级复制粘贴）都在跟这些约束打架。
+  文案全部走 i18n（issue #3 / #6）：本文件里不写死任何一句人类可读文本。
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibepaws Settings</title>
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main id="app">
+    <header id="head">
+      <h1 data-i18n="settings.title"></h1>
+      <!-- 每次保存的结果都落在这里：改完什么都不说，用户就只能猜生效了没有 -->
+      <p id="status" role="status" aria-live="polite"></p>
+    </header>
+
+    <section class="card">
+      <h2 data-i18n="settings.section.pet"></h2>
+      <div class="row">
+        <label for="pet-name" data-i18n="settings.pet.name"></label>
+        <input id="pet-name" type="text" autocomplete="off" spellcheck="false">
+      </div>
+      <p class="hint" data-i18n="settings.pet.name.hint"></p>
+      <p class="meta" id="pet-meta"></p>
+    </section>
+
+    <section class="card">
+      <h2 data-i18n="settings.section.budget"></h2>
+      <div class="row">
+        <label for="budget" data-i18n="settings.budget.label"></label>
+        <span class="field">
+          <input id="budget" type="number" min="0" step="1" inputmode="numeric">
+          <span class="unit" data-i18n="settings.budget.unit"></span>
+        </span>
+      </div>
+      <p class="hint" data-i18n="settings.budget.hint"></p>
+
+      <div class="row">
+        <label for="warn" data-i18n="settings.warn.label"></label>
+        <select id="warn"></select>
+      </div>
+      <p class="hint" data-i18n="settings.warn.hint"></p>
+
+      <div class="row">
+        <label for="cap" data-i18n="settings.cap.label"></label>
+        <span class="field">
+          <input id="cap" type="number" min="1" step="1" inputmode="numeric">
+          <span class="unit" data-i18n="settings.cap.unit"></span>
+        </span>
+      </div>
+      <p class="hint" data-i18n="settings.cap.hint"></p>
+    </section>
+
+    <section class="card">
+      <h2 data-i18n="settings.section.sessions"></h2>
+      <!-- G17 的录入口：session 在终端里诞生，goal / budget 只能在这里补上 -->
+      <div id="sessions"></div>
+      <p class="hint" data-i18n="settings.sessions.hint"></p>
+    </section>
+
+    <section class="card" id="window-card">
+      <h2 data-i18n="settings.section.window"></h2>
+      <!-- 这一段是壳层设定（窗口怎么摆、界面什么语言），浏览器里打开时无从生效 -->
+      <p class="hint" id="shell-only" hidden data-i18n="settings.shellonly"></p>
+      <label class="check">
+        <input id="allspaces" type="checkbox">
+        <span data-i18n="settings.window.allspaces"></span>
+      </label>
+      <label class="check">
+        <input id="clickthrough" type="checkbox">
+        <span data-i18n="settings.window.clickthrough"></span>
+      </label>
+      <p class="hint" data-i18n="settings.window.clickthrough.hint"></p>
+      <div class="row">
+        <label for="language" data-i18n="settings.language.label"></label>
+        <select id="language"></select>
+      </div>
+      <button id="reset-pos" type="button" data-i18n="settings.window.reset"></button>
+    </section>
+  </main>
+
+  <script type="module" src="settings.js"></script>
+</body>
+</html>

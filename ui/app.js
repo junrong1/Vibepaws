@@ -712,6 +712,14 @@ document.addEventListener("keydown", (e) => {
 $("panel-close").onclick = closePanel;
 $("mute-badge").onclick = () => setMute(null);
 $("act-exp").onclick = () => loadExpLog();
+/**
+ * 设置窗口。壳里开一扇真正的窗口（有标题栏、能聚焦、系统复制粘贴都在）；
+ * 纯浏览器预览里退成一个新标签页 —— 那时没有壳，也没有窗口那一段设置可改。
+ */
+$("act-settings").onclick = () => {
+  if (shell?.openSettings) shell.openSettings();
+  else window.open(`/settings.html?locale=${encodeURIComponent(LOCALE)}`, "_blank", "noopener");
+};
 // 单选组：点已经开着的那个 = 取消静音；点另一个 = 换成那个时长
 for (const btn of MUTE_BUTTONS) {
   $(btn.id).onclick = () =>

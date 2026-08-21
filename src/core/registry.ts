@@ -234,17 +234,71 @@ export class SessionRegistry {
     return Number(info.lastInsertRowid);
   }
 
+  /** session 视图共用的列清单（listSessions 与 sessionView 必须取一样的字段） */
+  private static readonly VIEW_COLUMNS = `agent, agent_session_id as session_id, project_id, title, is_active,
+                token_used, context_pct, correction_count, last_event_at, finished_at,
+                needs_input_since, parent_id, outcome, goal, budget_tokens`;
+
   /** 全部 session 视图（按最后活动倒序） */
   listSessions(limit = 50): SessionView[] {
     const rows = this.db
       .prepare(
-        `SELECT agent, agent_session_id as session_id, project_id, title, is_active,
-                token_used, context_pct, correction_count, last_event_at, finished_at,
-                needs_input_since, parent_id, outcome
+        `SELECT ${SessionRegistry.VIEW_COLUMNS}
          FROM sessions ORDER BY last_event_at DESC LIMIT ?`,
       )
       .all(limit) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
+    return rows.map((r) => this.toView(r));
+  }
+
+  /** 单个 session 视图（设置窗口写完 goal/budget 后要把生效结果回给界面） */
+  sessionView(agent: string, sessionId: string): SessionView | null {
+    const row = this.db
+      .prepare(
+        `SELECT ${SessionRegistry.VIEW_COLUMNS}
+         FROM sessions WHERE agent=? AND agent_session_id=?`,
+      )
+      .get(agent, sessionId) as Record<string, unknown> | undefined;
+    return row ? this.toView(row) : null;
+  }
+
+  /**
+   * 写入 session 的 goal / budget_tokens（G17 的录入口）。
+   *
+   * 为什么这件事必须由界面提供：session 是在终端里诞生的，而 `goal` 是
+   * topic_multiplier 和漂移判定的基准、`budget_tokens` 是里程碑的分母 ——
+   * 没有录入时机的话，这两条规则对绝大多数用户永远空转。
+   * 返回更新后的视图；session 不存在返回 null（调用方回 404，而不是静默成功）。
+   */
+  updateSession(
+    agent: string,
+    sessionId: string,
+    patch: { goal?: string | null; budget_tokens?: number | null },
+  ): SessionView | null {
+    if (!this.db.prepare("SELECT 1 FROM sessions WHERE agent=? AND agent_session_id=?").get(agent, sessionId)) {
+      return null;
+    }
+    const sets: string[] = [];
+    const params: Array<string | number | null> = [];
+    if (patch.goal !== undefined) {
+      sets.push("goal=?");
+      params.push(patch.goal);
+    }
+    if (patch.budget_tokens !== undefined) {
+      sets.push("budget_tokens=?");
+      params.push(patch.budget_tokens);
+    }
+    if (sets.length > 0) {
+      // 故意不动 last_event_at：改设置不是 session 的「活动」，
+      // 否则一次改名就能把一个 15 分钟没动静的 session 从 idle 拉回 working。
+      this.db
+        .prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE agent=? AND agent_session_id=?`)
+        .run(...params, agent, sessionId);
+    }
+    return this.sessionView(agent, sessionId);
+  }
+
+  private toView(r: Record<string, unknown>): SessionView {
+    return {
       agent: r.agent as SessionView["agent"],
       session_id: r.session_id as string,
       project_id: r.project_id as string,
@@ -256,10 +310,12 @@ export class SessionRegistry {
       last_event_at: r.last_event_at as string,
       finished_at: (r.finished_at as string | null) ?? null,
       needs_input_since: (r.needs_input_since as string | null) ?? null,
+      goal: (r.goal as string | null) ?? null,
+      budget_tokens: (r.budget_tokens as number | null) ?? null,
       is_active: (r.is_active as number) === 1,
       parent_id: r.parent_id as number | null,
       outcome: r.outcome as string | undefined,
-    }));
+    };
   }
 
   /** 推断单个 session 状态（Core 判定；tired/level-up 由宠物引擎叠加） */

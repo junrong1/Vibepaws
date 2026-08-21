@@ -7,12 +7,26 @@
  *   GET  /api/state        当前聚合状态 JSON
  *   GET  /api/sessions     全部 session 视图
  *   GET  /api/exp          宠物 EXP/等级
+ *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
+ *   POST /api/settings     改设置（宠物名 / 预算 / 阈值 / 每日上限）
+ *   POST /api/session      改单个 session 的 goal / budget_tokens
  */
 import { createServer } from "node:http";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, DATA_DIR } from "../db/migrate.ts";
-import { getApiToken } from "./settings.ts";
+import {
+  getApiToken,
+  readSettings,
+  applySettingsPatch,
+  parseSettingsPatch,
+  parseSessionPatch,
+  SETTINGS_LIMITS,
+  DEFAULT_BUDGET_TOKENS,
+  DEFAULT_DAILY_EXP_CAP,
+  DEFAULT_CONTEXT_WARN_PCTS,
+  type VibepawsSettings,
+} from "./settings.ts";
 import { writeApiToken } from "./token.ts";
 import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
@@ -41,6 +55,26 @@ const SSE_PING_MS = 15_000;
 const STATE_COALESCE_MS = 80;
 /** mute 时长上限（分钟）：24h。没有上限时一次误传就能把通知静音到下个世纪 */
 const MAX_MUTE_MINUTES = 24 * 60;
+/** 请求体上限：这些端点收的都是几十字节的小 JSON，没有理由为任何一方缓冲兆级数据 */
+const MAX_BODY_BYTES = 64 * 1024;
+
+/** 设置窗口一次拿全的数据（GET /api/settings 与 POST 的响应共用） */
+export interface SettingsView {
+  settings: VibepawsSettings;
+  /** 取值范围与默认值：界面拿它设 input 的 min/max，不必再抄一份常量 */
+  limits: typeof SETTINGS_LIMITS;
+  defaults: { budget_tokens: number; daily_exp_cap: number; context_warn_pcts: number[] };
+  pet: {
+    name: string;
+    custom_name: string | null;
+    species: string | null;
+    level: number;
+    exp: number;
+    next_level_exp: number;
+  };
+  /** 只给活跃 session：给一个已经结束的 session 设目标/预算没有任何意义 */
+  sessions: SessionView[];
+}
 
 export class VibepawsServer {
   port: number;
@@ -131,6 +165,15 @@ export class VibepawsServer {
             this.handleAction(req, res);
             return;
           }
+          if (url === "/api/settings") {
+            if (req.method === "POST") this.handleSettingsPatch(req, res);
+            else sendJson(res, 200, this.settingsSnapshot());
+            return;
+          }
+          if (url === "/api/session" && req.method === "POST") {
+            this.handleSessionPatch(req, res);
+            return;
+          }
           res.writeHead(404, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "not found" }));
         } catch (err) {
@@ -170,82 +213,146 @@ export class VibepawsServer {
   }
 
   private handlePostEvents(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      try {
-        const parsed = JSON.parse(body);
-        const r = this.handleEvent(parsed);
-        res.writeHead(r.ok ? 200 : (r.code ?? 400), { "content-type": "application/json" });
-        res.end(JSON.stringify(r.ok ? { ok: true, reason: r.reason ?? "ok" } : { error: r.reason }));
-      } catch (err) {
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid json" }));
-      }
+    readJsonBody(req, res, "invalid json", (parsed) => {
+      // ingestEvent 自己会校验信封与白名单：这里不必先信任 body 的形状
+      const r = this.handleEvent(parsed as CoreEvent);
+      sendJson(res, r.ok ? 200 : (r.code ?? 400), r.ok ? { ok: true, reason: r.reason ?? "ok" } : { error: r.reason });
     });
+  }
+
+  /**
+   * 设置窗口的写入口。校验先全部做完再落库：一份 patch 里有个读不成的值时，
+   * 不该有一半设置已经生效了 —— 那种「部分成功」在界面上完全看不出来。
+   */
+  private handleSettingsPatch(
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+  ): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const parsed = parseSettingsPatch(body);
+      if (parsed.invalid.length > 0) {
+        sendJson(res, 400, { error: "invalid settings", fields: parsed.invalid });
+        return;
+      }
+      const changed = applySettingsPatch(this.db, parsed.settings);
+      if (parsed.pet_name !== undefined) {
+        this.exp.renamePet(parsed.pet_name);
+        changed.push("pet_name");
+      }
+      // 改完阈值/预算要重新武装闩锁，否则新设置要等下一个 session 才看得见效果
+      if (changed.includes("context_warn_pcts")) this.notifications.resetLatches("context");
+      if (changed.includes("budget_tokens")) this.notifications.resetLatches("budget");
+      // 名字改了要立刻反映到宠物脚下的名牌上
+      if (changed.includes("pet_name")) this.broadcastState();
+      sendJson(res, 200, { ok: true, changed, clamped: parsed.clamped, ...this.settingsSnapshot() });
+    });
+  }
+
+  /** 单个 session 的 goal / budget（G17：session 在终端里诞生，录入时机只能由界面提供） */
+  private handleSessionPatch(
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+  ): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const { agent, session_id } = (body ?? {}) as { agent?: unknown; session_id?: unknown };
+      if (typeof agent !== "string" || typeof session_id !== "string" || !agent || !session_id) {
+        sendJson(res, 400, { error: "agent and session_id required" });
+        return;
+      }
+      const parsed = parseSessionPatch(body);
+      if (parsed.invalid.length > 0) {
+        sendJson(res, 400, { error: "invalid session settings", fields: parsed.invalid });
+        return;
+      }
+      const session = this.registry.updateSession(agent, session_id, parsed.patch);
+      if (!session) {
+        sendJson(res, 404, { error: "session not found" });
+        return;
+      }
+      // 预算是里程碑的分母：换了分母就该按新分母重新报一次，而不是沿用旧闩锁
+      if (parsed.patch.budget_tokens !== undefined) {
+        this.notifications.resetLatches("budget", agent, session_id);
+      }
+      this.broadcastState(); // goal 会进 session 视图，浮层与设置窗口都该立刻看到
+      sendJson(res, 200, { ok: true, clamped: parsed.clamped, session });
+    });
+  }
+
+  /** 设置窗口一次拿全的数据 */
+  settingsSnapshot(): SettingsView {
+    const pet = this.exp.getPetSnapshot();
+    return {
+      settings: readSettings(this.db),
+      limits: SETTINGS_LIMITS,
+      defaults: {
+        budget_tokens: DEFAULT_BUDGET_TOKENS,
+        daily_exp_cap: DEFAULT_DAILY_EXP_CAP,
+        context_warn_pcts: [...DEFAULT_CONTEXT_WARN_PCTS],
+      },
+      pet: {
+        name: pet.name ?? "vibepaws",
+        custom_name: pet.custom_name,
+        species: pet.species,
+        level: pet.level,
+        exp: pet.exp,
+        next_level_exp: pet.next_level_exp,
+      },
+      sessions: this.registry.listSessions().filter((s) => s.is_active),
+    };
   }
 
   /** UI 浮层动作：mute / unmute / dismiss / actioned */
   private handleAction(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      try {
-        const { action, minutes, project_id, session_id, id } = JSON.parse(body) as {
-          action?: string;
-          minutes?: number;
-          project_id?: string;
-          session_id?: string;
-          id?: number;
-        };
-        // 时长必须收敛到合理区间：脏值不该变成「静音到下个世纪」或「静音 -5 分钟」
-        const m = clampMinutes(minutes);
-        const bad = (reason: string): void => {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: reason }));
-        };
-        switch (action) {
-          case "mute":
-            this.notifications.muteGlobal(m);
-            break;
-          case "unmute":
-            this.notifications.unmuteGlobal();
-            break;
-          case "mute_project":
-            if (!project_id) return bad("project_id required");
-            this.notifications.muteProject(project_id, m);
-            break;
-          case "unmute_project":
-            if (!project_id) return bad("project_id required");
-            this.notifications.unmuteProject(project_id);
-            break;
-          case "mute_session":
-            if (!session_id) return bad("session_id required");
-            this.notifications.muteSession(session_id, m);
-            break;
-          case "unmute_session":
-            if (!session_id) return bad("session_id required");
-            this.notifications.unmuteSession(session_id);
-            break;
-          case "dismiss":
-            if (!Number.isInteger(id)) return bad("id required");
-            this.notifications.dismiss(id as number);
-            break;
-          case "actioned":
-            if (!Number.isInteger(id)) return bad("id required");
-            this.notifications.actioned(id as number);
-            break;
-          default:
-            return bad("unknown action");
-        }
-        // 静音状态是 pet_state 的一部分：改完立刻推给界面，按钮不用等下一次轮询
-        this.broadcastState();
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, ...this.notifications.muteStatus() }));
-      } catch {
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "bad body" }));
+    readJsonBody(req, res, "bad body", (parsed) => {
+      const { action, minutes, project_id, session_id, id } = (parsed ?? {}) as {
+        action?: string;
+        minutes?: number;
+        project_id?: string;
+        session_id?: string;
+        id?: number;
+      };
+      // 时长必须收敛到合理区间：脏值不该变成「静音到下个世纪」或「静音 -5 分钟」
+      const m = clampMinutes(minutes);
+      const bad = (reason: string): void => {
+        sendJson(res, 400, { error: reason });
+      };
+      switch (action) {
+        case "mute":
+          this.notifications.muteGlobal(m);
+          break;
+        case "unmute":
+          this.notifications.unmuteGlobal();
+          break;
+        case "mute_project":
+          if (!project_id) return bad("project_id required");
+          this.notifications.muteProject(project_id, m);
+          break;
+        case "unmute_project":
+          if (!project_id) return bad("project_id required");
+          this.notifications.unmuteProject(project_id);
+          break;
+        case "mute_session":
+          if (!session_id) return bad("session_id required");
+          this.notifications.muteSession(session_id, m);
+          break;
+        case "unmute_session":
+          if (!session_id) return bad("session_id required");
+          this.notifications.unmuteSession(session_id);
+          break;
+        case "dismiss":
+          if (!Number.isInteger(id)) return bad("id required");
+          this.notifications.dismiss(id as number);
+          break;
+        case "actioned":
+          if (!Number.isInteger(id)) return bad("id required");
+          this.notifications.actioned(id as number);
+          break;
+        default:
+          return bad("unknown action");
       }
+      // 静音状态是 pet_state 的一部分：改完立刻推给界面，按钮不用等下一次轮询
+      this.broadcastState();
+      sendJson(res, 200, { ok: true, ...this.notifications.muteStatus() });
     });
   }
 
@@ -385,6 +492,58 @@ export class VibepawsServer {
       idle: sessions.filter((s) => s.is_active && s.state === "idle"),
     };
   }
+}
+
+function sendJson(res: import("node:http").ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * 读一个 JSON 请求体。四个 POST 端点共用，顺带把三件事一起收拾干净：
+ *   · 体积上限 —— 这些端点收的都是几十字节的小 JSON，没有理由为任何一方缓冲兆级数据；
+ *   · 解析失败回 400，处理器自己抛异常回 500 —— 原来两者混在同一个 try 里，
+ *     业务代码的 bug 会被伪装成「请求体坏了」；
+ *   · 处理器的异常**必须**在这里兜住：它跑在 req 的 'end' 回调里，
+ *     外层 createServer 那个 try 早就返回了，漏出去就是 uncaught exception —— 整个 Core 挂掉。
+ */
+function readJsonBody(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  badMessage: string,
+  onBody: (parsed: unknown) => void,
+): void {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let aborted = false;
+  req.on("data", (chunk: Buffer) => {
+    if (aborted) return;
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      aborted = true;
+      sendJson(res, 413, { error: "body too large" });
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => {
+    if (aborted) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      sendJson(res, 400, { error: badMessage });
+      return;
+    }
+    try {
+      onBody(parsed);
+    } catch (err) {
+      console.error("[server] body handler error:", err);
+      if (!res.headersSent) sendJson(res, 500, { error: "internal" });
+      else res.end();
+    }
+  });
 }
 
 /** capabilities 列是 JSON 文本：老库里可能是脏值，解析失败当没有能力声明，别让状态推送整个炸掉 */

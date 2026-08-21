@@ -373,10 +373,10 @@ session_exp =
 | 7.2 通知气泡 | ✅ 已实现 | 决策 / 权限 / context / 错误 / token 里程碑；60s 去重；每档闩锁 |
 | 7.2 Mute（30m / 2h / project / session） | ✅ 已实现 | 可见徽章 + 剩余时间，可撤销 |
 | 7.2 5 秒内出现 | ✅ 判定在 Core | 待 alpha QA 实测确认 |
-| 7.3 Context warning 70/85/95 | ✅ 已实现 | 阈值在 `src/core/notifications.ts` |
-| 7.3 Token budget 里程碑 25/50/75/90 | ⚠️ 部分 | 引擎与 per-session budget 字段已实现；**尚无 UI 设置入口**，需写 settings |
-| 7.3 Topic drift 警告 | ⚠️ 部分 | 事件类型与通知路径已通；保守启发式规则待补齐（原计划 8/26） |
-| 7.4 EXP 引擎 | ✅ 已实现 | 1 EXP/1k tokens、daily cap 200、context/topic 倍率、等级曲线 100+50(n−1) |
+| 7.3 Context warning 70/85/95 | ✅ 已实现 | 默认阈值在 `src/core/settings.ts`；可在设置窗口里调整或关闭 |
+| 7.3 Token budget 里程碑 25/50/75/90 | ✅ 已实现 | 引擎、per-session budget 字段，以及设置窗口（全局默认 + 按 session 覆盖）|
+| 7.3 Topic drift 警告 | ⚠️ 部分 | 事件类型、通知路径与 session goal 的录入口（设置窗口）已通；保守启发式规则待补齐（原计划 8/26） |
+| 7.4 EXP 引擎 | ✅ 已实现 | 1 EXP/1k tokens、daily cap 200（设置里可调）、context/topic 倍率、等级曲线 100+50(n−1) |
 | 7.4 Tired 状态 / 无永久死亡 | ✅ 已实现 | 状态机含 `tired` |
 | 7.4 EXP explanation | ✅ 已实现 | 浮层内 EXP 明细 |
 | 7.5 进化 | ⚠️ 部分 | `evolution_meta` 规则引擎已通（Lv5/Lv10 + health 条件）；**进化形态素材未做** |
