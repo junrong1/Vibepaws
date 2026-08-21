@@ -25,4 +25,6 @@ contextBridge.exposeInMainWorld("vibepaws", {
    * 不上报的话那片空白会把点击全吃掉。主进程据此开关 setIgnoreMouseEvents。
    */
   setHit: (over) => ipcRenderer.send("vibepaws:hit", Boolean(over)),
+  /** 打开设置窗口（浮层里的 ⚙）。宠物窗口本身不该有权改任何设置，所以只给这一个动作。 */
+  openSettings: () => ipcRenderer.send("vibepaws:open-settings"),
 });

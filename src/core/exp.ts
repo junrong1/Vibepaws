@@ -13,12 +13,17 @@
  */
 import type Database from "better-sqlite3";
 import type { CoreEvent, PetState } from "./events.ts";
-import { getSetting, setSetting } from "./settings.ts";
+import { getDailyExpCap } from "./settings.ts";
 
 export interface PetSnapshot {
   id: number;
   pet_type_id: number;
+  /** 显示名：用户起的名字优先，没起过就是物种名 */
   name: string | null;
+  /** 用户起的名字本身（null = 没起过）。设置窗口要靠它区分「输入框的值」和「占位提示」 */
+  custom_name: string | null;
+  /** 物种名（设置窗口把它当占位符：清空名字就会回落到这个） */
+  species: string | null;
   level: number;
   exp: number;
   state: PetState;
@@ -26,9 +31,6 @@ export interface PetSnapshot {
   daily_exp: number;
   next_level_exp: number;
 }
-
-/** 每日 EXP cap（settings 可覆盖） */
-const DEFAULT_DAILY_CAP = 200;
 /** 每 1000 tokens = 1 EXP */
 const TOKEN_EXP_RATE = 1 / 1000;
 /** 每小时自成长 */
@@ -222,8 +224,7 @@ export class ExpEngine {
   }
 
   private dailyCap(): number {
-    const v = Number(getSetting(this.db, "daily_exp_cap") ?? String(DEFAULT_DAILY_CAP));
-    return Number.isFinite(v) && v > 0 ? v : DEFAULT_DAILY_CAP;
+    return getDailyExpCap(this.db);
   }
 
   private resetDailyIfNeeded(): void {
@@ -318,6 +319,8 @@ export class ExpEngine {
       pet_type_id: p.pet_type_id,
       // 用户给宠物起的名字优先；没起过才显示物种名
       name: p.name ?? type?.name ?? "vibepaws",
+      custom_name: p.name,
+      species: type?.name ?? null,
       level: p.level,
       exp: round2(p.exp),
       state,
@@ -325,6 +328,16 @@ export class ExpEngine {
       daily_exp: round2(p.daily_exp),
       next_level_exp: levelExpRequired(p.level),
     };
+  }
+
+  /**
+   * 给宠物改名（设置窗口）。null = 清空，显示名回落到物种名 ——
+   * 在这之前 `pets.name` 这一列从来没有写入方，只能手改 SQLite。
+   */
+  renamePet(name: string | null): void {
+    const pet = this.petRow();
+    if (!pet) return;
+    this.db.prepare("UPDATE pets SET name=? WHERE id=?").run(name, pet.id);
   }
 
   expLogs(limit = 100): Array<Record<string, unknown>> {

@@ -63,3 +63,15 @@ test("index.html 带 CSP 与 nosniff（宠物窗口没有理由连外网）", as
     assert.equal(r.headers.get("x-content-type-options"), "nosniff");
   });
 });
+
+test("设置窗口的页面与它的样式表都在同一个 server 上（浏览器预览也能改设置）", async () => {
+  await withServer(async (base) => {
+    const page = await fetch(`${base}/settings.html`);
+    assert.equal(page.status, 200);
+    // 同一条 CSP：settings.css / settings.js / i18n.js 全是同源，页面不需要外网
+    assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+    for (const asset of ["/settings.css", "/settings.js", "/i18n.js"]) {
+      assert.equal((await fetch(base + asset)).status, 200, `${asset} 必须能加载，否则设置窗口是一张白纸`);
+    }
+  });
+});

@@ -46,8 +46,8 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
-| ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · token 预算有引擎但没有设置界面 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
+| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
+| ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
 逐条需求的对账：[PRD §15](docs/prd_mvp_zh.md#15-实现状态截至-2026-08-21)。
@@ -215,8 +215,28 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 - **session 列表** —— 点击行复制那个 session 的 jump-to 恢复命令。`needs-you` 的行会显示 agent 已经等了你多久。
 - **全部静音** —— 带时长
 - **EXP 明细** —— 这些数字是怎么来的
+- **⚙ 设置** —— 打开设置窗口（见下）
 
 关闭：再点宠物 / 点空白处 / `Esc` / 右上角 ×。
+
+### 设置
+
+托盘菜单 → **设置…**，或浮层里的 ⚙ 按钮。它是一扇**独立**窗口而不是浮层里的一页 —— 宠物窗口只有 300px 宽，还要放过桌面的点击，那里放不了表单。
+
+| 分区 | 内容 |
+| --- | --- |
+| **宠物** | 起名字。留空回落物种名。 |
+| **预算与警告** | 默认 token 预算（单位 k tokens，填 `0` 就是关掉里程碑）· 上下文警告阈值（关 / 早 / 默认 / 晚）· 每日 EXP 上限 |
+| **在跑的 session** | 给每个当前活跃的 session 单独设**目标**与**预算** |
+| **窗口** | 在所有桌面显示 · 点击穿透 · 界面语言 · 把宠物放回右下角 |
+
+其中两件事值得单独说：
+
+**session 目标不是装饰。** 它是漂移判定的基准，也直接换算成 1.1× EXP（见 [宠物怎么成长](#宠物怎么成长)）。session 是在终端里诞生的，所以设置窗口是唯一能给它挂上目标的地方 —— 开始一件你在意的事情时就填一句。
+
+**改动立刻生效，包括改到一半的 session。** 给一个已经烧掉 60% 的 session 填上预算，下一次 token 上报就会给你 50% 那一档里程碑，而不是安静到明天。每一格离焦即保存；超出范围的值会被收敛，并且当场把真正存进去的数字显示回来。
+
+这扇窗里属于 Core 的那一半（预算、阈值、目标、宠物名）在浏览器预览里也能改：http://127.0.0.1:5173/settings.html 。窗口那一段需要桌面壳，连不上时它会直接说出来。
 
 ### 静音是可见状态，不是静默开关
 
@@ -236,7 +256,7 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 
 - **拖拽** —— 按住宠物窗口的空白处拖动。位置会记住，且始终夹在屏幕可见区域内。
 - **点击穿透** —— 宠物身体以外的空白区域点击会直接落到下面的应用上。浮层要占宠物上方的空间，那块空间平时是空的。
-- **托盘菜单** —— 点击穿透开关 · 所有桌面显示 · 显示 · 放回右下角 · 退出
+- **托盘菜单** —— 点击穿透开关 · 所有桌面显示 · 显示 · 设置 · 放回右下角 · 退出
 - **浮在全屏应用之上** —— 全屏 iTerm2、全屏编辑器之上宠物依然可见，这一条不受托盘开关影响。为此壳进程不占 Dock 图标，**出口在托盘菜单里** —— 这是 macOS 的硬性要求：占 Dock 的进程无法浮在别人的全屏 Space 上。「所有桌面显示」只管「你换桌面时它跟不跟过来」。
 - **浏览器预览**（可选）—— `npm run ui` 后打开 http://127.0.0.1:5173。5173 被占用时桌面壳会自动改用空闲端口（它是 Vite 默认端口，你手边随时可能有个前端 dev server 占着）。
 
@@ -244,7 +264,9 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 
 ### 界面语言
 
-跟随操作系统语言自动选择：中文（任意变体）走简体中文，其余一律英文。托盘菜单、宠物界面、通知气泡与 adapter 安装向导共用同一份文案目录（`src/i18n/messages.js`），不会出现中英混排。想强制某种语言：
+跟随操作系统语言自动选择：中文（任意变体）走简体中文，其余一律英文。托盘菜单、宠物界面、通知气泡、设置窗口与 adapter 安装向导共用同一份文案目录（`src/i18n/messages.js`），不会出现中英混排。
+
+想显式指定，用**设置 → 语言**：托盘菜单、宠物窗口、设置窗口会当场一起换，不用重启。环境变量的优先级仍然高于这个选项，方便脚本化启动：
 
 ```bash
 VIBEPAWS_LOCALE=en npm run desktop      # 或 zh-CN
@@ -286,12 +308,12 @@ session_exp = capped_token_exp
 
 | 类型 | 触发点 |
 | --- | --- |
-| Context 警告 | 70% · 85% · 95% |
+| Context 警告 | 70% · 85% · 95%（可配置，也可关掉） |
 | Token 预算里程碑 | 预算的 25% · 50% · 75% · 90% |
 
 每一档都有闩锁 —— 70% 只报一次，不是每 60 秒复读。但 70% 和 95% 是完全不同的两句话（「留意一下」和「赶紧收尾」），所以两档都必须报到。
 
-> ⚠️ 目前设置 token 预算需要直接写 `budget_tokens` setting 或 session 表的 `budget_tokens` 列 —— 还没有界面入口。没有预算时，里程碑通知不会出现；context 警告不受影响。
+里程碑需要一个分母，而预算默认是没有的 —— 在[设置](#设置)里填，全局或按 session 都行。context 警告不需要预算也能工作。
 
 ---
 
@@ -412,7 +434,7 @@ npm run dist:mac     # 产物在 dist/
 | Codex 什么都不发 | 在 codex 里运行一次 `/hooks` 授权。 |
 | 重复 EXP、重复气泡 | 全局和项目级 hooks 都装了。用 `--global` 重跑一次，它会清掉项目级条目。 |
 | token 一直是 0 | Claude Code 的 token 来自 `statusLine` —— 重装 adapter 让它被配上。Codex 的 token 只在 SessionEnd 才到。 |
-| 没有 token 里程碑气泡 | 没设预算。里程碑是相对预算算的；context 警告不需要预算。 |
+| 没有 token 里程碑气泡 | 没设预算 —— 在设置里填一个（托盘 → 设置…），全局或只给那个 session。里程碑是相对预算算的；context 警告不需要预算。 |
 | 宠物在全屏终端上消失了 | 不该发生 —— 请提 issue。注意「所有桌面显示」只管换桌面时跟不跟过来。 |
 | 换了显示器后宠物跑到屏幕外 | 托盘 → 放回右下角。 |
 
@@ -436,7 +458,8 @@ src/db/          SQLite schema、迁移、宠物类型种子
 src/simulator/   场景驱动的事件生成器（QA 用）
 src/i18n/        一份共用文案目录（zh-CN / en）
 ui/              宠物渲染层：canvas、动作配方、fx、宠物注册表、程序生成兜底
-desktop/         Electron 壳：透明窗口、托盘、点击穿透、定位
+                 以及设置页面（settings.html / .js / .css）
+desktop/         Electron 壳：透明窗口、托盘、点击穿透、定位、设置窗口
 scripts/         Python 素材 pipeline（只有加宠物时才需要）
 docs/            PRD（中/英）与技术架构
 ```
@@ -447,7 +470,7 @@ docs/            PRD（中/英）与技术架构
 
 ## 路线图
 
-**MVP 窗口剩下的部分** —— 补齐 starter pet（5 → 12）· 预算与 drift 的设置界面 · 进化形态素材 · STT 语音命令作为 P1 实验。
+**MVP 窗口剩下的部分** —— 补齐 starter pet（5 → 12）· 进化形态素材 · 音效 · drift 规则调优 · STT 语音命令作为 P1 实验。
 
 **之后**，以 retention 而不是宠物数量为闸 —— 可导出的 pet card、有审核的社区宠物投稿、skin pack、public profile。
 
@@ -464,6 +487,8 @@ docs/            PRD（中/英）与技术架构
 | [`docs/mvp_architecture.md`](docs/mvp_architecture.md) | 技术架构：决策记录、模块设计、事件 schema、数据模型、降级策略 |
 | [`references/event_collection.md`](references/event_collection.md) | Claude Code / Codex hook 事件体系调研 |
 | [`references/cc-session.md`](references/cc-session.md) | pi / Claude Code / Codex 的 session 管理机制对比 |
+| [`references/desktop_pet_landscape.zh-CN.md`](references/desktop_pet_landscape.zh-CN.md) | 竞品研究：35 个桌宠、跨 8 个 tracker 的 1,300+ 个 issue，以及一份 39 项的功能路线图 |
+| [`references/desktop_pet_landscape.md`](references/desktop_pet_landscape.md) | 同上，英文 |
 
 ## 参与贡献
 

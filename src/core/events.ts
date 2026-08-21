@@ -102,6 +102,10 @@ export interface SessionView {
   finished_at: string | null;
   /** agent 卡在「等你」的起始时刻（ISO），null = 不在等 */
   needs_input_since: string | null;
+  /** 这次要做什么（设置窗口录入）。有 goal → topic_multiplier 1.1，也是漂移判定的基准 */
+  goal: string | null;
+  /** 本 session 的 token 预算；null = 跟随设置里的全局默认 */
+  budget_tokens: number | null;
   is_active: boolean;
   parent_id: number | null;
   outcome?: string;

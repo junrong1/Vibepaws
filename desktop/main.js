@@ -6,7 +6,7 @@
  * 说明：Tauri v2（架构 D6 首选）待本机 Rust 工具链就绪后替换本壳，
  *       渲染层（ui/）与通信协议（SSE）不变，替换成本仅壳层。
  */
-import { app, BrowserWindow, Tray, Menu, screen, nativeImage, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, Tray, Menu, screen, nativeImage, nativeTheme, ipcMain, dialog } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -44,8 +44,11 @@ const PET_BOX = { width: 210, height: 250 };
  * 为什么不能跟着浮层缩放，见下面 PANEL_GEOMETRY_NOTE。
  */
 const WINDOW_SIZE = { width: 300, height: 430 };
+/** 设置窗口：普通有边框窗口，够放下一个表单又不至于铺满屏幕 */
+const SETTINGS_SIZE = { width: 480, height: 660 };
 
 let win = null;
+let settingsWin = null;
 let tray = null;
 let uiServer = null;
 let uiPort = PREFERRED_UI_PORT;
@@ -69,8 +72,11 @@ let levelKeepAlive = null;
  *
  * anchor 存的是窗口**底部中心**（= 宠物脚下那一点）的屏幕坐标，而不是左上角：
  * 位置的语义是「宠物站在哪」，而不是「窗口的左上角在哪」—— 窗口的宽高里有一大半
- * 是留给浮层的透明空间，拿左上角当位置，换个尺寸就对不上了。 */
-const DEFAULT_PREFS = { allSpaces: true, anchor: null };
+ * 是留给浮层的透明空间，拿左上角当位置，换个尺寸就对不上了。
+ *
+ * locale 也存在这里（"auto" | "en" | "zh-CN"）而不是 Core 的 settings 表：
+ * 主进程在建托盘菜单时就要知道用哪种语言，那一刻 Core 可能还没起来。 */
+const DEFAULT_PREFS = { allSpaces: true, anchor: null, locale: "auto" };
 let prefs = { ...DEFAULT_PREFS };
 
 function prefsFile() {
@@ -110,22 +116,53 @@ function workDir() {
  * 文案目录与 Core 共用 src/i18n/messages.js（打包后在 resources/src 下，不在 asar 里）。 */
 let LOCALE = "en";
 let translate = (_locale, key) => key;
+let normalizeLocale = (tag) => (String(tag ?? "").toLowerCase().startsWith("zh") ? "zh-CN" : "en");
+
+/**
+ * 生效语言：环境变量 > 设置窗口里选的 > 系统语言。
+ * 环境变量排第一是给开发/截图用的（VIBEPAWS_LOCALE=zh npm run desktop），
+ * 它显式到不该被一个持久化偏好推翻。
+ */
+function resolveLocale() {
+  if (process.env.VIBEPAWS_LOCALE) return normalizeLocale(process.env.VIBEPAWS_LOCALE);
+  if (prefs.locale && prefs.locale !== "auto") return normalizeLocale(prefs.locale);
+  return normalizeLocale(app.getLocale());
+}
 
 async function loadI18n() {
   const file = join(resourcesDir(), "src", "i18n", "messages.js");
   try {
     const mod = await import(pathToFileURL(file).href);
     translate = mod.t;
-    LOCALE = process.env.VIBEPAWS_LOCALE
-      ? mod.normalizeLocale(process.env.VIBEPAWS_LOCALE)
-      : mod.normalizeLocale(app.getLocale());
-    log(`[vibepaws] locale=${LOCALE} (os=${app.getLocale()})`);
+    normalizeLocale = mod.normalizeLocale;
+    LOCALE = resolveLocale();
+    log(`[vibepaws] locale=${LOCALE} (os=${app.getLocale()} pref=${prefs.locale})`);
   } catch (e) {
     err(`[vibepaws] 文案目录加载失败，回落英文: ${e}`);
   }
 }
 
 const t = (key, params) => translate(LOCALE, key, params);
+
+/**
+ * 切界面语言。不重启进程 —— 三处要一起换，少一处就会混语言（issue #6）：
+ * 托盘菜单（主进程出字）、宠物窗口、设置窗口本身（后两个的 locale 是 URL 参数，
+ * 只能重载才能换）。
+ */
+function applyLocalePref(pref) {
+  prefs.locale = pref === "en" || pref === "zh-CN" ? pref : "auto";
+  savePrefs();
+  const next = resolveLocale();
+  if (next === LOCALE) return;
+  LOCALE = next;
+  updateTrayMenu();
+  if (tray) tray.setToolTip(t("tray.tooltip"));
+  if (win && !win.isDestroyed()) win.loadURL(petUrl());
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.setTitle(t("settings.title"));
+    settingsWin.loadURL(settingsUrl());
+  }
+}
 
 /* ---------------- Core ---------------- */
 async function coreRunning() {
@@ -368,7 +405,7 @@ function createWindow() {
   // 「宠物不见了」最难查的一点是壳层状态完全不可见 —— 把它打出来
   log(`[vibepaws] window level=screen-saver allSpaces=${prefs.allSpaces} fullScreen=always`);
   // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
-  win.loadURL(`http://127.0.0.1:${uiPort}/?locale=${encodeURIComponent(LOCALE)}`);
+  win.loadURL(petUrl());
   // 渲染进程 console → 主进程日志（调试用）。Electron 28+ 传的是单个 details 对象，
   // 老签名 (event, level, message, line, sourceId) 只会打印出一串 undefined。
   win.webContents.on("console-message", (details, ...legacy) => {
@@ -453,11 +490,15 @@ function applyWindowLevel() {
   });
 }
 
-function toggleAllSpaces() {
-  prefs.allSpaces = !prefs.allSpaces;
+function setAllSpaces(value) {
+  prefs.allSpaces = Boolean(value);
   savePrefs();
   applyWindowLevel();
   updateTrayMenu();
+}
+
+function toggleAllSpaces() {
+  setAllSpaces(!prefs.allSpaces);
 }
 
 /* ---------------- PANEL_GEOMETRY_NOTE：窗口为什么不跟着浮层缩放 ----------------
@@ -599,13 +640,160 @@ ipcMain.on("vibepaws:hit", (e, over) => {
   applyMouseIgnore();
 });
 
-function toggleClickThrough() {
-  clickThrough = !clickThrough;
-  // 拖到一半从托盘打开点击穿透：渲染层从此收不到 pointerup，drag-end 永远不会来，
+function setClickThrough(value) {
+  clickThrough = Boolean(value);
+  // 拖到一半打开点击穿透：渲染层从此收不到 pointerup，drag-end 永远不会来，
   // 窗口会一直黏着光标。这里主动收尾（stopDrag 末尾会重算穿透状态）。
   stopDrag();
   updateTrayMenu();
 }
+
+function toggleClickThrough() {
+  setClickThrough(!clickThrough);
+}
+
+/* ---------------- 设置窗口（landscape 表格第 13 项） ----------------
+ * 为什么是独立窗口而不是浮层里的一页：宠物窗口恒为 300×430、无边框、透明，
+ * 还要靠命中测试把空白处的点击交回桌面 —— 一个表单要的宽度、可聚焦输入框、
+ * 系统级复制粘贴，跟这三条约束条条相冲。
+ *
+ * 页面本身由同一个 UI server 提供（/settings.html），所以 `npm run ui` 的浏览器
+ * 预览里也能改 Core 那部分设置；只有「窗口怎么摆 / 界面语言」这一段需要壳。 */
+function petUrl() {
+  return `http://127.0.0.1:${uiPort}/?locale=${encodeURIComponent(LOCALE)}`;
+}
+
+function settingsUrl() {
+  return `http://127.0.0.1:${uiPort}/settings.html?locale=${encodeURIComponent(LOCALE)}`;
+}
+
+/**
+ * macOS：accessory 档的进程不显示菜单栏，于是 ⌘C/⌘V 这些**键位等价**也无处可依 ——
+ * 而设置窗口里有两个文本框，粘贴不了目标和名字是说不过去的。
+ * 主菜单只在第一次打开设置窗口时装（启动路径一个字节都不动，全屏 Space 那套行为
+ * 由 becomeAccessoryApp + applyWindowLevel 保证，与主菜单无关）。
+ * 右键菜单是同一件事的第二条路：万一某个系统版本上键位等价真的不生效，还有出口。
+ */
+let editMenuInstalled = false;
+function ensureEditMenu() {
+  if (editMenuInstalled || process.platform !== "darwin") return;
+  editMenuInstalled = true;
+  try {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }]));
+  } catch (e) {
+    err(`[vibepaws] 编辑菜单安装失败（复制粘贴要走右键菜单）: ${e}`);
+  }
+}
+
+function attachEditContextMenu(target) {
+  target.webContents.on("context-menu", () => {
+    if (target.isDestroyed()) return;
+    Menu.buildFromTemplate([
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+      { type: "separator" },
+      { role: "selectAll" },
+    ]).popup({ window: target });
+  });
+}
+
+function openSettings() {
+  if (!uiReady) {
+    // UI server 还没起来就没有可加载的地址；托盘里点了没反应比报错更难查
+    dialog.showErrorBox(t("tray.startfailed.title"), t("tray.startfailed.body", { error: "ui server not ready" }));
+    return;
+  }
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.show();
+    settingsWin.focus();
+    return;
+  }
+  ensureEditMenu();
+  settingsWin = new BrowserWindow({
+    ...SETTINGS_SIZE,
+    minWidth: 360,
+    minHeight: 420,
+    title: t("settings.title"),
+    show: false,
+    // 首帧底色跟着系统深浅走：浅色系统里先闪一块纯黑会像另一个应用
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#0d1117" : "#f6f8fa",
+    webPreferences: {
+      preload: fileURLToPath(new URL("preload-settings.cjs", import.meta.url)),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  settingsWin.loadURL(settingsUrl());
+  settingsWin.once("ready-to-show", () => {
+    if (!settingsWin || settingsWin.isDestroyed()) return;
+    log(`[vibepaws] settings window opened (${settingsUrl()})`);
+    settingsWin.show();
+    // accessory 档的进程默认不会被激活 —— 不 focus 的话窗口出来了却收不到键盘输入
+    if (process.platform === "darwin") app.focus({ steal: true });
+    settingsWin.focus();
+  });
+  settingsWin.webContents.on("console-message", (details) => {
+    log(`[settings:${details?.level}] ${details?.message} (${details?.sourceId}:${details?.lineNumber})`);
+  });
+  settingsWin.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    err(`[settings] load failed ${code} ${desc} ${url}`);
+  });
+  attachEditContextMenu(settingsWin);
+  settingsWin.on("closed", () => {
+    settingsWin = null;
+  });
+}
+
+/** 只认设置窗口自己发来的偏好写入 */
+function fromSettings(e) {
+  return Boolean(settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents);
+}
+
+function prefsPayload() {
+  return {
+    allSpaces: prefs.allSpaces,
+    clickThrough,
+    locale: prefs.locale ?? "auto",
+    /** 「跟随系统」那一项要说出来跟随的是什么 */
+    osLocale: normalizeLocale(app.getLocale()),
+    platform: process.platform,
+  };
+}
+
+ipcMain.on("vibepaws:open-settings", (e) => {
+  if (win && !win.isDestroyed() && e.sender !== win.webContents) return;
+  openSettings();
+});
+
+ipcMain.handle("vibepaws:prefs-get", (e) => {
+  const ok = fromSettings(e);
+  // 壳桥通不通是「窗口那一段设置能不能用」的唯一前提，而它坏掉时界面只是安静地
+  // 显示「在浏览器里打开的」—— 从外面看不出区别，所以 debug 模式下把它打出来
+  if (process.env.VIBEPAWS_DEBUG) log(`[settings] prefs-get accepted=${ok}`);
+  return ok ? prefsPayload() : null;
+});
+
+ipcMain.handle("vibepaws:prefs-set", (e, patch) => {
+  if (!fromSettings(e) || !patch || typeof patch !== "object") return null;
+  if (typeof patch.allSpaces === "boolean") setAllSpaces(patch.allSpaces);
+  if (typeof patch.clickThrough === "boolean") setClickThrough(patch.clickThrough);
+  const payload = prefsPayload();
+  if (typeof patch.locale === "string") {
+    payload.locale = patch.locale === "en" || patch.locale === "zh-CN" ? patch.locale : "auto";
+    // 换语言会重载这扇窗口 —— 先把这次调用的返回值发出去，再重载，
+    // 否则页面在拿到响应之前就被销毁，invoke 那边等到的是一个 rejected promise。
+    setTimeout(() => applyLocalePref(patch.locale), 0);
+  }
+  return payload;
+});
+
+ipcMain.handle("vibepaws:reset-position", (e) => {
+  if (!fromSettings(e)) return null;
+  resetWindowPosition();
+  return prefsPayload();
+});
 
 function updateTrayMenu() {
   if (!tray) return;
@@ -619,6 +807,9 @@ function updateTrayMenu() {
       click: toggleAllSpaces,
     },
     { label: t("tray.show"), click: () => ensureWindow()?.show() },
+    // 不给 accelerator：托盘菜单里的快捷键在 macOS 上只是显示出来、并不会真的生效，
+    // 印一个按了没反应的 ⌘, 比不印更糟
+    { label: t("tray.settings"), click: openSettings },
     { label: t("tray.reset"), click: resetWindowPosition },
     { label: t("tray.quit"), click: () => app.quit() },
   ]);

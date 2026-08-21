@@ -373,10 +373,10 @@ The release window is half over. The table below reconciles PRD requirements aga
 | 7.2 Notification bubbles | ✅ Done | Decision / permission / context / error / token milestone; 60s dedup; per-tier latch |
 | 7.2 Mute (30m / 2h / project / session) | ✅ Done | Visible badge with remaining time, reversible |
 | 7.2 Within 5 seconds | ✅ Decided in Core | Pending measured confirmation in alpha QA |
-| 7.3 Context warnings 70/85/95 | ✅ Done | Thresholds in `src/core/notifications.ts` |
-| 7.3 Token budget milestones 25/50/75/90 | ⚠️ Partial | Engine and per-session budget field done; **no UI to set it** — requires writing settings directly |
-| 7.3 Topic drift warnings | ⚠️ Partial | Event type and notification path wired; conservative heuristics still to be built (originally 8/26) |
-| 7.4 EXP engine | ✅ Done | 1 EXP/1k tokens, daily cap 200, context/topic multipliers, level curve 100+50(n−1) |
+| 7.3 Context warnings 70/85/95 | ✅ Done | Default thresholds in `src/core/settings.ts`; adjustable (or off) in the settings window |
+| 7.3 Token budget milestones 25/50/75/90 | ✅ Done | Engine, per-session budget field, and a settings window to set both the global default and per-session overrides |
+| 7.3 Topic drift warnings | ⚠️ Partial | Event type, notification path, and the session-goal entry point (settings window) are wired; conservative heuristics still to be built (originally 8/26) |
+| 7.4 EXP engine | ✅ Done | 1 EXP/1k tokens, daily cap 200 (adjustable in settings), context/topic multipliers, level curve 100+50(n−1) |
 | 7.4 Tired state / no permadeath | ✅ Done | State machine includes `tired` |
 | 7.4 EXP explanation | ✅ Done | EXP breakdown in the flyout |
 | 7.5 Evolution | ⚠️ Partial | `evolution_meta` rule engine works (Lv5/Lv10 + health conditions); **evolved-form art not made** |

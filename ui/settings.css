@@ -1,0 +1,153 @@
+/* Vibepaws 设置窗口。
+ *
+ * 与宠物窗口（style.css）同一套配色与等宽字体，但这里是一扇**普通**窗口：
+ * 有系统标题栏、可滚动、不透明、不需要点击穿透 —— 所以样式各自独立，
+ * 免得宠物那边为了透明/命中测试写的规则漏到表单上。
+ *
+ * 深浅色都给：宠物是叠在桌面上的浮层，深色一种就够；设置窗口是一扇普通窗口，
+ * 在浅色系统里挖出一块纯黑会显得像另一个应用。
+ * CSP 里没有 'unsafe-inline'（见 src/ui/server.ts），所以本文件是唯一的样式来源，
+ * HTML 里一个 style 属性都不能有。 */
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --accent: #58a6ff;
+  --warn: #f0883e;
+  --danger: #f85149;
+  --ok: #3fb950;
+  --input: #0d1117;
+  --pixel: "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --dim: #656d76;
+    --accent: #0969da;
+    --warn: #9a6700;
+    --danger: #cf222e;
+    --ok: #1a7f37;
+    --input: #ffffff;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--pixel);
+  font-size: 12px;
+  line-height: 1.5;
+}
+body { padding: 14px; }
+#app { display: flex; flex-direction: column; gap: 12px; max-width: 620px; margin: 0 auto; }
+
+#head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+h1 { font-size: 15px; }
+h2 {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+
+/* 状态行：保存成功自己消失，失败留在原地 —— 用户需要它解释「刚才为什么没生效」 */
+#status { font-size: 10px; color: var(--dim); text-align: right; min-height: 1.5em; }
+#status.ok { color: var(--ok); }
+#status.err { color: var(--danger); }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+.row > label { flex: 1; }
+.field { display: flex; align-items: center; gap: 6px; }
+.unit { color: var(--dim); font-size: 10px; }
+
+input[type="text"], input[type="number"], select {
+  background: var(--input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-family: var(--pixel);
+  font-size: 12px;
+}
+input[type="text"] { width: 190px; }
+input[type="number"] { width: 96px; text-align: right; }
+select { min-width: 190px; }
+input:focus-visible, select:focus-visible, button:focus-visible, input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+input:disabled, select:disabled, button:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 「这一格还没保存」要看得见：change 事件要等失焦，中间那段时间用户有权知道 */
+input[data-dirty="1"] { border-color: var(--warn); }
+
+.hint { font-size: 10px; color: var(--dim); margin: 4px 0 10px; }
+.card > .hint:last-child { margin-bottom: 0; }
+.meta { font-size: 10px; color: var(--dim); }
+
+.check { display: flex; align-items: center; gap: 8px; min-height: 26px; cursor: pointer; }
+.check input { cursor: pointer; }
+
+button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-family: var(--pixel);
+  font-size: 11px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+button:hover:enabled { border-color: var(--accent); color: var(--accent); }
+
+/* ---- 在跑的 session ---- */
+.session {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.session-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.session-title { font-weight: 700; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta { font-size: 10px; color: var(--dim); flex-shrink: 0; }
+.agent-badge {
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  flex-shrink: 0;
+}
+.session .row { min-height: 28px; }
+.session .row > label { flex: 0 0 auto; font-size: 10px; color: var(--dim); }
+.session input[type="text"] { flex: 1; width: auto; }
+.sessions-empty { color: var(--dim); padding: 2px 0 8px; }
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* 窄窗口（用户可以把这扇窗拖到很窄）：标签与控件改成上下排 */
+@media (max-width: 420px) {
+  .row { flex-direction: column; align-items: stretch; gap: 4px; }
+  input[type="text"], select { width: 100%; min-width: 0; }
+  .session .row { flex-direction: column; align-items: stretch; }
+}
