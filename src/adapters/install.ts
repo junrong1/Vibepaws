@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { claudeHooksConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
+import { claudeHooksConfig, claudeStatusLineConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
 import { deliver } from "./hook_agent.ts";
 import { t as translate, detectNodeLocale } from "../i18n/messages.js";
 
@@ -110,7 +110,8 @@ function installClaude(): void {
   const file = join(dir, "settings.json");
   mkdirSync(dir, { recursive: true });
   const existing = existsSync(file) ? (JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>) : {};
-  const merged = mergeHooks(existing, claudeHooksConfig(REPO));
+  // hooks 与 statusLine 一起装：hooks 是事件流，statusLine 是实时 token 通道（Claude Code 专属）
+  const merged = { ...mergeHooks(existing, claudeHooksConfig(REPO)), ...claudeStatusLineConfig(REPO) };
   if (DRY) {
     console.log(t("cli.dryrun.write", { file, count: Object.keys((merged.hooks ?? {}) as object).length }));
     return;

@@ -589,7 +589,8 @@ function sessionRow(s) {
 
   const meta = document.createElement("span");
   meta.className = "s-meta";
-  meta.textContent = s.is_active ? `${Math.round((s.token_used ?? 0) / 1000)}k` : "✓";
+  // 统一显示 token 总量（结束与否由左侧状态圆点区分，✓ 会盖住 token 数）
+  meta.textContent = `${Math.round((s.token_used ?? 0) / 1000)}k`;
   row.appendChild(meta);
 
   const activate = () => copyResume(s);
