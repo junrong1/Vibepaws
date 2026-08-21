@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Vibepaws adapter 安装器 — npm run adapter:install -- --agent claude_code|codex [--global]
+ * Vibepaws adapter 安装器 — npm run adapter:install -- --agent claude_code|codex|pi [--global]
  * 功能：备份原配置 → 写 hooks 配置（默认项目级，--global 写用户级）→ 自检发测试事件。
- * 安全设计：默认只写入 <repo>/.claude/settings.json 或 <repo>/.codex/hooks.json；
- * 显式加 --global 才写 ~/.claude/settings.json 或 ~/.codex/hooks.json（所有项目生效），
+ * 安全设计：默认只写入 <repo>/.claude/settings.json、<repo>/.codex/hooks.json 或 <repo>/.pi/extensions/；
+ * 显式加 --global 才写 ~/.claude/settings.json、~/.codex/hooks.json 或 ~/.pi/agent/extensions/（所有项目生效），
  * 并同时移除本仓库项目级配置里 Vibepaws 自己的 hooks，避免双重触发。
+ * pi 没有配置式 hooks：安装的是 pi 插件（extension）——复制 src/adapters/pi_extension.ts。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { claudeHooksConfig, claudeStatusLineConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
@@ -26,7 +27,8 @@ function has(name: string): boolean {
 }
 
 const REPO = process.cwd();
-const AGENT = (arg("agent") ?? "claude_code") as "claude_code" | "codex";
+type InstallAgent = "claude_code" | "codex" | "pi";
+const AGENT = (arg("agent") ?? "claude_code") as InstallAgent;
 const DRY = has("dry-run");
 const GLOBAL = has("global");
 
@@ -165,6 +167,36 @@ function installCodex(): void {
   }
 }
 
+/** pi 安装：复制 src/adapters/pi_extension.ts 到 pi 的插件目录
+ * （项目级 .pi/extensions/，--global 写 ~/.pi/agent/extensions/）。
+ * 插件由 pi 自动发现（需项目被信任），零配置、无双重触发问题 —— 不需要 cleanup。
+ * 迁移清理：旧版装的是 skill（.pi/skills/vibepaws/SKILL.md），已废弃，顺带删除。 */
+function installPi(): void {
+  const dir = GLOBAL ? join(homedir(), ".pi", "agent", "extensions") : join(REPO, ".pi", "extensions");
+  const file = join(dir, "vibepaws.ts");
+  const source = join(REPO, "src", "adapters", "pi_extension.ts");
+  if (DRY) {
+    console.log(t("cli.pi.dryrun", { file }));
+    return;
+  }
+  mkdirSync(dir, { recursive: true });
+  backup(file);
+  writeFileSync(file, readFileSync(source, "utf-8"));
+  console.log(t("cli.pi.written", { file }));
+  // 迁移清理：旧 skill 方案产物不再参与上报，删除避免混淆
+  for (const skillDir of [join(REPO, ".pi", "skills", "vibepaws"), join(homedir(), ".pi", "skills", "vibepaws")]) {
+    try {
+      if (existsSync(skillDir)) {
+        rmSync(skillDir, { recursive: true, force: true });
+        console.log(t("cli.pi.cleanup.skill", { dir: skillDir }));
+      }
+    } catch {
+      // 清理失败不阻断安装
+    }
+  }
+  console.log(t("cli.pi.note", { repo: REPO }));
+}
+
 async function selfCheck(): Promise<void> {
   console.log(t("cli.selfcheck.start"));
   // 自检发 adapter_status 而不是假的 session_started：既证明 Core 收得到，
@@ -187,6 +219,9 @@ async function main(): Promise<void> {
   } else if (AGENT === "codex") {
     installCodex();
     console.log(t("cli.capabilities", { list: capabilities("codex").join(", ") }));
+  } else if (AGENT === "pi") {
+    installPi();
+    console.log(t("cli.capabilities", { list: capabilities("pi").join(", ") }));
   } else {
     console.error(t("cli.unknownAgent", { agent: AGENT }));
     process.exit(1);

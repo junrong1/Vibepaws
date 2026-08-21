@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CoreEvent } from "../core/events.ts";
+import type { CoreEvent, AgentId } from "../core/events.ts";
 
 /** 仓库根（由本文件位置反推）：读 package.json 拿 adapter 版本，任意 cwd 下都成立 */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -108,7 +108,7 @@ export function adapterVersion(): string {
  * ingress 的 upsertAgent、registry、server 的落库分支）本来就是齐的，缺的只是发送方：
  * 安装器把 capabilities() 打进了 console.log，从没发给过 Core。
  */
-export function adapterStatusEvent(agent: "claude_code" | "codex", projectId: string): CoreEvent {
+export function adapterStatusEvent(agent: AgentId, projectId: string): CoreEvent {
   return {
     // 计数器不能省：只用 Date.now() 的话，同一毫秒内的两次上报会拿到同一个
     // event_id，被 ingress 的幂等去重直接吃掉第二条。
@@ -126,8 +126,24 @@ export function adapterStatusEvent(agent: "claude_code" | "codex", projectId: st
   };
 }
 
+/** pi 能力声明：对齐 src/adapters/pi_extension.ts 插件真实能发的事件
+ * （pi 无 statusline 实时通道，token 来自 message_end 的 usage；无 subagent 概念） */
+export function piCapabilities(): string[] {
+  return [
+    "session_started",
+    "agent_working",
+    "decision_required",
+    "token_update",
+    "context_update",
+    "session_finished",
+    "session_error",
+    "resume_command",
+  ];
+}
+
 /** 能力声明（adapter_status 用） */
-export function capabilities(agent: "claude_code" | "codex"): string[] {
+export function capabilities(agent: AgentId): string[] {
+  if (agent === "pi") return piCapabilities();
   const base = [
     "session_started",
     "agent_working",
