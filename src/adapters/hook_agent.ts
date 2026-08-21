@@ -17,6 +17,17 @@ import type { CoreEvent, AgentId } from "../core/events.ts";
 /** 仓库根（由本文件位置反推），离线兜底缓冲固定写回 Vibepaws 仓库，任意 cwd 下都能被 bridge 找到。 */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/** 调试日志：写回仓库 .vibepaws/events/hook_debug.log（与 deliver 兜底一致，任意 cwd 可找到） */
+function debugLog(line: string): void {
+  try {
+    const dir = join(REPO_ROOT, ".vibepaws", "events");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "hook_debug.log"), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // 忽略（调试日志失败不影响采集）
+  }
+}
+
 /* ---------------- 事件映射（references/event_collection.md §3.2） ---------------- */
 
 interface HookMapping {
@@ -170,6 +181,40 @@ function safeSummary(
   }
 }
 
+/* ---------------- transcript token 提取（SessionEnd 兜底） ---------------- */
+
+/**
+ * SessionEnd 时从 transcript 提取 token 消耗（Claude Code JSONL：assistant message.usage；
+ * Codex 存档 best-effort）。隐私：只提取数字，不读代码/文本内容。
+ * 返回 null 表示无法提取（降级，不影响核心循环）。
+ */
+export function extractTokensFromTranscript(transcriptPath: string | undefined): number | null {
+  if (!transcriptPath) return null;
+  try {
+    const content = readFileSync(transcriptPath, "utf-8");
+    let total = 0;
+    let found = false;
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line) as {
+          message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number } };
+        };
+        const u = obj.message?.usage;
+        if (u) {
+          found = true;
+          total += (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        }
+      } catch {
+        // 跳过坏行
+      }
+    }
+    return found ? total : null;
+  } catch {
+    return null; // 文件不存在/不可读 → 降级
+  }
+}
+
 /* ---------------- 发送（POST + JSONL 兜底） ---------------- */
 
 export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean> {
@@ -196,21 +241,49 @@ export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean>
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const agent = (args.find((a) => a.startsWith("--agent="))?.split("=")[1] ?? "generic") as AgentId;
+  const debug = args.includes("--debug");
   let stdin = "";
   process.stdin.on("data", (c) => (stdin += c));
   process.stdin.on("end", async () => {
     try {
       const raw = stdin.trim() ? (JSON.parse(stdin) as HookInput) : {};
+      if (debug) debugLog(`RAW INPUT: ${JSON.stringify(raw)}`);
       // 每次会话开始都重新自报家门：安装时报过一次是不够的 —— 换机器、清库、
       // 重装 Core 之后 agents 表就空了，而用户并不会想到要再跑一次安装器。
       if (raw.hook_event_name === "SessionStart" && (agent === "claude_code" || agent === "codex")) {
         const announced = await deliver(adapterStatusEvent(agent, raw.cwd ?? process.cwd()));
-        if (process.env.VIBEPAWS_DEBUG) console.error(`[hook] adapter_status delivered=${announced}`);
+        if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] adapter_status delivered=${announced}`);
       }
       const ev = normalizeHook(raw, agent);
       if (ev) {
         const delivered = await deliver(ev);
-        if (process.env.VIBEPAWS_DEBUG) console.error(`[hook] ${ev.event_type} delivered=${delivered}`);
+        if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] ${ev.event_type} delivered=${delivered}`);
+        // SessionEnd：从 transcript 提取 token 总量 → 补发 token_update（一次性总量）。
+        // hooks stdin 无 token 字段（实测），token 只存在于 transcript_path 指向的存档里。
+        // 仅 Codex 需要：Claude Code 有 statusline 实时累计值（准确），transcript 累加会虚高。
+        if (ev.event_type === "session_finished" && ev.agent !== "claude_code") {
+          const tokens = extractTokensFromTranscript(raw.transcript_path);
+          if (tokens !== null && tokens > 0) {
+            const tokenEv: CoreEvent = {
+              event_id: `hook-token-${Date.now()}-${++seqCounter}`,
+              seq: ++seqCounter,
+              agent: ev.agent,
+              session_id: ev.session_id,
+              project_id: ev.project_id,
+              event_type: "token_update",
+              severity: "low",
+              safe_summary: `Session total tokens: ${tokens}`,
+              timestamp: new Date().toISOString(),
+              payload: { tokens },
+            };
+            const ok = await deliver(tokenEv);
+            if (debug) debugLog(`token_update(${tokens}) delivered=${ok}`);
+          } else if (debug) {
+            debugLog(`no tokens extracted from transcript: ${raw.transcript_path}`);
+          }
+        }
+      } else if (debug) {
+        debugLog(`ignored (no mapping): ${raw.hook_event_name}`);
       }
     } catch (err) {
       console.error("[hook] error:", err);

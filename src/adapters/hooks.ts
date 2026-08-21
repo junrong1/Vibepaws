@@ -50,6 +50,19 @@ export function claudeHooksConfig(repoRoot: string): Record<string, unknown> {
   };
 }
 
+/** Claude Code statusline 配置（实时 token 通道，与 hooks 一起安装）。
+ * 注意：statusLine 是 Claude Code 专属能力，Codex 没有（Codex 走 SessionEnd transcript 提取）。 */
+export function claudeStatusLineConfig(repoRoot: string): Record<string, unknown> {
+  const entry = `${repoRoot}/src/adapters/statusline.ts`;
+  return {
+    statusLine: {
+      type: "command",
+      command: `node --experimental-strip-types ${entry}`,
+      padding: 0,
+    },
+  };
+}
+
 /** Codex hooks 片段（~/.codex/hooks.json，或仓库 .codex/hooks.json）
  * 注意：Codex hooks.json 的事件键为驼峰（SessionStart 等，与 Claude Code 一致），
  * 源码 serde rename 确认：#[serde(rename = "SessionStart")]。
