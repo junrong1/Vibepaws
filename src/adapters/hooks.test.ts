@@ -10,8 +10,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claudeHooksConfig, codexHooksConfig, adapterStatusEvent, adapterVersion, capabilities } from "./hooks.ts";
+import { claudeHooksConfig, codexHooksConfig, adapterStatusEvent, adapterVersion, capabilities, piCapabilities } from "./hooks.ts";
 import { normalizeHook } from "./hook_agent.ts";
+import { PI_CAPABILITIES } from "./pi_extension.ts";
 
 /** 配置片段里注册的事件名 */
 function registeredEvents(cfg: Record<string, unknown>): string[] {
@@ -61,6 +62,22 @@ test("adapterStatusEvent：带能力声明与版本，且 session_id 固定（�
   assert.deepEqual(a.payload.capabilities, capabilities("claude_code"));
   assert.equal(a.payload.adapter_version, adapterVersion());
   assert.notEqual(a.event_id, b.event_id, "event_id 要各不相同，否则第二次上报会被幂等去重吃掉");
+});
+
+test("pi：adapterStatusEvent 能力声明与固定 session_id", () => {
+  const a = adapterStatusEvent("pi", "/repo");
+  assert.equal(a.agent, "pi");
+  assert.equal(a.event_type, "adapter_status");
+  assert.equal(a.session_id, "adapter-pi");
+  assert.deepEqual(a.payload.capabilities, piCapabilities());
+  assert.deepEqual(capabilities("pi"), piCapabilities(), "capabilities(pi) 与 piCapabilities 一致");
+  assert.equal(a.payload.adapter_version, adapterVersion());
+});
+
+test("pi 能力声明与插件真实事件集一致（hooks 与 pi_extension 不能两张皮）", () => {
+  assert.deepEqual(piCapabilities(), [...PI_CAPABILITIES]);
+  assert.ok(piCapabilities().includes("resume_command"));
+  assert.ok(!piCapabilities().includes("permission_required"), "pi 插件没有权限事件，不该在能力里");
 });
 
 test("adapterVersion 跟 package.json 走（写死常量会和发布版本漂移）", () => {

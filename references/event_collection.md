@@ -80,4 +80,21 @@ Claude Code 的事件更细,官方核心约10余个,社区文档统计的扩展�
 
 两者脚本内部都是"读 stdin → 解析 JSON → 按字段分支 → 打印决策或直接退出"这一套逻辑,唯一区别是 Codex 多了一层信任评审(`/hooks` 命令)和异步钩子(`async:true`,最多8个并发)的能力。整体来看,如果你要在两个工具间写通用的事件采集脚本,可以复用同一套 `hookSpecificOutput` JSON 协议,只需针对 Codex 额外处理信任注册和 `turn_id` 字段即可。 [dev](https://dev.to/whoffagents/claude-code-hooks-the-automation-layer-nobody-knows-about-3po0)
 
+## pi-coding-agent 插件事件清单
+
+pi 没有配置式 hooks，它的集成方式是 **插件（extension）**——把 `src/adapters/pi_extension.ts` 复制到插件目录（项目级 `.pi/extensions/`、全局 `~/.pi/agent/extensions/`），用 `pi.on(event, handler)` 挂到生命周期事件上（零外部运行时依赖，运行在 pi 的 jiti 环境）。与 Claude/Codex 的 stdin hooks 不同：插件是进程内回调，无退出码决策、无 `hookSpecificOutput`，事件直接是函数参数 `(event, ctx)`。
+
+| pi 事件 | 触发时机 | 上报到 Core | 备注 |
+|---|---|---|---|
+| `session_start` | 会话启动/恢复/分支 | `session_started`（source 映射）+ `adapter_status` | `reason`：startup/resume/fork/reload/new |
+| `before_agent_start` | agent 开始工作前 | `agent_working` | 无 tool_name |
+| `tool_execution_start` | 工具调用开始 | `agent_working` | `toolName` |
+| `tool_execution_end` | 工具调用结束 | `session_error`（仅 `isError:true`） | 成功不重复报 |
+| `message_end` | 消息结束 | `token_update`（仅 assistant 且带 usage） | usage 字段跨 provider 防御式取值（totalTokens / input+output / cost.total） |
+| `session_compact` | 上下文压缩 | `context_update` | medium |
+| `agent_settled` | agent 忙完在等用户 | `decision_required`（kind=idle） | 语义等同 Claude 的 Stop |
+| `session_shutdown` | 会话退出 | `session_finished`（reason=stopped） | — |
+
+session id 获取：`ctx.sessionManager.getSessionId()`（UUID）→ 回退 `getSessionFile()` 的文件名 → 回退临时 id。pi 无 statusline 实时通道（token 来自 `message_end` 的 usage）、无 subagent 概念、无 permission 弹窗事件，故能力声明不含 `permission_required` / `subagent_*`。
+
 

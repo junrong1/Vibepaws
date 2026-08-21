@@ -16,6 +16,19 @@ test("标准事件直通", () => {
   assert.equal(out?.agent, "generic");
 });
 
+test("pi 发射器标准事件直通（agent=pi，不经 hook 归一化）", () => {
+  const ev = {
+    event_id: "pi-e1", seq: 1, agent: "pi", session_id: "pi-live-1",
+    project_id: "/p", event_type: "session_finished", severity: "low",
+    safe_summary: "Session finished", timestamp: "2026-08-19T00:00:00Z",
+    payload: { reason: "completion", outcome: "success" },
+  };
+  const out = normalizeLine(ev);
+  assert.equal(out?.agent, "pi");
+  assert.equal(out?.event_type, "session_finished");
+  assert.deepEqual(out?.payload, { reason: "completion", outcome: "success" });
+});
+
 test("raw hook 输入归一化：PermissionRequest → permission_required", () => {
   const out = normalizeLine({
     hook_event_name: "PermissionRequest",

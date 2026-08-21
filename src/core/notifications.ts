@@ -378,7 +378,7 @@ export class NotificationEngine {
 }
 
 export function shortAgent(agent: string): string {
-  return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : agent;
+  return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : agent === "pi" ? "Pi" : agent;
 }
 
 function until(minutes: number): string {

@@ -154,6 +154,13 @@ export const MESSAGES = {
       "    ① Interactive:  cd {repo} && codex, then run /hooks and approve vibepaws\n" +
       "    ② Headless:     codex exec --dangerously-bypass-hook-trust …\n" +
       "  💡 Global install (optional): merge {file} into ~/.codex/hooks.json",
+    "cli.pi.dryrun": "[dry-run] would write {file} — pi extension (vibepaws adapter)",
+    "cli.pi.written": "✓ Pi extension written to {file}",
+    "cli.pi.cleanup.skill": "  ↳ Removed obsolete skill dir (old skill-based adapter): {dir}",
+    "cli.pi.note":
+      "  Project-local extensions load after the project is trusted — start a NEW `pi` session\n" +
+      "  in this repo (or run /reload) to pick it up.\n" +
+      "  💡 Global install: re-run with --global → ~/.pi/agent/extensions/vibepaws.ts (all projects)",
     "cli.selfcheck.start": "\n[self-check] sending a test event to Core…",
     "cli.selfcheck.ok": "✓ Core registered this adapter (adapter_status)",
     "cli.selfcheck.next":
@@ -270,6 +277,12 @@ export const MESSAGES = {
       "    ① 交互模式：cd {repo} && codex，然后运行 /hooks 批准 vibepaws\n" +
       "    ② headless：codex exec --dangerously-bypass-hook-trust …\n" +
       "  💡 全局安装（可选）：把 {file} 的内容合并到 ~/.codex/hooks.json",
+    "cli.pi.dryrun": "[dry-run] 将写入 {file} — pi 插件（vibepaws adapter）",
+    "cli.pi.written": "✓ Pi 插件已写入 {file}",
+    "cli.pi.cleanup.skill": "  ↳ 已移除废弃的 skill 目录（旧 skill 版 adapter）：{dir}",
+    "cli.pi.note":
+      "  项目级插件在项目被信任后加载 —— 请在本仓库新开一个 `pi` 会话（或运行 /reload）生效。\n" +
+      "  💡 全局安装：加 --global 重装 → ~/.pi/agent/extensions/vibepaws.ts（所有项目生效）",
     "cli.selfcheck.start": "\n[自检] 发送测试事件到 Core…",
     "cli.selfcheck.ok": "✓ Core 已记录这个 adapter（adapter_status）",
     "cli.selfcheck.next":

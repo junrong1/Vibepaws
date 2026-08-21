@@ -919,7 +919,7 @@ function localizedOr(key, fallback) {
 
 /* ---------------- 工具 ---------------- */
 function shortAgent(a) {
-  return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : String(a ?? "?");
+  return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : a === "pi" ? "Pi" : String(a ?? "?");
 }
 function shortId(id) {
   return String(id ?? "").slice(0, 10) || "?";

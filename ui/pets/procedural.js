@@ -225,3 +225,80 @@ export function drawProcedural(ctx, pet, state, x, y, scale = PROCEDURAL_SCALE) 
     }
   }
 }
+
+/* ================= Zani sprite pet（Codex 风格 spritesheet） ================= */
+/**
+ * 素材来源：https://github.com/chenxin-dlut/codex-anime-pets（pets/zani）
+ * 8×9 图集，每格 192×208。行 → 动画的映射与 Codex 官方一致（见 openai/codex
+ * codex-rs/tui/src/pets/model.rs 的 default_animations）：
+ *   row0 idle / row1 running-right / row2 running-left / row3 waving /
+ *   row4 jumping / row5 failed / row6 waiting / row7 running / row8 review。
+ */
+export const ZANI = {
+  id: "zani",
+  name: "Zani",
+  src: "./pets/zani/spritesheet.webp",
+  frame: { w: 192, h: 208 },
+  cols: 8,
+  states: {
+    // idle 用 Codex 原版的不规则呼吸节奏：开头一帧多停一会，再轻微起伏。
+    idle: { row: 0, frames: [0, 1, 2, 3, 4, 5], durations: [1680, 660, 660, 840, 840, 1920] },
+    working:    track(7, 6, 120, 220), // running：agent 正在干活
+    "needs-you": track(6, 6, 150, 260), // waiting：等你拍板/授权
+    warning:    track(5, 8, 140, 240), // failed：出问题了
+    finished:   track(3, 4, 140, 280), // waving：收工
+    "level-up":  track(4, 5, 140, 280), // jumping：升级庆祝
+    tired:      track(8, 6, 150, 280), // review：歇着/复盘
+  },
+};
+
+/** 一行动画轨道：row + 连续的前 N 列，首尾帧稍作停顿更自然 */
+function track(row, cols, baseMs, finalMs) {
+  return {
+    row,
+    frames: Array.from({ length: cols }, (_, col) => col),
+    durations: Array.from({ length: cols }, (_, i) => (i === cols - 1 ? finalMs : baseMs)),
+  };
+}
+
+let zaniImage = null;
+function zaniImageEl() {
+  if (!zaniImage) {
+    zaniImage = new Image();
+    zaniImage.src = ZANI.src;
+  }
+  return zaniImage;
+}
+
+/** 按当前时间在动画轨里选一帧列号（循环播放） */
+function zaniFrameCol(anim, now) {
+  const total = anim.durations.reduce((a, b) => a + b, 0);
+  let t = now % total;
+  for (let i = 0; i < anim.frames.length; i++) {
+    if (t < anim.durations[i]) return anim.frames[i];
+    t -= anim.durations[i];
+  }
+  return anim.frames[0];
+}
+
+/**
+ * 把 Zani 的某个状态帧 1:1 画到 canvas（192×208）。
+ * 图还没加载完时返回 false，循环下一帧再试 —— 桌面宠物的 rAF 循环天然会重试。
+ */
+export function renderZaniPet(canvas, state, now) {
+  const img = zaniImageEl();
+  if (!img.complete || img.naturalWidth === 0) return false;
+
+  const anim = ZANI.states[state] ?? ZANI.states.idle;
+  const col = zaniFrameCol(anim, now);
+  const { w, h } = ZANI.frame;
+
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, col * w, anim.row * h, w, h, 0, 0, w, h);
+  return true;
+}

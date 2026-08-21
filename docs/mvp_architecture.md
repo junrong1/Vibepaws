@@ -17,6 +17,7 @@
 | D5 | Core 独立守护进程，UI 只是客户端 | 插件化哲学：桌面壳、pi-gui、未来的 pi extension 都只是 Core 的消费者；Core 可 headless 运行 |
 | D6 | 技术栈：Core = Node ≥20 + better-sqlite3；UI = Tauri v2 + TypeScript + Canvas 2D | 体积小、启动快、跨平台 always-on-top 可控；Canvas 2D 规避 WebGL 跨平台差异 |
 | D7 | 隐私双闸：adapter 采集侧白名单 + Core 落库前 schema 丢弃 | 原始 prompt/代码/secret 不进 Core、不进 UI、不落库 |
+| D8 | **pi 从 P1（计划）提前到 P0（extension 插件）** | pi 的稳定集成方式是插件（机器级生命周期钩子，非 skill 靠模型自觉），与 Claude/Codex 的 hooks 同层级，可直接落地；jump-to 仍 P1（RPC switch_session） |
 
 ---
 
@@ -25,11 +26,12 @@
 ```
 ┌──────────── Agent 侧：采集插件（随 agent 运行，各自独立，可缺失）─────────────┐
 │                                                                          │
-│  claude_adapter ─── codex_adapter ───── generic_bridge ─── simulator     │
-│  (.claude/settings.json) (~/.codex/hooks.json)  (JSONL/socket) (QA 注入)  │
+│  claude_adapter ── codex_adapter ── pi_extension ── generic_bridge ── simulator │
+│  (.claude/settings.json)(~/.codex/hooks.json)(~/.pi/extensions/)(JSONL/socket)(QA 注入) │
 │                                                                          │
-│  统一模板 hook_agent.ts：读 stdin JSON → 白名单提取元数据 → safe_summary    │
-│  → POST localhost:PORT/events（失败降级：写 JSONL 文件 + fs.watch 兜底）    │
+│  统一模板 hook_agent.ts（claude/codex）：读 stdin JSON → 白名单 → safe_summary │
+│  pi_extension.ts（pi 插件）：挂 pi 生命周期事件 → 白名单 → safe_summary       │
+│  → POST localhost:PORT/events（失败降级：写 JSONL 文件 + bridge 兜底）      │
 └──────────────────────────────┬───────────────────────────────────────────┘
                                │ HTTP POST + API token
 ┌──────────────────────────────▼───────────────────────────────────────────┐
@@ -67,7 +69,7 @@
 
 ## 2. 模块设计
 
-### 2.1 Adapter 采集插件（P0，Claude Code + Codex 共享模板）
+### 2.1 Adapter 采集插件（P0，Claude Code + Codex 共享模板 + pi 插件）
 
 **为什么能共享**（依据 references/event_collection.md）：
 
@@ -96,7 +98,23 @@ adapters/
 5. `POST http://127.0.0.1:PORT/events`，失败则 append 到 `events/*.jsonl`（Core `fs.watch` 兜底）
 6. 非阻断事件直接 `exit 0`；**不改变 agent 行为**（MVP 只监听，不做 allow/deny 决策）
 
-**generic bridge（P0）**：监听一个本地目录/端口，接受任意 JSONL/JSON 事件，字段按 §3 schema 归一。任何工具（含未来的 Pi adapter）都能接入。
+**pi_extension（P0）**：pi-coding-agent 没有配置式 hooks，它的稳定集成方式是 **pi 插件（extension）**——安装器把 `src/adapters/pi_extension.ts` 复制到 pi 插件目录（项目级 `.pi/extensions/`，全局 `~/.pi/agent/extensions/`），插件挂到 pi 生命周期事件上，把真实状态确定性地上报 Core（`agent="pi"`），与 Claude/Codex 的 hooks 同一层级、不依赖模型自觉。插件零外部运行时依赖（不 import pi 包，用最小本地接口，可独立 typecheck），任何异常都不打断 pi。
+
+事件映射（与 hook_agent 的 `safe_summary`/白名单对齐）：
+
+| pi 事件 | CoreEvent | 说明 |
+|---|---|---|
+| `session_start` | `session_started` + `adapter_status` | source 按 startup/resume/fork/reload 映射 |
+| `before_agent_start` / `tool_execution_start` | `agent_working` | 后者带 `tool_name` |
+| `tool_execution_end`（isError） | `session_error` | 成功不重复报 |
+| `message_end`（assistant usage） | `token_update` | 真实 token/cost（pi 无 statusline，token 来自消息用量） |
+| `session_compact` | `context_update` | medium |
+| `agent_settled` | `decision_required` | agent 忙完在等你 = Claude 的 Stop |
+| `session_shutdown` | `session_finished` | reason=stopped |
+
+pi 插件的能力声明 `PI_CAPABILITIES`（`session_started / agent_working / decision_required / token_update / context_update / session_finished / session_error / resume_command`）与插件真实事件集对齐；pi 无 statusline 实时通道、无 subagent 概念，故不声明 `permission_required`/`subagent_*`。另有 `src/adapters/pi_agent.ts` 手动兜底发射器（无插件环境/其他 harness/调试用）。
+
+**generic bridge（P0）**：监听两个缓冲目录（仓库根 `.vibepaws/events` + 用户级 `~/.vibepaws/events`），接受任意 JSONL/JSON 事件，字段按 §3 schema 归一后 POST Core。任何工具都能接入；pi 插件离线兜底写用户级目录，也由它补收。
 
 **simulator（P0，QA 关键件）**：CLI 按场景（正常会话/频繁决策/context 超限/correction loop/多 session 并行）注入全部核心事件，用于开发与验收。
 
@@ -121,8 +139,8 @@ session 主键: (agent, agent_session_id)      ← 跨 agent 天然隔离
 **数据源：事件流为主，transcript 文件解析为辅**（研究结论，详见附录 A）：
 
 - 主数据源 = hooks 事件流（session_id / cwd / 时间 / token / context 全部来自事件）
-- **不解析 transcript 文件做元数据**：Claude Code 官方明示 JSONL 为内部格式、随版本变化，直接解析会坏；pi（P1）与 Codex（可选）的存档相对稳定，可做补充兜底
-- 显示名策略：用户手动命名（Vibepaws 本地维护）> cwd 目录名 > agent 短 id。hooks 输入不含 session 名；AI title / 用户命名只对 pi（P1 读 JSONL header）可用
+- **不解析 transcript 文件做元数据**：Claude Code 官方明示 JSONL 为内部格式、随版本变化，直接解析会坏；pi 与 Codex（可选）的存档相对稳定，可做补充兜底
+- 显示名策略：用户手动命名（Vibepaws 本地维护）> cwd 目录名 > agent 短 id。hooks 输入不含 session 名；AI title / 用户命名只对 pi（读 JSONL header）可用
 
 **Session 生命周期（用 session_started 的 source 字段推断，不依赖文件）**：
 
@@ -140,7 +158,7 @@ session 主键: (agent, agent_session_id)      ← 跨 agent 天然隔离
 |---|---|---|
 | claude_code | `claude --resume <session-id>`（官方支持跨目录） | 复制命令到剪贴板 + 唤起终端（P1） |
 | codex | `cd <project> && codex resume <session-id>` | 同上 |
-| pi | RPC `switch_session`（P1，复用 pi-gui lib） | 直接切换 |
+| pi | RPC `switch_session`（P1，复用 pi-gui lib；MVP 先回退到 `cd <project>`） | 直接切换 / 打开目录 |
 | generic | 打开 project 目录 | 打开目录 |
 
 ### 2.4 通知引擎（Core）
@@ -219,19 +237,19 @@ pet_types: { id, name, rarity(common/uncommon/rare/legendary),
 
 ### 3.2 事件类型与 adapter 映射
 
-| 标准化事件 | payload（白名单） | Claude Code 来源 | Codex 来源 | 触发 |
-|---|---|---|---|---|
-| `session_started` | title, cwd | SessionStart | SessionStart | 宠物→working |
-| `agent_working` | tool_name | PreToolUse / UserPromptSubmit | PreToolUse / UserPromptSubmit | 宠物→working |
-| `decision_required` | kind, turn_id | Notification / Stop | Stop | 宠物→needs-you + 气泡 |
-| `permission_required` | tool_name | PermissionRequest | PermissionRequest | 宠物→needs-you + 气泡 |
-| `token_update` | tokens, cost | Notification(usage) | PostToolUse 汇总 | EXP 滚动 + 里程碑气泡(25/50/75/90%) |
-| `context_update` | context_pct | PreCompact/PostCompact | PreCompact/PostCompact | warning 气泡(70/85/95%) |
-| `topic_drift_warning` | signal_kind | Core 启发式（见 §3.3） | 同左 | warning 气泡 + 新会话建议 |
-| `session_finished` | reason, outcome | SessionEnd | SessionEnd | EXP 结算 + finished |
-| `session_error` | error_kind | PostToolUseFailure | — | warning + 气泡 |
-| `subagent_started/stopped` | kind | SubagentStart/Stop | SubagentStart/Stop | 树结构（尽力而为） |
-| `adapter_status` | capabilities[] | 安装时上报 | 同左 | 能力声明/降级路由 |
+| 标准化事件 | payload（白名单） | Claude Code 来源 | Codex 来源 | pi 来源 | 触发 |
+|---|---|---|---|---|---|
+| `session_started` | title, cwd | SessionStart | SessionStart | session_start | 宠物→working |
+| `agent_working` | tool_name | PreToolUse / UserPromptSubmit | PreToolUse / UserPromptSubmit | before_agent_start / tool_execution_start | 宠物→working |
+| `decision_required` | kind, turn_id | Notification / Stop | Stop | agent_settled | 宠物→needs-you + 气泡 |
+| `permission_required` | tool_name | PermissionRequest | PermissionRequest | —（pi 无权限事件） | 宠物→needs-you + 气泡 |
+| `token_update` | tokens, cost | Notification(usage) | PostToolUse 汇总 | message_end（assistant usage） | EXP 滚动 + 里程碑气泡(25/50/75/90%) |
+| `context_update` | context_pct | PreCompact/PostCompact | PreCompact/PostCompact | session_compact | warning 气泡(70/85/95%) |
+| `topic_drift_warning` | signal_kind | Core 启发式（见 §3.3） | 同左 | 同左 | warning 气泡 + 新会话建议 |
+| `session_finished` | reason, outcome | SessionEnd | SessionEnd | session_shutdown | EXP 结算 + finished |
+| `session_error` | error_kind | PostToolUseFailure | — | tool_execution_end（isError） | warning + 气泡 |
+| `subagent_started/stopped` | kind | SubagentStart/Stop | SubagentStart/Stop | —（pi 无 subagent） | 树结构（尽力而为） |
+| `adapter_status` | capabilities[] | 安装时上报 | 同左 | 同左 | 能力声明/降级路由 |
 
 ### 3.3 Topic drift（P0 alpha，保守启发式，不读 prompt）
 
@@ -327,13 +345,13 @@ settings(key, value)                                                    -- budge
 | 恢复方式 | RPC `switch_session` | `claude --continue` / `--resume <id|name>` / `/resume` picker | `codex resume <id>`（`cd <cwd> && codex resume <id>`） |
 | 跨项目查找 | 按项目目录检索 | 按 ID 全局唯一匹配（当前项目 → worktree → 全机） | 需知道 cwd + id |
 | 分支 | fork | `/branch`、`--fork-session`（新 ID，原保留） | — |
-| hooks 附带字段 | — | session_id / cwd / transcript_path | session_id / cwd / turn_id / source |
+| 集成字段（hooks / 扩展） | 扩展事件：session id / cwd / reason / toolName / usage | session_id / cwd / transcript_path | session_id / cwd / turn_id / source |
 | 会话内切换 | switch_session | `/resume` picker | — |
 | 元数据 | name / 首条消息 / 消息数 / compact、branch 摘要 | name / title / 最后活动 / git branch / 文件大小 | 首条请求 / 命令数 / 时长 / 项目 |
 
 **影响架构的 4 条结论**：
 
-1. **session 列表与元数据一律以事件流维护**；transcript 文件仅在 pi（P1）与 Codex（可选）做兜底补充，Claude Code 永不解析（官方警告）
+1. **session 列表与元数据一律以事件流维护**；transcript 文件仅在 pi 与 Codex（可选）做兜底补充，Claude Code 永不解析（官方警告）
 2. **session 树 / 父子关系用 session_started 的 source 字段推断**（startup/resume/fork/clear/compact），不解析文件
 3. **jump-to = 各 agent 原生恢复命令**（`claude --resume <id>` / `codex resume <id>` / pi RPC switch_session），写进能力声明，按 agent 路由
 4. **Codex「丢 session ID 就找不到会话」是真实痛点**（codex-sessions-manager 的起源）→ Vibepaws 事件流天然记录 id+cwd，浮层一键恢复，这正是跨 session 管理的价值点

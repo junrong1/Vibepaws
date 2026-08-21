@@ -212,7 +212,7 @@ session_exp =
 - **P0** —— Claude Code adapter
 - **P0** —— Codex adapter
 - **P0** —— 用于其他工具的 generic JSON/file/socket bridge
-- **P1** —— Pi Agent adapter,如果有可靠 hooks/logs
+- **P0** —— Pi Agent adapter（extension 插件，见下方「运行指南」）
 - **P1** —— DeepSeek Harness adapter,如果有可靠 hooks/logs
 
 验收标准:alpha 中至少两个真实 adapter 可用,**或**一个真实 adapter 加一个 generic bridge 可用;simulator 可以发出所有核心事件用于 QA;事件不包含原始代码、prompt text 或 secrets。
@@ -400,7 +400,24 @@ npm run adapter:install -- --agent claude_code            # 项目级：写入 <
 npm run adapter:install -- --agent claude_code --global   # 全局：写入 ~/.claude/settings.json（所有项目生效）
 npm run adapter:install -- --agent codex                  # 项目级：写入 .codex/hooks.json；首次需在 codex 里运行 /hooks 授权
 npm run adapter:install -- --agent codex --global         # 全局：写入 ~/.codex/hooks.json
+npm run adapter:install -- --agent pi                     # pi-coding-agent：写入 <repo>/.pi/extensions/vibepaws.ts（pi 插件，自动发现）
+npm run adapter:install -- --agent pi --global            # 全局：写入 ~/.pi/agent/extensions/vibepaws.ts
 ```
+
+#### pi-coding-agent（extension 插件）
+
+pi 没有 Claude/Codex 那种配置式 hooks，它的稳定集成方式是 **pi 插件（extension）**：安装器把 `src/adapters/pi_extension.ts` 复制到 pi 的插件目录，插件挂到 pi 生命周期事件上，把真实状态确定性地上报 Core（`agent="pi"`）——和 Claude/Codex 的 hooks 同一层级，不依赖模型自觉：
+
+- `session_start` → `session_started`（source 按 startup/resume/fork/reload 映射）+ `adapter_status`（让界面显示「Pi 已接入」）
+- `before_agent_start` → `agent_working`；`tool_execution_start` → `agent_working`（带工具名）
+- `tool_execution_end`（isError）→ `session_error`
+- `message_end`（assistant usage）→ `token_update`（**真实 token/cost**，来自 pi 的消息用量）
+- `session_compact` → `context_update`；`agent_settled` → `decision_required`（agent 忙完在等你 = Claude 的 Stop）
+- `session_shutdown` → `session_finished`
+- 隐私：payload 只进白名单字段，safe_summary 固定措辞，绝不带 prompt/代码/路径；插件任何异常都不会打断 pi
+- 兜底：Core 离线时插件把事件留在 `~/.vibepaws/events/pi_*.jsonl`（用户级目录，插件自包含、不知道仓库路径也能写）；`npm run bridge` 会同时监听仓库根 `.vibepaws/events` 与 `~/.vibepaws/events` 两处，自动补收
+- 安装后**新开** `pi` 会话（或 `/reload`）生效；项目级插件要求项目被 pi 信任（首次启动时确认即可）
+- 手动兜底：`node --experimental-strip-types src/adapters/pi_agent.ts --event=...` 可手工补发事件（其他 harness / 无插件环境；它的离线兜底走 hook_agent 的 `fallback.jsonl`，bridge 在仓库根就能补收）
 
 - 全局与项目级二选一；切到 `--global` 会自动移除本仓库项目级配置里 Vibepaws 的 hooks，避免重复触发（重复 EXP / 重复气泡）
 - 安装器自动发测试事件自检；Core 未启动时事件落入 `.vibepaws/events/fallback.jsonl`
