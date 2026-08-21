@@ -46,38 +46,99 @@ function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
+/** context 占用百分比。Claude Code 直接给 context_window.used_percentage；
+ * 缺失时用 total_input_tokens / context_window 兜底（input 才占 context，output 不占）。
+ * 注意 Core 的 token_update 只写 token_used，context_pct 必须走独立的 context_update 事件。 */
+export function extractContextPct(input: unknown): number | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const cw = ((input as Record<string, unknown>).context_window ?? {}) as Record<string, unknown>;
+  const direct = num(cw.used_percentage);
+  if (direct !== undefined) return clampPct(direct);
+  const window = num(cw.context_window);
+  const used = num(cw.total_input_tokens);
+  if (window !== undefined && window > 0 && used !== undefined) return clampPct((used / window) * 100);
+  return undefined;
+}
+
+function clampPct(v: number): number {
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+/** 状态栏那一行。statusLine 的 stdout 就是用户看到的内容，所以这行必须先写出去：
+ * Core 掉线、token 还没开始烧，用户也不该盯着一条空状态栏。 */
+export function renderStatusLine(total: number | null, pct?: number): string {
+  const ctx = pct === undefined ? "" : ` · ${pct}% ctx`;
+  return `🐾 ${fmtTokens(total ?? 0)}${ctx}`;
+}
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  const k = n / 1000;
+  return k < 100 ? `${k.toFixed(1)}k` : `${Math.round(k)}k`;
+}
+
 let lastTotal = -1;
 
 export async function handleStatusLine(stdin: string, corePort = 17893): Promise<void> {
-  const input = JSON.parse(stdin) as unknown;
+  let input: unknown = null;
+  try {
+    input = JSON.parse(stdin);
+  } catch {
+    // 坏 JSON 不该把状态栏打空
+  }
   const info = extractStatusLineTokens(input);
+  const pct = extractContextPct(input);
+
+  // 先写状态栏，再上报：网络那一步失败也不影响用户看到的那一行
+  process.stdout.write(renderStatusLine(info?.total ?? null, pct));
+
   if (!info || info.total <= 0) return;
   // 去重：token 未变化不重复上报
   if (info.total === lastTotal) return;
   lastTotal = info.total;
 
-  const o = input as Record<string, unknown>;
+  const o = (input ?? {}) as Record<string, unknown>;
   const sessionId = String(o.session_id ?? o.project ?? "statusline");
-  const ev: CoreEvent = {
-    event_id: `sl-${sessionId}-${info.total}-${Date.now()}`,
+  const base = {
     seq: 0,
-    agent: "claude_code",
+    agent: "claude_code" as const,
     session_id: sessionId,
     project_id: String(o.cwd ?? process.cwd()),
-    event_type: "token_update",
-    severity: "low",
-    safe_summary: `Statusline tokens: ${info.total} (in ${info.input_tokens} / out ${info.output_tokens})`,
+    severity: "low" as const,
     timestamp: new Date().toISOString(),
-    payload: { tokens: info.total },
   };
-  const res = await fetch(`http://127.0.0.1:${corePort}/events`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-vibepaws-token": readApiToken() },
-    body: JSON.stringify(ev),
-  });
-  if (!res.ok) {
-    // 静默失败（statusline 高频调用，不刷屏）
+  const stamp = Date.now();
+  const events: CoreEvent[] = [
+    {
+      ...base,
+      event_id: `sl-${sessionId}-${info.total}-${stamp}`,
+      event_type: "token_update",
+      safe_summary: `Statusline tokens: ${info.total} (in ${info.input_tokens} / out ${info.output_tokens})`,
+      payload: { tokens: info.total },
+    },
+  ];
+  // context_pct 只有 context_update 会落库（registry.ts），所以单独发一条
+  if (pct !== undefined) {
+    events.push({
+      ...base,
+      event_id: `sl-ctx-${sessionId}-${pct}-${stamp}`,
+      event_type: "context_update",
+      safe_summary: `Statusline context: ${pct}%`,
+      payload: { context_pct: pct },
+    });
   }
+
+  await Promise.all(
+    events.map((ev) =>
+      fetch(`http://127.0.0.1:${corePort}/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-vibepaws-token": readApiToken() },
+        body: JSON.stringify(ev),
+      }).catch(() => {
+        // 静默失败（statusline 高频调用，不刷屏）
+      }),
+    ),
+  );
 }
 
 // CLI 入口：读 stdin 一次
