@@ -85,6 +85,26 @@
       </div>
       <button id="reset-pos" type="button" data-i18n="settings.window.reset"></button>
     </section>
+
+    <!-- 危险区：发布标准「用户可以删除本地宠物数据」+ gap analysis G09（卸载路径）。
+         三个按钮都是两段式的（按一下变成「再按一次确认」），所以这里不写死标签文本 —— 由 settings.js 管。 -->
+    <section class="card danger" id="danger-card">
+      <h2 data-i18n="settings.section.danger"></h2>
+      <p class="hint" data-i18n="settings.danger.hint"></p>
+      <p class="meta" id="footprint"></p>
+
+      <button id="reset-pet" class="danger-btn" type="button"></button>
+      <p class="hint" data-i18n="settings.danger.pet.hint"></p>
+
+      <button id="reset-data" class="danger-btn" type="button"></button>
+      <p class="hint" data-i18n="settings.danger.data.hint"></p>
+
+      <!-- 卸载前先把「会动哪几个文件」摆出来：这是唯一一处会改用户其他工具配置的操作 -->
+      <div id="targets"></div>
+      <button id="uninstall" class="danger-btn" type="button"></button>
+      <p class="hint" data-i18n="settings.danger.uninstall.hint"></p>
+      <div id="uninstall-notes"></div>
+    </section>
   </main>
 
   <script type="module" src="settings.js"></script>

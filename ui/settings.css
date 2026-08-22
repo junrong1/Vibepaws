@@ -142,6 +142,29 @@ button:hover:enabled { border-color: var(--accent); color: var(--accent); }
 .session input[type="text"] { flex: 1; width: auto; }
 .sessions-empty { color: var(--dim); padding: 2px 0 8px; }
 
+/* ---- 危险区 ----
+ * 边框而不是整块红底：这一段是**常规**功能（用户有权删自己的数据），
+ * 不该做成一片让人不敢滚过去的警告墙。armed 状态才真的变红 ——
+ * 颜色留给「下一次点击会真的删东西」那一刻。 */
+.card.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.danger-btn { display: block; width: 100%; text-align: left; }
+.danger-btn:hover:enabled { border-color: var(--danger); color: var(--danger); }
+.danger-btn.armed {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 700;
+}
+#footprint { display: block; margin-bottom: 10px; }
+/* 卸载目标与善后提示：文件路径要能换行，不然长路径把窗口撑宽 */
+.target, .note {
+  font-size: 10px;
+  color: var(--dim);
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+.target-what { color: var(--text); }
+.target.broken .target-what, .note { color: var(--warn); }
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 

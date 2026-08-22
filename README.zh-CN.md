@@ -229,6 +229,7 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 | **预算与警告** | 默认 token 预算（单位 k tokens，填 `0` 就是关掉里程碑）· 上下文警告阈值（关 / 早 / 默认 / 晚）· 每日 EXP 上限 |
 | **在跑的 session** | 给每个当前活跃的 session 单独设**目标**与**预算** |
 | **窗口** | 在所有桌面显示 · 点击穿透 · 界面语言 · 把宠物放回右下角 |
+| **重置与卸载** | 换一只新宠物 · 删除全部本地数据 · 把 adapter hooks 从你的 agent 配置里移除 |
 
 其中两件事值得单独说：
 
@@ -237,6 +238,33 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 **改动立刻生效，包括改到一半的 session。** 给一个已经烧掉 60% 的 session 填上预算，下一次 token 上报就会给你 50% 那一档里程碑，而不是安静到明天。每一格离焦即保存；超出范围的值会被收敛，并且当场把真正存进去的数字显示回来。
 
 这扇窗里属于 Core 的那一半（预算、阈值、目标、宠物名）在浏览器预览里也能改：http://127.0.0.1:5173/settings.html 。窗口那一段需要桌面壳，连不上时它会直接说出来。
+
+### 重置、删除、卸载
+
+Vibepaws 知道的一切都在你这台机器上，所以把它收回来不该需要一句得先去查的 `rm -rf`。设置窗口底部有三个按钮，每一个都是按第一下武装、按第二下才动手（六秒没有第二下就自己解除）。
+
+| 按钮 | 会做什么 | 不动什么 |
+| --- | --- | --- |
+| **换一只新宠物** | 重新抽一只 starter，清掉等级、EXP 流水与 memories | session、设置、hooks |
+| **删除全部本地数据** | session、事件、通知、EXP 流水、预算与阈值 —— 删完压缩数据库文件 | adapter hooks，以及 API token（把它删了，正在跑的 hook 会立刻 401） |
+| **移除 adapter hooks** | 把 Vibepaws 从 `.claude/settings.json`、`.codex/hooks.json` 与 pi 的插件目录里拿出来，项目级**与**用户级一起 | 那些文件里的其他一切，包括别的工具的 hooks |
+
+两个值得知道的细节：
+
+**删就是真的删。** SQLite 删行只是把页标记为可复用，`DELETE` 之后你的 session 标题原文其实还留在文件里。Core 会紧跟着跑一次 `VACUUM` —— 那才是真的把它们扔掉。
+
+**卸载 hooks 比听起来重要。** 残留的 hook 条目会在此后每一次工具调用上都启动一个进程，去 POST 一个已经没人监听的端口。它不会阻塞你的 agent，但会让 agent 永久性地变慢，而配置里没有任何东西会告诉你原因。删应用之前请先做这一步。
+
+应用已经不在了的情况有 CLI：
+
+```bash
+npm run adapter:uninstall -- --dry-run     # 只打印会动哪些文件，一个字节都不写
+npm run adapter:uninstall                  # 三个 agent、两个 scope 全清
+npm run adapter:uninstall -- --agent pi    # 或者只清一个（claude_code | codex | pi，可用逗号分隔）
+npm run adapter:uninstall -- --purge-data  # 连 .vibepaws 目录一起删（先退出 Core）
+```
+
+它刻意留了两样东西不动，并且在运行时说出来：你原来的配置仍在旁边的 `*.vibepaws.bak` 里；`~/.codex/config.toml` 的项目信任条目不碰 —— 没有 TOML 解析器就去改写别人的 TOML，是把「清理残留」变成「吃掉配置」。
 
 ### 静音是可见状态，不是静默开关
 
@@ -328,7 +356,7 @@ session_exp = capped_token_exp
 
 具体意味着：气泡绝不显示原始 prompt、源代码、secret path 或文件内容。`safe_summary` 用的是固定措辞（`"需要工具权限"`），不是 agent 的输出。这一条由测试保证 —— 见 `src/core/privacy.test.ts`。
 
-想全部删掉，删 `.vibepaws/` 目录即可。数据库、你的宠物、它的 EXP 历史和 API token 都在那里。
+想全部删掉，用**设置 → 重置与卸载**（见[重置、删除、卸载](#重置删除卸载)）—— 它在库里就地清空并压缩文件，而在 Core 还开着的时候删目录做不到这一点。没有应用时，`npm run adapter:uninstall -- --purge-data` 在命令行里做同一件事。一切都在 `.vibepaws/`：数据库、你的宠物、它的 EXP 历史和 API token。
 
 ---
 

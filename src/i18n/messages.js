@@ -172,6 +172,35 @@ export const MESSAGES = {
     "settings.language.zh": "简体中文",
     "settings.shellonly": "Window and language settings live in the Vibepaws desktop app — this page is open in a browser.",
 
+    // ---- 危险区（重置 / 删除 / 卸载）----
+    "settings.section.danger": "Reset & uninstall",
+    "settings.danger.hint":
+      "Everything Vibepaws knows sits on this machine. These are the ways to take it back — each button asks for a second click.",
+    "settings.danger.footprint": "{sessions} sessions · {events} events · {notifications} notifications · {size} on disk",
+    "settings.danger.footprint.nosize": "{sessions} sessions · {events} events · {notifications} notifications",
+    "settings.danger.pet": "Start over with a new pet",
+    "settings.danger.pet.hint":
+      "Rolls a new starter and drops its level, EXP history and memories. Sessions, settings and hooks stay. Health follows the last 24 hours of activity, so a rough day still shows on the new pet.",
+    "settings.danger.data": "Delete all local data",
+    "settings.danger.data.hint":
+      "Sessions, events, notifications, EXP history, budgets and thresholds — and the file is compacted afterwards, so deleted rows are really gone rather than just unlinked. Back to first launch with a new random pet. Adapter hooks are left alone.",
+    "settings.danger.uninstall": "Remove adapter hooks",
+    "settings.danger.uninstall.hint":
+      "Takes Vibepaws out of your agent's config. Do this before deleting the app: a leftover hook fires on every single tool call, forever, paying a process launch to POST a port nobody is listening on — and you would never guess why your agent got slower.",
+    "settings.danger.uninstall.none": "No Vibepaws hooks in any agent config — nothing to remove.",
+    "settings.danger.confirm": "Click again to confirm",
+    "settings.danger.target": "{agent} · {scope} — {what}",
+    "settings.danger.part.hooks": "{n} hooks",
+    "settings.danger.part.statusline": "status line",
+    "settings.danger.part.plugin": "plugin file",
+    "settings.danger.part.broken": "can't read this file — clean it up by hand",
+    "settings.danger.scope.project": "this repo",
+    "settings.danger.scope.global": "all projects",
+    "settings.danger.done.pet": "Meet {name} — Lv.1, no history",
+    "settings.danger.done.data": "Deleted {n} rows — back to first launch",
+    "settings.danger.done.uninstall": "Cleaned {n} file(s) — restart your coding agent",
+    "settings.danger.done.nothing": "Nothing to remove",
+
     // ---- 通知气泡 ----
     "notif.decision.title": "{agent} needs you",
     "notif.decision.body": "Waiting for your decision",
@@ -224,6 +253,27 @@ export const MESSAGES = {
       "        so a session that is already running will not pick them up 🐾",
     "cli.selfcheck.fail":
       "✗ Core did not respond — run `npm run core` first (the event was buffered to .vibepaws/events/fallback.jsonl and the generic bridge replays it once Core is up)",
+    // ---- adapter 卸载器（CLI + 设置窗口共用 note）----
+    "cli.uninstall.header": "[vibepaws] adapter uninstall — agent={agent}{dry} repo={repo}",
+    "cli.uninstall.clean": "Nothing to remove — no Vibepaws hooks in any agent config",
+    "cli.uninstall.cleaned": "✓ {who} — removed {what} from {file}",
+    "cli.uninstall.deleted": "✓ {who} — deleted {file}",
+    "cli.uninstall.nothing": "· {who} — nothing of ours in {file}",
+    "cli.uninstall.error": "✗ {who} — {file}: {error}",
+    "cli.uninstall.part.hooks": "{n} hook(s)",
+    "cli.uninstall.part.statusRemoved": "the status line",
+    "cli.uninstall.part.statusRestored": "the status line (yours put back)",
+    "cli.uninstall.purge.hint":
+      "  💡 Local data (pet, EXP, sessions) was left alone — add --purge-data to delete the .vibepaws directories too",
+    "cli.uninstall.purge.deleted": "✓ Deleted local data: {dir}",
+    "cli.uninstall.purge.failed": "✗ Could not delete {dir}: {error}",
+    "cli.uninstall.purge.coreRunning":
+      "✗ Core is still running — quit it first. Deleting the data directory under a live Core leaves it writing to a file that is no longer in the directory tree. Nothing was deleted.",
+    "cli.uninstall.dryDone": "\n[dry-run] nothing was written",
+    "cli.uninstall.done": "\nDone. Restart your coding agent — hooks are read once, at session start.",
+    "uninstall.note.codexTrust":
+      "Left alone on purpose: the project trust entry in {file}. Vibepaws does not rewrite your TOML — remove the [projects.\"…\"] block yourself if you want it gone.",
+    "uninstall.note.backups": "Your original config is still backed up at {files} — delete that once you are happy with the result.",
     "cli.unknownAgent": "Unknown agent: {agent}",
   },
 
@@ -348,6 +398,34 @@ export const MESSAGES = {
     "settings.language.zh": "简体中文",
     "settings.shellonly": "窗口与语言设置属于 Vibepaws 桌面应用 —— 当前这个页面是在浏览器里打开的。",
 
+    // ---- 危险区（重置 / 删除 / 卸载）----
+    "settings.section.danger": "重置与卸载",
+    "settings.danger.hint": "Vibepaws 知道的一切都在这台机器上。这几个按钮就是把它收回来的出口 —— 每一个都要按第二下才生效。",
+    "settings.danger.footprint": "{sessions} 个 session · {events} 条事件 · {notifications} 条通知 · 占用 {size}",
+    "settings.danger.footprint.nosize": "{sessions} 个 session · {events} 条事件 · {notifications} 条通知",
+    "settings.danger.pet": "换一只新宠物",
+    "settings.danger.pet.hint":
+      "重新抽一只 starter，清掉等级、EXP 流水与 memories。session、设置与 hooks 都留着。健康分看的是最近 24 小时的活动，所以糟糕的一天在新宠物身上依然看得见。",
+    "settings.danger.data": "删除全部本地数据",
+    "settings.danger.data.hint":
+      "session、事件、通知、EXP 流水、预算与阈值一起清掉，并在删完后压缩数据库文件 —— 被删的行是真的没了，而不只是从索引里摘掉。回到首次启动的样子，附带一只新抽的宠物。adapter hooks 不动。",
+    "settings.danger.uninstall": "移除 adapter hooks",
+    "settings.danger.uninstall.hint":
+      "把 Vibepaws 从你的 agent 配置里拿出来。删应用之前请先做这一步：残留的 hook 会在此后每一次工具调用上都启动一个进程，去 POST 一个已经没人监听的端口 —— 而你没有任何办法知道 agent 为什么变慢了。",
+    "settings.danger.uninstall.none": "没有在任何 agent 配置里发现 Vibepaws hooks —— 无需清理。",
+    "settings.danger.confirm": "再按一次确认",
+    "settings.danger.target": "{agent} · {scope} — {what}",
+    "settings.danger.part.hooks": "{n} 条 hooks",
+    "settings.danger.part.statusline": "状态栏",
+    "settings.danger.part.plugin": "插件文件",
+    "settings.danger.part.broken": "这个文件读不出来 —— 需要手工清理",
+    "settings.danger.scope.project": "本仓库",
+    "settings.danger.scope.global": "所有项目",
+    "settings.danger.done.pet": "认识一下 {name} —— Lv.1，没有历史",
+    "settings.danger.done.data": "已删除 {n} 行 —— 回到首次启动的样子",
+    "settings.danger.done.uninstall": "已清理 {n} 个文件 —— 请重启你的 coding agent",
+    "settings.danger.done.nothing": "没有需要清理的东西",
+
     // ---- 通知气泡 ----
     "notif.decision.title": "{agent} 需要你",
     "notif.decision.body": "等待你的决定",
@@ -399,6 +477,26 @@ export const MESSAGES = {
       "          已经在跑的会话不会生效 🐾",
     "cli.selfcheck.fail":
       "✗ Core 未响应 — 请先运行 `npm run core`（事件已写入 .vibepaws/events/fallback.jsonl，Core 启动后由 generic bridge 补收）",
+    // ---- adapter 卸载器（CLI + 设置窗口共用 note）----
+    "cli.uninstall.header": "[vibepaws] adapter 卸载 — agent={agent}{dry} repo={repo}",
+    "cli.uninstall.clean": "无需清理 —— 任何 agent 配置里都没有 Vibepaws hooks",
+    "cli.uninstall.cleaned": "✓ {who} — 已从 {file} 移除 {what}",
+    "cli.uninstall.deleted": "✓ {who} — 已删除 {file}",
+    "cli.uninstall.nothing": "· {who} — {file} 里没有我们的东西",
+    "cli.uninstall.error": "✗ {who} — {file}：{error}",
+    "cli.uninstall.part.hooks": "{n} 条 hooks",
+    "cli.uninstall.part.statusRemoved": "状态栏",
+    "cli.uninstall.part.statusRestored": "状态栏（已还原你原来那条）",
+    "cli.uninstall.purge.hint": "  💡 本地数据（宠物、EXP、session）未动 —— 加 --purge-data 会连 .vibepaws 目录一起删",
+    "cli.uninstall.purge.deleted": "✓ 已删除本地数据：{dir}",
+    "cli.uninstall.purge.failed": "✗ 无法删除 {dir}：{error}",
+    "cli.uninstall.purge.coreRunning":
+      "✗ Core 还在运行 —— 请先退出它。在 Core 开着库的时候删数据目录，只会让它继续往一个已经不在目录树里的文件写下去。本次什么都没删。",
+    "cli.uninstall.dryDone": "\n[dry-run] 一个字节都没有写入",
+    "cli.uninstall.done": "\n完成。请重启你的 coding agent —— hooks 只在会话开始时读一次。",
+    "uninstall.note.codexTrust":
+      "刻意没动：{file} 里的项目信任条目。Vibepaws 不会去改写你的 TOML —— 如果要清掉，请自己删掉那个 [projects.\"…\"] 段。",
+    "uninstall.note.backups": "你原来的配置仍备份在 {files} —— 确认结果无误后可以自行删除。",
     "cli.unknownAgent": "未知 agent：{agent}",
   },
 };

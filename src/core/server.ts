@@ -10,9 +10,14 @@
  *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
  *   POST /api/settings     改设置（宠物名 / 预算 / 阈值 / 每日上限）
  *   POST /api/session      改单个 session 的 goal / budget_tokens
+ *   GET  /api/reset        重置预览（本地数据足迹：行数 + 库文件大小）
+ *   POST /api/reset        重置本地数据（scope=pet|data，需要 confirm）
+ *   GET  /api/uninstall    卸载预览（哪些 agent 配置里还留着我们的 hooks）
+ *   POST /api/uninstall    移除 adapter hooks（需要 confirm；dry_run 只算不写）
  */
 import { createServer } from "node:http";
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { openDb, DATA_DIR } from "../db/migrate.ts";
 import {
@@ -28,6 +33,13 @@ import {
   type VibepawsSettings,
 } from "./settings.ts";
 import { writeApiToken } from "./token.ts";
+import { dataFootprint, resetLocalData, type ResetScope } from "./reset.ts";
+import {
+  scan as scanAdapters,
+  uninstallAdapters,
+  type UninstallAgent,
+  type HookTarget,
+} from "../adapters/uninstall.ts";
 import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
@@ -46,6 +58,16 @@ export interface ServerConfig {
    * 会把用户正在跑的那个 Core 的 token 覆盖掉，真实 hook 从此 401。
    */
   persistToken?: boolean;
+  /**
+   * 扫 adapter 配置时当作「项目级」的目录。安装器用的是它自己的 cwd，
+   * 所以默认对齐 process.cwd()。
+   */
+  repoRoot?: string;
+  /**
+   * 用户级配置的根（默认真实 home）。**测试必须传**：/api/uninstall 会同时清
+   * 项目级与用户级，只换掉 repoRoot 的测试照样会去卸开发机上真实的全局 hooks。
+   */
+  home?: string;
 }
 
 const DEFAULT_PORT = 17893;
@@ -84,6 +106,8 @@ export class VibepawsServer {
   notifications: NotificationEngine;
   exp: ExpEngine;
   token: string;
+  repoRoot: string;
+  home: string;
   private sseClients = new Set<import("node:http").ServerResponse>();
   private ssePing: ReturnType<typeof setInterval> | null = null;
   private stateFlush: ReturnType<typeof setTimeout> | null = null;
@@ -93,6 +117,8 @@ export class VibepawsServer {
     this.port = cfg.port ?? DEFAULT_PORT;
     this.host = cfg.host ?? "127.0.0.1";
     this.db = cfg.db ?? openDb();
+    this.repoRoot = cfg.repoRoot ?? process.cwd();
+    this.home = cfg.home ?? homedir();
     this.token = getApiToken(this.db);
     // token 双写（cwd/.vibepaws + ~/.vibepaws），供任意 cwd 的 hook/simulator 读取
     if (cfg.persistToken ?? !cfg.db) {
@@ -172,6 +198,19 @@ export class VibepawsServer {
           }
           if (url === "/api/session" && req.method === "POST") {
             this.handleSessionPatch(req, res);
+            return;
+          }
+          // 危险区。写操作都在 token 之后、且额外要一个显式 confirm ——
+          // 本机任何网页都能 fetch 到这个端口，「删除全部数据」不该是一次
+          // 拼错的 URL 就能触发的事。
+          if (url === "/api/reset") {
+            if (req.method === "POST") this.handleReset(req, res);
+            else sendJson(res, 200, { footprint: dataFootprint(this.db) });
+            return;
+          }
+          if (url === "/api/uninstall") {
+            if (req.method === "POST") this.handleUninstall(req, res);
+            else sendJson(res, 200, this.uninstallSnapshot());
             return;
           }
           res.writeHead(404, { "content-type": "application/json" });
@@ -275,6 +314,83 @@ export class VibepawsServer {
       }
       this.broadcastState(); // goal 会进 session 视图，浮层与设置窗口都该立刻看到
       sendJson(res, 200, { ok: true, clamped: parsed.clamped, session });
+    });
+  }
+
+  /**
+   * 重置本地数据（PRD 发布标准「用户可以删除本地宠物数据」）。
+   *
+   * 清表之后必须把内存里的三处状态一起收拾干净，否则「重置了」只对了一半：
+   *   · 通知引擎的去重窗口与阈值闩锁 —— 不清的话重置后的第一批事件会被当成复读吞掉
+   *   · registry 的 correction 启发式 —— 不清的话新 session 会继承旧 session 的「反复改同一个文件」
+   *   · 宠物本身 —— pets 行删掉了，得当场滚一只新的，而不是等下一次快照兜底
+   */
+  resetLocalData(scope: ResetScope): { deleted: Record<string, number>; vacuumed: boolean } {
+    const result = resetLocalData(this.db, scope);
+    this.notifications.forgetAll();
+    this.registry.forgetAll();
+    this.exp.ensurePet();
+    this.broadcastState();
+    return { deleted: result.deleted, vacuumed: result.vacuumed };
+  }
+
+  private handleReset(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const { scope, confirm } = (body ?? {}) as { scope?: unknown; confirm?: unknown };
+      if (confirm !== true) {
+        sendJson(res, 400, { error: "confirmation required" });
+        return;
+      }
+      if (scope !== "pet" && scope !== "data") {
+        sendJson(res, 400, { error: "scope must be pet or data" });
+        return;
+      }
+      const result = this.resetLocalData(scope);
+      // 顺带回一份新的设置视图与足迹：界面不用再追一次请求就能显示「现在是空的」
+      sendJson(res, 200, {
+        ok: true,
+        scope,
+        ...result,
+        footprint: dataFootprint(this.db),
+        ...this.settingsSnapshot(),
+      });
+    });
+  }
+
+  /** 卸载预览：哪些 agent 配置里还留着我们写进去的东西（G09） */
+  uninstallSnapshot(): { targets: HookTarget[] } {
+    return { targets: scanAdapters({ repoRoot: this.repoRoot, home: this.home }) };
+  }
+
+  /**
+   * 移除 adapter hooks。
+   *
+   * 这是唯一一个会改**用户其他工具的配置文件**的端点，所以它比其他写操作多两道门：
+   * confirm 必须显式为 true，且 dry_run 走的是一条一个字节都不写的路径 ——
+   * 界面先拿 dry_run 的结果给用户看「会动哪几个文件」，再让他按第二下。
+   */
+  private handleUninstall(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const { confirm, dry_run, agents } = (body ?? {}) as {
+        confirm?: unknown;
+        dry_run?: unknown;
+        agents?: unknown;
+      };
+      const dryRun = dry_run === true;
+      if (!dryRun && confirm !== true) {
+        sendJson(res, 400, { error: "confirmation required" });
+        return;
+      }
+      let list: UninstallAgent[] | undefined;
+      if (Array.isArray(agents)) {
+        list = agents.filter((a): a is UninstallAgent => a === "claude_code" || a === "codex" || a === "pi");
+        if (list.length === 0) {
+          sendJson(res, 400, { error: "unknown agents" });
+          return;
+        }
+      }
+      const report = uninstallAdapters({ repoRoot: this.repoRoot, home: this.home, agents: list, dryRun });
+      sendJson(res, 200, { ok: true, ...report, ...this.uninstallSnapshot() });
     });
   }
 

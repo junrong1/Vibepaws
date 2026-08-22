@@ -83,8 +83,12 @@ export class ExpEngine {
     this.ensurePet();
   }
 
-  /** 方案 A：单宠物。首次启动按稀有度加权分配一只 starter。 */
-  private ensurePet(): void {
+  /**
+   * 方案 A：单宠物。首次启动按稀有度加权分配一只 starter。
+   * 公开的原因：重置（src/core/reset.ts）删掉 pets 行之后，得有人把新宠物滚出来 ——
+   * 靠 getPetSnapshot 的兜底也能滚，但那让「重置发了一只新宠物」变成一个副作用。
+   */
+  ensurePet(): void {
     const has = this.db.prepare("SELECT COUNT(*) as c FROM pets").get() as { c: number };
     if ((has.c ?? 0) > 0) return;
     const typeId = this.rollStarter();

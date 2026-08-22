@@ -417,6 +417,172 @@ async function initShell() {
   });
 }
 
+/* ---------------- 危险区（重置 / 删除 / 卸载） ----------------
+ *
+ * 确认走「按一下武装、再按一下执行」，而不是 confirm() 弹窗：弹窗在 Electron 里
+ * 会阻塞整个渲染进程（连 SSE 一起停），而且这扇窗口在浏览器预览里也要能用。
+ * 武装状态 6 秒后自动解除 —— 一个一直红着的按钮，下次误触时看起来跟没武装一样。
+ */
+const ARM_MS = 6000;
+
+const DANGER = [
+  { id: "reset-pet", label: "settings.danger.pet", run: () => resetLocal("pet") },
+  { id: "reset-data", label: "settings.danger.data", run: () => resetLocal("data") },
+  { id: "uninstall", label: "settings.danger.uninstall", run: runUninstall },
+];
+
+let armedId = null;
+let armTimer = null;
+
+function disarm() {
+  if (armTimer) clearTimeout(armTimer);
+  armTimer = null;
+  armedId = null;
+  for (const entry of DANGER) {
+    const el = $(entry.id);
+    el.textContent = t(entry.label);
+    el.classList.remove("armed");
+  }
+}
+
+function arm(entry) {
+  disarm(); // 一次只武装一个：两个红按钮同时亮着，点错的代价太大
+  armedId = entry.id;
+  const el = $(entry.id);
+  el.textContent = `${t(entry.label)} — ${t("settings.danger.confirm")}`;
+  el.classList.add("armed");
+  armTimer = setTimeout(disarm, ARM_MS);
+}
+
+function humanBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/** 「会删掉多少东西」必须写在按钮旁边 —— 说不出数量的删除按钮没人敢按 */
+function renderFootprint(footprint) {
+  if (!footprint) return;
+  const params = {
+    sessions: footprint.sessions ?? 0,
+    events: footprint.events ?? 0,
+    notifications: footprint.notifications ?? 0,
+  };
+  const size = humanBytes(footprint.db_bytes);
+  $("footprint").textContent = size
+    ? t("settings.danger.footprint", { ...params, size })
+    : t("settings.danger.footprint.nosize", params);
+}
+
+function scopeLabel(scope) {
+  return t(scope === "global" ? "settings.danger.scope.global" : "settings.danger.scope.project");
+}
+
+/** 一个卸载目标里有什么（与 CLI 的措辞刻意保持一致） */
+function targetParts(target) {
+  if (target.unreadable) return [t("settings.danger.part.broken")];
+  const parts = [];
+  if (target.hooks > 0) parts.push(t("settings.danger.part.hooks", { n: target.hooks }));
+  if (target.status_line) parts.push(t("settings.danger.part.statusline"));
+  if (target.kind !== "json") parts.push(t("settings.danger.part.plugin"));
+  return parts;
+}
+
+function renderTargets(targets) {
+  const box = $("targets");
+  box.replaceChildren();
+  if (targets.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "target";
+    empty.textContent = t("settings.danger.uninstall.none");
+    box.appendChild(empty);
+    $("uninstall").disabled = true;
+    return;
+  }
+  $("uninstall").disabled = false;
+  for (const target of targets) {
+    const row = document.createElement("div");
+    row.className = target.unreadable ? "target broken" : "target";
+    const what = document.createElement("span");
+    what.className = "target-what";
+    // textContent：这些路径来自文件系统，绝不拼进 HTML
+    what.textContent = t("settings.danger.target", {
+      agent: shortAgent(target.agent),
+      scope: scopeLabel(target.scope),
+      what: targetParts(target).join(" + "),
+    });
+    const file = document.createElement("div");
+    file.textContent = target.file;
+    row.append(what, file);
+    box.appendChild(row);
+  }
+}
+
+/** 善后提示：我们故意没动的东西 + 出错的文件。不说出来，「已卸载」就是假话。 */
+function renderNotes(notes, results) {
+  const box = $("uninstall-notes");
+  box.replaceChildren();
+  const lines = notes.map((n) => t(n.key, n.params));
+  for (const r of results ?? []) if (r.error) lines.push(`${r.file}: ${r.error}`);
+  for (const line of lines) {
+    const el = document.createElement("div");
+    el.className = "note";
+    el.textContent = `⚠ ${line}`;
+    box.appendChild(el);
+  }
+}
+
+async function loadDanger() {
+  // 两个 GET 都是只读预览（一次行数统计 + 一次配置扫描），不进 5 秒轮询：
+  // 每 5 秒去翻一遍用户的 ~/.claude 是没有理由的开销
+  const [footprint, uninstall] = await Promise.all([getJson("/api/reset"), getJson("/api/uninstall")]);
+  if (footprint) renderFootprint(footprint.footprint);
+  if (uninstall) renderTargets(uninstall.targets ?? []);
+}
+
+async function resetLocal(scope) {
+  const res = await postJson("/api/reset", { scope, confirm: true });
+  if (!res.ok || !res.data) {
+    report(res, null);
+    return;
+  }
+  const data = res.data;
+  const rows = Object.values(data.deleted ?? {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+  status(
+    scope === "pet"
+      ? t("settings.danger.done.pet", { name: data.pet?.name ?? "" })
+      : t("settings.danger.done.data", { n: rows }),
+    "ok",
+  );
+  lastSessionsSignature = null; // session 段整段没了，signature 必须失效才会重绘
+  apply(data);
+  renderFootprint(data.footprint);
+}
+
+async function runUninstall() {
+  const res = await postJson("/api/uninstall", { confirm: true });
+  if (!res.ok || !res.data) {
+    report(res, null);
+    return;
+  }
+  const results = res.data.results ?? [];
+  const touched = results.filter((r) => r.changed).length;
+  status(touched > 0 ? t("settings.danger.done.uninstall", { n: touched }) : t("settings.danger.done.nothing"), "ok");
+  renderTargets(res.data.targets ?? []);
+  renderNotes(res.data.notes ?? [], results);
+}
+
+for (const entry of DANGER) {
+  $(entry.id).addEventListener("click", () => {
+    if (armedId === entry.id) {
+      disarm();
+      entry.run();
+      return;
+    }
+    arm(entry);
+  });
+}
+
 /* ---------------- 绑定 ---------------- */
 for (const id of ["pet-name", "budget", "cap"]) {
   $(id).addEventListener("input", () => markDirty($(id)));
@@ -434,6 +600,8 @@ $("warn").addEventListener("change", () => {
 });
 
 applyStaticI18n();
+disarm(); // 顺带给三个危险按钮写上初始标签（它们的文案由武装状态决定，不能走 data-i18n）
 initShell();
 load();
+loadDanger();
 setInterval(load, POLL_MS);

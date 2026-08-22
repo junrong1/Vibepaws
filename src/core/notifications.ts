@@ -239,6 +239,16 @@ export class NotificationEngine {
     }
   }
 
+  /**
+   * 忘掉全部去重窗口与闩锁（数据被重置后调用）。
+   * 通知表已经空了，内存里那份「这条报过了」却还在 —— 不清的话，
+   * 重置之后的第一批事件会被当成复读而静静吞掉。
+   */
+  forgetAll(): void {
+    this.latched.clear();
+    this.lastShown.clear();
+  }
+
   /** session 结束：清掉它的去重/闩锁记录，别让长期运行的 Core 无限攒 key */
   private forgetSession(agent: string, sessionId: string): void {
     for (const key of [...this.latched.keys()]) {
