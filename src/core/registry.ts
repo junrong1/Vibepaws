@@ -36,6 +36,15 @@ export class SessionRegistry {
     this.onUpdate = opts.onUpdate;
   }
 
+  /**
+   * 忘掉全部内存启发式（数据被重置后调用）。
+   * 不清的话，一条指向已经不存在的 session 的 lastEdit 还能给下一个同名 session
+   * 记上一次「反复改同一个文件」—— 用户刚清空了数据，correction_count 却从 1 开始。
+   */
+  forgetAll(): void {
+    this.lastEdit.clear();
+  }
+
   /** 核心入口：事件 → 状态机 → sessions 表 + 内存回调 */
   handle(ev: CoreEvent): void {
     const db = this.db;

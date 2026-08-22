@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { claudeHooksConfig, claudeStatusLineConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
+import { isVibepawsEntry } from "./uninstall.ts";
 import { deliver } from "./hook_agent.ts";
 import { t as translate, detectNodeLocale } from "../i18n/messages.js";
 
@@ -39,12 +40,6 @@ function backup(file: string): void {
     writeFileSync(bak, readFileSync(file, "utf-8"));
     console.log(t("cli.backup", { file: bak }));
   }
-}
-
-/** 是否为 Vibepaws 自己的 hook 条目（按 command 里的 hook_agent.ts 签名识别） */
-function isVibepawsEntry(entry: unknown): boolean {
-  const s = typeof entry === "string" ? entry : JSON.stringify(entry ?? "");
-  return s.includes("hook_agent.ts") || s.includes("vibepaws");
 }
 
 /**

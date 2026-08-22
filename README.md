@@ -229,6 +229,7 @@ Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal wi
 | **Budget & warnings** | Default token budget (in k tokens; `0` turns milestones off) · context warning thresholds (off / early / default / late) · daily EXP cap |
 | **Running sessions** | Per-session **goal** and **budget** for every agent session that's currently live |
 | **Window** | Show on all Spaces · click-through · language · snap the pet back to the bottom-right |
+| **Reset & uninstall** | Start over with a new pet · delete all local data · remove the adapter hooks from your agent's config |
 
 Two things there are worth calling out:
 
@@ -237,6 +238,33 @@ Two things there are worth calling out:
 **Changes take effect immediately, including mid-session.** Set a budget on a session that's already burned 60% and you get the 50% milestone on its next token update, not silence until tomorrow. Everything saves as you leave each field; out-of-range values are clamped and the field shows you what was actually stored.
 
 The Core half of this window (budget, thresholds, goals, pet name) also works from the browser preview at http://127.0.0.1:5173/settings.html. The Window section needs the desktop shell and says so when it can't reach it.
+
+### Reset, delete, uninstall
+
+Everything Vibepaws knows sits on your machine, so taking it back should not require a `rm -rf` you have to look up. The bottom of the settings window has three buttons; each one arms on the first click and only acts on the second (and disarms itself after six seconds).
+
+| Button | What it does | What it leaves alone |
+| --- | --- | --- |
+| **Start over with a new pet** | Rolls a new starter; drops level, EXP history and memories | Sessions, settings, hooks |
+| **Delete all local data** | Sessions, events, notifications, EXP history, budgets and thresholds — then compacts the database file | Adapter hooks, and the API token (deleting it would 401 your running hooks) |
+| **Remove adapter hooks** | Takes Vibepaws out of `.claude/settings.json`, `.codex/hooks.json` and pi's extension directory — project-level *and* user-level | Everything else in those files, including other tools' hooks |
+
+Two details worth knowing:
+
+**Deleting means deleting.** SQLite only marks freed pages as reusable, so the text of your session titles would still be sitting in the file after a `DELETE`. Core runs `VACUUM` afterwards, which is what actually throws the pages away.
+
+**Uninstalling hooks matters more than it sounds.** A leftover hook entry fires on every single tool call, forever, paying a process launch to POST a port nobody is listening on. It never blocks your agent, but it does make it permanently slower — and nothing in the config would tell you why. Do this before you delete the app.
+
+There's a CLI for the case where the app is already gone:
+
+```bash
+npm run adapter:uninstall -- --dry-run     # print what would be touched, write nothing
+npm run adapter:uninstall                  # remove hooks from every scope, all three agents
+npm run adapter:uninstall -- --agent pi    # or just one (claude_code | codex | pi, comma-separated)
+npm run adapter:uninstall -- --purge-data  # also delete the .vibepaws directories (quit Core first)
+```
+
+It backs off from two things on purpose, and says so when it runs: your original config stays in the `*.vibepaws.bak` file next to it, and the project-trust entry in `~/.codex/config.toml` is left alone — rewriting someone's TOML without a TOML parser is how a cleanup turns into an eaten config.
 
 ### Mute is a visible state, not a silent switch
 
@@ -328,7 +356,7 @@ Inside your machine, there are two independent gates:
 
 What that means concretely: bubbles never show raw prompts, source code, secret paths, or file contents. `safe_summary` uses fixed wording (`"Tool permission needed"`), not agent output. This is enforced by tests — see `src/core/privacy.test.ts`.
 
-To delete everything, delete the `.vibepaws/` directory. The database, your pet, its EXP history, and the API token all live there.
+To delete everything, use **Settings → Reset & uninstall** (see [Reset, delete, uninstall](#reset-delete-uninstall)) — it wipes the database in place and compacts the file, which deleting the directory under a running Core does not do. Without the app, `npm run adapter:uninstall -- --purge-data` does the same from the shell. Everything lives in `.vibepaws/`: the database, your pet, its EXP history, and the API token.
 
 ---
 

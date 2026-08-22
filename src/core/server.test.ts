@@ -8,17 +8,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
 import { VibepawsServer } from "./server.ts";
 import type { CoreEvent } from "./events.ts";
+
+/**
+ * repoRoot / home 必须一起换成临时目录：/api/uninstall 会同时清项目级与用户级配置，
+ * 少传一个，跑一次测试就会把开发机上真实的全局 hooks 卸掉（问过了，会）。
+ */
+function sandbox(): { repoRoot: string; home: string } {
+  const base = mkdtempSync(join(tmpdir(), "vibepaws-server-"));
+  const dirs = { repoRoot: join(base, "repo"), home: join(base, "home") };
+  mkdirSync(dirs.repoRoot, { recursive: true });
+  mkdirSync(dirs.home, { recursive: true });
+  return dirs;
+}
 
 function makeServer(): VibepawsServer {
   const db = new Database(":memory:");
   applySchema(db);
   seedPetTypes(db);
   // persistToken 默认关闭（注入 db）：绝不能覆盖用户真实的 ~/.vibepaws/api_token
-  return new VibepawsServer({ db });
+  return new VibepawsServer({ db, ...sandbox() });
 }
 
 let seq = 0;
@@ -93,7 +108,7 @@ test("HTTP：/health 免鉴权，其余端点没 token 一律 401", async () => 
   try {
     assert.equal((await fetch(`${base}/health`)).status, 200, "健康检查必须免鉴权（壳靠它判断 Core 在不在）");
 
-    for (const path of ["/api/state", "/api/sessions", "/api/exp", "/sse"]) {
+    for (const path of ["/api/state", "/api/sessions", "/api/exp", "/sse", "/api/reset", "/api/uninstall"]) {
       assert.equal((await fetch(base + path)).status, 401, `${path} 不该无鉴权可读`);
     }
     // 任何本机网页都能 POST 的静音是最难被发现的骚扰
@@ -181,4 +196,95 @@ test("capabilities 列是脏数据时状态推送不炸（老库 / 手改过的�
     .prepare("INSERT INTO agents(agent, capabilities, connected_at, last_event_at) VALUES(?,?,?,?)")
     .run("codex", "not json{", "t", "t");
   assert.deepEqual(server.stateSnapshot().adapters[0]!.capabilities, []);
+});
+
+/* ================= 危险区（重置 / 卸载） ================= */
+
+async function withServer(fn: (server: VibepawsServer, base: string) => Promise<void>): Promise<void> {
+  const server = makeServer();
+  server.port = 0;
+  await server.start();
+  try {
+    await fn(server, `http://127.0.0.1:${server.port}`);
+  } finally {
+    await server.close();
+  }
+}
+
+function post(base: string, path: string, token: string, body: unknown): Promise<Response> {
+  return fetch(base + path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-vibepaws-token": token },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * 「删除全部数据」不该是一次拼错的 fetch 就能触发的事。token 之外还要一个显式
+ * confirm —— 本机任何网页都能打到这个端口，而这两个端点一个删库、一个改用户
+ * 其他工具的配置文件。
+ */
+test("HTTP：没有 confirm 的重置/卸载一律 400，且什么都没发生", async () => {
+  await withServer(async (server, base) => {
+    server.handleEvent(ev({ payload: { source: "startup" } }));
+    const before = server.stateSnapshot().sessions.length;
+
+    for (const body of [{ scope: "data" }, { scope: "data", confirm: "yes" }, {}]) {
+      assert.equal((await post(base, "/api/reset", server.token, body)).status, 400);
+    }
+    assert.equal((await post(base, "/api/uninstall", server.token, {})).status, 400);
+    assert.equal(server.stateSnapshot().sessions.length, before, "被拒的请求不该删掉任何东西");
+
+    // scope 也要认：拼错的 scope 不能被当成「全都删了吧」
+    assert.equal((await post(base, "/api/reset", server.token, { scope: "everything", confirm: true })).status, 400);
+    assert.equal(server.stateSnapshot().sessions.length, before);
+  });
+});
+
+test("HTTP：带 confirm 的重置真的清空，并把新状态一起回给界面", async () => {
+  await withServer(async (server, base) => {
+    server.handleEvent(ev({ payload: { source: "startup" } }));
+    server.handleEvent(ev({ event_type: "token_update", payload: { tokens: 50_000 } }));
+
+    const res = await post(base, "/api/reset", server.token, { scope: "data", confirm: true });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { footprint: { sessions: number }; pet: { level: number }; sessions: unknown[] };
+    // 界面不该为了显示「现在是空的」再追一次请求
+    assert.equal(body.footprint.sessions, 0);
+    assert.equal(body.pet.level, 1);
+    assert.deepEqual(body.sessions, []);
+  });
+});
+
+test("HTTP：卸载预览是只读的（dry_run 不需要 confirm，也不写任何文件）", async () => {
+  const server = makeServer();
+  server.port = 0;
+  await server.start();
+  const settings = join(server.repoRoot, ".claude", "settings.json");
+  mkdirSync(join(server.repoRoot, ".claude"), { recursive: true });
+  const installed = JSON.stringify({
+    hooks: { Stop: [{ hooks: [{ type: "command", command: "node /x/src/adapters/hook_agent.ts" }] }] },
+  });
+  writeFileSync(settings, installed);
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const scan = (await (await fetch(`${base}/api/uninstall`, { headers: { "x-vibepaws-token": server.token } })).json()) as {
+      targets: Array<{ file: string; hooks: number }>;
+    };
+    assert.equal(scan.targets.length, 1, "扫描要看得见我们写进去的那一条");
+    assert.equal(scan.targets[0]!.hooks, 1);
+
+    const dry = await post(base, "/api/uninstall", server.token, { dry_run: true });
+    assert.equal(dry.status, 200);
+    assert.equal(readFileSync(settings, "utf-8"), installed, "预览不该动文件");
+
+    const real = await post(base, "/api/uninstall", server.token, { confirm: true });
+    assert.equal(real.status, 200);
+    const report = (await real.json()) as { results: Array<{ changed: boolean }>; targets: unknown[] };
+    assert.equal(report.results[0]!.changed, true);
+    assert.deepEqual(report.targets, [], "清完了，返回的扫描结果就该是空的");
+    assert.equal("hooks" in (JSON.parse(readFileSync(settings, "utf-8")) as object), false);
+  } finally {
+    await server.close();
+  }
 });
