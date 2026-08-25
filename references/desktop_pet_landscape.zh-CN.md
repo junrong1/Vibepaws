@@ -400,7 +400,7 @@ Vibepaws 的宠物是设计师取的固定名字 —— Embercub、Lunafang、Sp
 
 ### 4.11 两个要绕开的信任陷阱
 
-- [clawd #102「为什么我的 Claude 说这个插件消耗了我很多 token」](https://github.com/rullerzhou-afk/clawd-on-desk/issues/102) —— agent **幻觉**出「宠物在消耗 token」，用户信了。维护者不得不解释：hook 是纯本地的、不往 stdout 写任何东西、从不碰 API。**任何基于 hook 的宠物都会碰到这个。** Vibepaws 应该提前拦：README 一行、应用内一行 —— *「宠物从不向模型发送任何东西，它不可能消耗 token」* —— 再加一个可见的 hook 字节数 / 延迟计数器。
+- [clawd #102「为什么我的 Claude 说这个插件消耗了我很多 token」](https://github.com/rullerzhou-afk/clawd-on-desk/issues/102) —— agent **幻觉**出「宠物在消耗 token」，用户信了。维护者不得不解释：hook 是纯本地的、不往 stdout 写任何东西、从不碰 API。**任何基于 hook 的宠物都会碰到这个。** Vibepaws 应该提前拦：README 一行、应用内一行 —— *「宠物从不向模型发送任何东西，它不可能消耗 token」* —— 再加一个可见的 hook 字节数 / 延迟计数器。 **已完成（0.12，8/25）** —— 而这个计数器还有第二个用处：它把每次 hook 调用约 78 ms 的 Node 启动摆到了界面上，那是这套设计唯一真实存在的开销。
 - **杀软与 Gatekeeper。** 桌宠经常被误报；clawd [#872](https://github.com/rullerzhou-afk/clawd-on-desk/issues/872) 讲的是 macOS **每次更新**都要去「隐私与安全性」放行，openpets 则一路做到了 **SignPath 签名构建**。Vibepaws 的 README 已经记录了未签名构建的问题 —— 这证明只要发布范围超出朋友圈，签名就不是可选项。
 
 ### 4.12 每个竞品都踩过的 bug —— 送给 Vibepaws 的免费 QA
@@ -455,7 +455,7 @@ Vibepaws 的宠物是设计师取的固定名字 —— Embercub、Lunafang、Sp
 | **0.9** | **可操作权限气泡** ⚠️ | 气泡内 Allow / Deny / Always Allow；全局快捷键；若已在终端回答则自动关闭；按 agent 屏蔽；破坏性工具走二次确认模式。**这可能是 Tier 0 里最重要的一项。** Vibepaws 的整个前提是「你在另一个窗口」—— 而它现在让你**回到**那个窗口，去做它把你叫醒要做的那件事 | 5 | ★ |
 | 0.10 | ~~**僵尸会话回收**~~ ✅ | **8/25 已交付。** Core 每 60s 扫一轮，启动时先扫一次（上一次运行留下的 `is_active` 行，恰恰是最可能的僵尸）。两条路径：adapter 上报 agent 的 pid，`kill(pid,0)` 能在一个 sweep 周期内抓到崩溃（`outcome=orphaned`）；拿不到可用 pid 的通道退回可配的静默超时（`outcome=timeout`，默认 15 分钟，设置 → 闲置 session）。两者都不结算 EXP —— 崩溃不是胜利 —— 并且都会清掉该会话的 `needs-you` 标记、撤掉它还挂着的气泡。pid 只有在**同一个** pid 出现在两条事件上之后才被采信，这一条把真正的 agent 进程和一闪而过的包装 shell 分开；没有这道闸，这个功能会去杀正在干活的会话（**G10**） | ~~2~~ **已完成** | ★ |
 | **0.11** | **subagent 感知状态** | `SubagentStart`/`Stop` 已经在采集 —— 把 1 个和 2+ 个渲染成不同状态。subagent 现在很常规，而扁平的「working」把它们藏起来了。留意 clawd #214 和 #862 | 2 | ★★ |
-| **0.12** | **「它不会吃你的 token」信任文案** | 有用户真的相信宠物在烧 token，因为 Claude **幻觉**了这件事（clawd #102）。所有基于 hook 的宠物都会碰到。README 一行、应用内一行，再加一个可见的 hook 字节 / 延迟计数器。半天换掉一个反复出现的信任问题 | 0.5 | ★★ |
+| **0.12** | ~~**「它不会吃你的 token」信任文案**~~ ✅ | **8/25 已交付。** README 里给的是一节而不是一行 —— 对一个被幻觉出来的指控，唯一有效的回答是机制：hook 通往模型的通道只有一条（stdout，Claude Code 会把 `UserPromptSubmit` 的那一份当上下文注入），而我们的 hook 一个字节都不写、永远以 0 退出，这两条现在由测试钉住 —— 一句调试完忘了删的 `console.log` 真的会开始花钱，而它在 review 里看起来完全无害。应用内：设置里一张 **Token 与开销** 卡，加上 EXP 明细下面的一行简版，数据来自 `GET /api/hookstats` —— 事件数、字节数、Core 的 p50/p95、hook 进程自报的墙上时间，JSON 里带着 `model_calls: 0` 与 `outbound_bytes: 0`，于是可以用 `curl` 去核对那扇窗口，而不是反过来。计数器暴露出来的东西本身就值这半天：每条事件约 310 字节、约 0.4 ms，但**每次 hook 调用有约 78 ms 的 Node 启动** —— 这是 hook 式设计真正的价码，现在它在界面上，而不是在脚注里 | ~~0.5~~ **已完成** | ★★ |
 | **0.13** | **代码签名 + 公证** | README 里已经记录为已知问题。openpets 做到了 SignPath；clawd 用户每次更新都要点「隐私与安全性」。**发布范围超出朋友圈之前，不可选** | 2 | ★ |
 
 ### Tier 1 —— 护城河：让质量成为产品

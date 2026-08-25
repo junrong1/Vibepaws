@@ -793,9 +793,15 @@ async function loadExpLog() {
   }
   btn.disabled = true;
   let data = null;
+  let hooks = null;
   try {
-    const r = await fetch("/api/exp", { cache: "no-store" });
-    if (r.ok) data = await r.json();
+    // 开销计数与 EXP 一起取：两个都是本机请求，而它们要一起被看到（见 costFooter）
+    const [expRes, hookRes] = await Promise.all([
+      fetch("/api/exp", { cache: "no-store" }),
+      fetch("/api/hookstats", { cache: "no-store" }).catch(() => null),
+    ]);
+    if (expRes.ok) data = await expRes.json();
+    if (hookRes?.ok) hooks = await hookRes.json();
   } catch {
     /* 下面统一提示 */
   }
@@ -805,9 +811,43 @@ async function loadExpLog() {
     flash(t("ui.toast.actionfailed"), { error: true });
     return;
   }
-  box.replaceChildren(expTable(data.logs ?? []));
+  box.replaceChildren(expTable(data.logs ?? []), costFooter(hooks));
   box.hidden = false;
   btn.setAttribute("aria-expanded", "true");
+}
+
+/**
+ * 「它不会吃你的 token」（landscape 0.12 / clawd #102）。
+ *
+ * 断言那一行是无条件的 —— 它是一句关于程序本身的事实，Core 连不上也照样成立。
+ * 计数那一行只有真的拿到数字时才出现：这段文案的全部价值在于可核对，
+ * 而一个说不出数字的计数器比没有计数器更糟。详细版（延迟、curl 命令）在设置窗口。
+ */
+function costFooter(hooks) {
+  const box = document.createElement("div");
+  box.className = "cost";
+  const claim = document.createElement("div");
+  claim.className = "cost-claim";
+  claim.textContent = t("ui.cost.claim");
+  box.appendChild(claim);
+  if (hooks?.calls) {
+    const meter = document.createElement("div");
+    meter.className = "cost-meter";
+    meter.textContent = t("ui.cost.meter", {
+      calls: hooks.calls.toLocaleString(),
+      bytes: bytesLabel(hooks.bytes),
+    });
+    box.appendChild(meter);
+  }
+  return box;
+}
+
+/** 设置窗口有一份同样的实现：两个页面各自独立加载，没有可共用的模块（与 shortAgent 同理） */
+function bytesLabel(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function expTable(logs) {

@@ -7,6 +7,7 @@
  *   GET  /api/state        当前聚合状态 JSON
  *   GET  /api/sessions     全部 session 视图
  *   GET  /api/exp          宠物 EXP/等级
+ *   GET  /api/hookstats    采集通道开销（字节 / 延迟 / 恒为 0 的模型调用，见 core/hookstats.ts）
  *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
  *   POST /api/settings     改设置（宠物名 / 预算 / 阈值 / 每日上限）
  *   POST /api/session      改单个 session 的 goal / budget_tokens
@@ -37,6 +38,7 @@ import {
   type VibepawsSettings,
 } from "./settings.ts";
 import { reclaimZombies, SWEEP_INTERVAL_MS, type ReclaimedSession } from "./reclaim.ts";
+import { HookMeter, hookMsOf, type HookStats } from "./hookstats.ts";
 import { writeApiToken } from "./token.ts";
 import { dataFootprint, resetLocalData, type ResetScope } from "./reset.ts";
 import {
@@ -85,6 +87,16 @@ const MAX_MUTE_MINUTES = 24 * 60;
 /** 请求体上限：这些端点收的都是几十字节的小 JSON，没有理由为任何一方缓冲兆级数据 */
 const MAX_BODY_BYTES = 64 * 1024;
 
+/**
+ * 采集通道开销 + 它的自证方式。
+ *
+ * `endpoint` 是给界面用的：那一段文案的重点是「别信这扇窗口，自己 curl 一下」，
+ * 而页面并不知道 Core 落在哪个端口上（打包版是动态的）。
+ */
+export interface HookStatsView extends HookStats {
+  endpoint: string;
+}
+
 /** 设置窗口一次拿全的数据（GET /api/settings 与 POST 的响应共用） */
 export interface SettingsView {
   settings: VibepawsSettings;
@@ -106,6 +118,8 @@ export interface SettingsView {
   };
   /** 只给活跃 session：给一个已经结束的 session 设目标/预算没有任何意义 */
   sessions: SessionView[];
+  /** 采集通道开销。跟着设置窗口的 5 秒轮询走，界面不必为它多发一次请求 */
+  hooks: HookStatsView;
 }
 
 export class VibepawsServer {
@@ -115,6 +129,8 @@ export class VibepawsServer {
   registry: SessionRegistry;
   notifications: NotificationEngine;
   exp: ExpEngine;
+  /** 采集通道开销计量（landscape 0.12）：每次 POST /events 记一条 */
+  hookMeter = new HookMeter();
   token: string;
   repoRoot: string;
   home: string;
@@ -196,6 +212,12 @@ export class VibepawsServer {
           if (url === "/api/exp") {
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ...this.exp.getPetSnapshot(), logs: this.exp.expLogs() }));
+            return;
+          }
+          // 采集通道开销（landscape 0.12）。文案说「自己 curl 一下」，
+          // 所以它必须是一条独立可读的路由，而不只是设置窗口里的一段字。
+          if (url === "/api/hookstats") {
+            sendJson(res, 200, this.hookStatsSnapshot());
             return;
           }
           if (url === "/api/action" && req.method === "POST") {
@@ -305,10 +327,19 @@ export class VibepawsServer {
   }
 
   private handlePostEvents(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
-    readJsonBody(req, res, "invalid json", (parsed) => {
+    // 计时从进入处理器开始（含读 body），到响应写完为止 —— 这一段正是 hook 在等的东西
+    const startedAt = process.hrtime.bigint();
+    readJsonBody(req, res, "invalid json", (parsed, bytes) => {
       // ingestEvent 自己会校验信封与白名单：这里不必先信任 body 的形状
       const r = this.handleEvent(parsed as CoreEvent);
       sendJson(res, r.ok ? 200 : (r.code ?? 400), r.ok ? { ok: true, reason: r.reason ?? "ok" } : { error: r.reason });
+      // 被拒的事件也算：它照样花了 hook 的字节与毫秒，
+      // 只报成功的那部分会让这个面板显得比真相好看。
+      this.hookMeter.record({
+        bytes,
+        coreMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+        hookMs: hookMsOf(parsed),
+      });
     });
   }
 
@@ -450,6 +481,11 @@ export class VibepawsServer {
     });
   }
 
+  /** 采集通道开销 + 复核它的那条命令要打给谁 */
+  hookStatsSnapshot(): HookStatsView {
+    return { ...this.hookMeter.snapshot(), endpoint: `http://${this.host}:${this.port}/api/hookstats` };
+  }
+
   /** 设置窗口一次拿全的数据 */
   settingsSnapshot(): SettingsView {
     const pet = this.exp.getPetSnapshot();
@@ -471,6 +507,7 @@ export class VibepawsServer {
         next_level_exp: pet.next_level_exp,
       },
       sessions: this.registry.listSessions().filter((s) => s.is_active),
+      hooks: this.hookStatsSnapshot(),
     };
   }
 
@@ -679,12 +716,15 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
  *     业务代码的 bug 会被伪装成「请求体坏了」；
  *   · 处理器的异常**必须**在这里兜住：它跑在 req 的 'end' 回调里，
  *     外层 createServer 那个 try 早就返回了，漏出去就是 uncaught exception —— 整个 Core 挂掉。
+ *
+ * 顺手把读到的字节数交给处理器：`/events` 的开销计量要的就是这个数（landscape 0.12），
+ * 而这里是唯一真的数过它的地方。
  */
 function readJsonBody(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
   badMessage: string,
-  onBody: (parsed: unknown) => void,
+  onBody: (parsed: unknown, bytes: number) => void,
 ): void {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -710,7 +750,7 @@ function readJsonBody(
       return;
     }
     try {
-      onBody(parsed);
+      onBody(parsed, size);
     } catch (err) {
       console.error("[server] body handler error:", err);
       if (!res.headersSent) sendJson(res, 500, { error: "internal" });

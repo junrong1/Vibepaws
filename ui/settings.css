@@ -103,6 +103,24 @@ input[data-dirty="1"] { border-color: var(--warn); }
 .card > .hint:last-child { margin-bottom: 0; }
 .meta { font-size: 10px; color: var(--dim); }
 
+/* Token 与开销（landscape 0.12）。断言那一段用正文色而不是 --dim：
+   它要反驳的是 agent 说过的一句话，用提示灰写出来就没有分量了。 */
+.claim { color: var(--text); margin-bottom: 8px; }
+#cost-meter { display: block; color: var(--text); }
+#cost-latency { display: block; margin-bottom: 2px; }
+#cost-curl {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: var(--dim);
+  background: var(--input);
+  overflow-x: auto;      /* 命令比窗口长时自己滚，别把卡片撑宽 */
+  white-space: pre;
+  user-select: all;      /* 「自己核对」那句话得让人一下就能选中整条命令 */
+}
+
 .check { display: flex; align-items: center; gap: 8px; min-height: 26px; cursor: pointer; }
 .check input { cursor: pointer; }
 

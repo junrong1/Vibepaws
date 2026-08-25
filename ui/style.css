@@ -285,6 +285,11 @@ body.dragging #pet { filter: none; }
 #explog table { width: 100%; border-collapse: collapse; }
 #explog td, #explog th { border-bottom: 1px solid var(--border); padding: 3px 4px; text-align: left; }
 #explog .amount { text-align: right; color: var(--ok); }
+/* 「它不会吃你的 token」（landscape 0.12）。跟在 EXP 明细下面：这一屏全是 token 换 EXP，
+   正是用户会想「那宠物自己花我多少」的时刻。断言用正文色，计数留灰。 */
+#explog .cost { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }
+#explog .cost-claim { color: var(--text); }
+#explog .cost-meter { color: var(--dim); }
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

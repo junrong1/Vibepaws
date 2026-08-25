@@ -40,13 +40,15 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 而它永远看不到你的代码。prompt、diff、文件路径、工具入参在 adapter 那一层就被丢掉，落库前再丢一次。见[隐私](#隐私什么会离开你的机器)。
 
+它也花不掉你的 token：里面没有任何 API key，也没有任何模型客户端，而 hook 不往 stdout 写一个字节 —— stdout 是 hook 通往 agent 上下文的唯一通道。这不是一句保证，是一个你可以自己读的计数器：见[它会花我的 token 吗？](#它会花我的-token-吗)
+
 ## 当前状态
 
 **MVP alpha 0.1** —— 核心循环在 Claude Code、Codex、pi-coding-agent 上已经端到端跑通。实话实说：
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· 崩溃会话回收 · Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
+| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
 | ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
@@ -228,6 +230,7 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 | --- | --- |
 | **宠物** | 起名字。留空回落物种名。 |
 | **预算与警告** | 默认 token 预算（单位 k tokens，填 `0` 就是关掉里程碑）· 上下文警告阈值（关 / 早 / 默认 / 晚）· 每日 EXP 上限 |
+| **Token 与开销** | 宠物自己花掉什么：模型 API 调用（`0`）、出网字节（`0`），以及采集通道的实时字节 / 延迟计数器 —— 见[它会花我的 token 吗？](#它会花我的-token-吗) |
 | **闲置 session** | 一个 session 静默多久之后算它结束了（默认 15 分钟）—— 见 [agent 没打招呼就没了](#agent-没打招呼就没了) |
 | **在跑的 session** | 给每个当前活跃的 session 单独设**目标**与**预算** |
 | **窗口** | 在所有桌面显示 · 点击穿透 · 界面语言 · 把宠物放回右下角 |
@@ -377,6 +380,35 @@ session_exp = capped_token_exp
 
 想全部删掉，用**设置 → 重置与卸载**（见[重置、删除、卸载](#重置删除卸载)）—— 它在库里就地清空并压缩文件，而在 Core 还开着的时候删目录做不到这一点。没有应用时，`npm run adapter:uninstall -- --purge-data` 在命令行里做同一件事。一切都在 `.vibepaws/`：数据库、你的宠物、它的 EXP 历史和 API token。
 
+### 它会花我的 token 吗？
+
+不会。Vibepaws 里没有任何 API key，也没有任何模型客户端 —— 它没有一条代码路径通向模型，也就没有任何东西可以计费。
+
+这件事值得单独占一节，因为 [clawd #102](https://github.com/rullerzhou-afk/clawd-on-desk/issues/102)：有用户来问，为什么**他的 agent 告诉他**这个桌宠消耗了很多 token。那是 agent 自己编的，而用户合情合理地信了。任何基于 hook 的宠物最后都会碰到这个问题，而对一句语言模型凭空编出来的话，「相信我」是很差的回答。
+
+所以这里给的是机制。hook 通往模型的通道只有一条：**stdout**。Claude Code 会把其中一部分回喂进对话 —— `UserPromptSubmit` 的 stdout 会变成上下文，非零退出码会把 stderr 当反馈送回去。Vibepaws 的 hook 不往 stdout 写任何东西，并且永远以 `0` 退出。这两条都由 `src/adapters/hook_agent.test.ts` 里的测试钉住：一句调试时随手加上的 `console.log` 真的会开始花掉真钱，而它在 review 里看起来完全无害。（statusLine 命令确实会打印一行 —— 那是你终端的状态栏，由 Claude Code 自己渲染，不会发给模型。）
+
+它**确实**花掉的东西，在这台机器上实测（M 系列 Mac，Node v25）：
+
+| | |
+| --- | --- |
+| 模型 API 调用 | **0** |
+| 离开这台机器的字节 | **0** |
+| 每条事件 | 约 310 字节 JSON，经 `127.0.0.1` |
+| Core 收一条 | 约 0.4 ms（p50） |
+| hook 进程自身 | 约 75–80 ms 墙上时间，其中绝大部分是 Node 自己的启动 |
+
+最后一行是 hook 式设计诚实的价码：每次工具调用多出大约 80 ms，付的是延迟，不是 token。它也是这几个数里最值得盯的一个 —— 所以它在界面上，而不是在脚注里。
+
+实时数字在**设置 → Token 与开销**，浮层的 EXP 明细下面还有一行简版。也别只信那扇窗口 —— 同一份 JSON 一条命令就能拿到：
+
+```bash
+curl -s -H "x-vibepaws-token: $(cat ~/.vibepaws/api_token)" \
+  http://127.0.0.1:17893/api/hookstats
+```
+
+计数从 Core 启动时开始。字节数是 Core 真的读进来的请求体；hook 耗时由每个 hook 进程自报，量的是「进程启动 → 发出这一条」。
+
 ---
 
 ## 它怎么工作
@@ -409,6 +441,7 @@ Core 的 HTTP 接口（除 `/health` 外都要 `X-Vibepaws-Token`）：
 | `GET /api/sessions` | session 列表 |
 | `GET /api/exp` | EXP 明细 |
 | `POST /api/action` | mute / unmute / dismiss / actioned |
+| `GET /api/hookstats` | 采集通道的开销 —— 事件数、字节数、延迟，以及两个 0 |
 
 设计决策与模块级细节：[`docs/mvp_architecture.md`](docs/mvp_architecture.md)。
 

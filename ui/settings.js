@@ -196,6 +196,70 @@ function apply(data, forced) {
 
   renderWarnOptions(settings.context_warn_pcts, forced);
   renderSessions(data.sessions ?? []);
+  renderCost(data.hooks);
+}
+
+/* ---------------- Token 与开销（landscape 0.12 / clawd #102） ----------------
+ *
+ * 这一段不是仪表盘，是证据。所以三条规则：
+ *   · 一个数都不在这里算 —— 全部来自 Core 的 /api/hookstats（设置轮询顺路带过来）；
+ *   · 没有数据时说「还没开始数」，而不是显示 0 —— 一屏全零看起来像功能坏了；
+ *   · 最后一行永远是那条 curl 命令：这段文案的重点正是「别信这扇窗口」。
+ */
+function bytesLabel(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** 亚毫秒是常态（Core 侧通常 0.x ms），所以小数位随量级变，别把 0.35 显示成 0 */
+function msLabel(ms) {
+  if (!Number.isFinite(ms)) return "—";
+  if (ms < 10) return `${ms.toFixed(1)} ms`;
+  return `${Math.round(ms)} ms`;
+}
+
+function localTime(iso) {
+  const d = new Date(iso ?? "");
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleTimeString();
+}
+
+function renderCost(hooks) {
+  if (!hooks) return;
+  const meter = $("cost-meter");
+  const latency = $("cost-latency");
+
+  if (!hooks.calls) {
+    meter.textContent = t("settings.cost.empty");
+    latency.textContent = "";
+  } else {
+    meter.textContent = t("settings.cost.meter", {
+      calls: hooks.calls.toLocaleString(),
+      bytes: bytesLabel(hooks.bytes),
+    });
+    // hook 自计时可能整段缺失（老 adapter / generic bridge / pi extension 不报），
+    // 那时说清「还没有人报过」，而不是画一个 "—" 让人以为是 0
+    latency.textContent =
+      hooks.hook_ms_p50 === null
+        ? t("settings.cost.latency.core", {
+            core: msLabel(hooks.core_ms_p50),
+            coreP95: msLabel(hooks.core_ms_p95),
+            sample: hooks.sample,
+          })
+        : t("settings.cost.latency", {
+            hook: msLabel(hooks.hook_ms_p50),
+            hookP95: msLabel(hooks.hook_ms_p95),
+            core: msLabel(hooks.core_ms_p50),
+            coreP95: msLabel(hooks.core_ms_p95),
+            sample: hooks.sample,
+          });
+  }
+
+  $("cost-hint").textContent = t("settings.cost.hint", { since: localTime(hooks.since) });
+  // 端口来自 Core 自己（打包版是动态的），token 路径是 readApiToken 的首选位置
+  $("cost-curl").textContent =
+    `curl -s -H "x-vibepaws-token: $(cat ~/.vibepaws/api_token)" ${hooks.endpoint ?? "http://127.0.0.1:17893/api/hookstats"}`;
 }
 
 /** 阈值下拉：预设 + （必要时）一条反映库里真实值的「自定义」 */

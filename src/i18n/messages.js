@@ -101,6 +101,9 @@ export const MESSAGES = {
     // exp_logs.note 里的散文式说明（键 = Core 写库时的原文，见 ui/app.js 的 expNote）
     "ui.exp.note.self growth": "idle tick",
     "ui.exp.note.new session after rest": "came back after a break",
+    // EXP 明细的页脚。放在这里是因为这一屏正是用户想着 token 的时刻（landscape 0.12 / clawd #102）
+    "ui.cost.claim": "Vibepaws itself spends 0 tokens — it never talks to a model.",
+    "ui.cost.meter": "{calls} events · {bytes} → 127.0.0.1 · Settings has the details",
 
     // ---- 时间 ----
     "ui.time.justnow": "just now",
@@ -152,6 +155,20 @@ export const MESSAGES = {
     "settings.cap.label": "Daily EXP cap",
     "settings.cap.unit": "EXP / day",
     "settings.cap.hint": "How much EXP tokens can earn per day — keeps one long session from farming levels.",
+
+    // ---- Token 与开销（landscape 0.12 / clawd #102）----
+    // 这一段回答的是一个**被 agent 幻觉出来的**指控，所以它必须给机制而不是保证：
+    // 说清 token 唯一可能被花掉的那条路（hook 的 stdout 会进上下文），再说清我们不走它。
+    "settings.section.cost": "Tokens & overhead",
+    "settings.cost.claim":
+      "Vibepaws never talks to a model. There is no API key and no model client anywhere in it; the hook prints nothing on stdout and always exits 0, so nothing it does can enter your agent's context. It cannot spend your tokens — if your agent tells you this plugin is burning them, it is guessing about a program it cannot see.",
+    "settings.cost.meter": "{calls} events · {bytes} to 127.0.0.1 · 0 bytes off this machine · 0 model calls",
+    "settings.cost.latency": "Median {hook} in the hook process and {core} in Core (p95 {hookP95} / {coreP95}, last {sample})",
+    "settings.cost.latency.core":
+      "Median {core} in Core (p95 {coreP95}, last {sample}) — no hook has reported its own timing yet",
+    "settings.cost.empty": "Nothing counted yet — the numbers start on your agent's first hook call.",
+    "settings.cost.hint":
+      "Counted since Core started ({since}). Bytes are the JSON bodies the hooks POSTed; hook timing is self-reported by each hook process, measured from its own start to the moment it sends — most of it is Node's startup, not our work. Don't take this window's word for any of it:",
 
     "settings.section.cleanup": "Idle sessions",
     "settings.zombie.label": "Give up on a silent session after",
@@ -338,6 +355,9 @@ export const MESSAGES = {
     // exp_logs.note 里的散文式说明（键 = Core 写库时的原文，见 ui/app.js 的 expNote）
     "ui.exp.note.self growth": "空闲滴答",
     "ui.exp.note.new session after rest": "休息后回来了",
+    // EXP 明细的页脚。放在这里是因为这一屏正是用户想着 token 的时刻（landscape 0.12 / clawd #102）
+    "ui.cost.claim": "Vibepaws 自己花 0 token —— 它从不与模型对话。",
+    "ui.cost.meter": "{calls} 条事件 · {bytes} → 127.0.0.1 · 详情在设置里",
 
     // ---- 时间 ----
     "ui.time.justnow": "刚刚",
@@ -389,6 +409,17 @@ export const MESSAGES = {
     "settings.cap.label": "每日 EXP 上限",
     "settings.cap.unit": "EXP / 天",
     "settings.cap.hint": "token 每天最多换多少 EXP —— 免得一个长会话把等级刷出来。",
+
+    // ---- Token 与开销（landscape 0.12 / clawd #102）----
+    "settings.section.cost": "Token 与开销",
+    "settings.cost.claim":
+      "Vibepaws 从不与模型对话。它里面没有任何 API key，也没有任何模型客户端；hook 不往 stdout 写一个字节，并且永远以 0 退出 —— 所以它做的任何事都进不了 agent 的上下文。它花不掉你的 token。如果你的 agent 说这个插件在烧 token，那是它在猜一个自己看不见的程序。",
+    "settings.cost.meter": "{calls} 条事件 · {bytes} 发往 127.0.0.1 · 出网 0 字节 · 模型调用 0 次",
+    "settings.cost.latency": "中位数：hook 进程 {hook} + Core {core}（p95 {hookP95} / {coreP95}，最近 {sample} 条）",
+    "settings.cost.latency.core": "中位数：Core {core}（p95 {coreP95}，最近 {sample} 条）—— 还没有 hook 报过自己的耗时",
+    "settings.cost.empty": "还没有数到东西 —— agent 第一次触发 hook 时它就开始了。",
+    "settings.cost.hint":
+      "从 Core 启动（{since}）起算。字节数是 hook POST 上来的 JSON 本体；hook 耗时由每个 hook 进程自报，量的是「进程启动 → 发出这一条」，其中大头是 Node 自己的启动，而不是我们干的活。别信这扇窗口说的，自己核对：",
 
     "settings.section.cleanup": "闲置 session",
     "settings.zombie.label": "静默多久算它结束了",

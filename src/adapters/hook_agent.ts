@@ -237,6 +237,23 @@ export function extractTokensFromTranscript(transcriptPath: string | undefined):
   }
 }
 
+/* ---------------- 自计时（landscape 0.12 / clawd #102） ---------------- */
+
+/**
+ * 本进程到现在为止花了多少毫秒（`performance.now()` 的原点是进程启动）。
+ *
+ * 为什么这个数只能在 hook 里取：采集开销的大头是 Node 自己的启动，那段时间 Core
+ * 根本还不知道有这次调用。所以「宠物让我的 agent 慢了多少」这个问题，Core 侧的
+ * 计时永远答不全 —— 它测得到的只是最后那零点几毫秒。
+ *
+ * 语义是「进程启动 → 发出这一条」。一次 hook 调用通常只发一条事件；SessionStart
+ * 那次会先发一条 adapter_status，于是第二条的数字里含着第一条的往返 —— 那依然是
+ * 这个进程真实的存活时长，没有虚报。
+ */
+function selfMs(): number {
+  return Math.round(performance.now() * 10) / 10;
+}
+
 /* ---------------- 发送（POST + JSONL 兜底） ---------------- */
 
 export async function deliver(ev: CoreEvent, corePort = 17893): Promise<boolean> {
@@ -264,6 +281,17 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const agent = (args.find((a) => a.startsWith("--agent="))?.split("=")[1] ?? "generic") as AgentId;
   const debug = args.includes("--debug");
+  /**
+   * 发一条事件，顺手带上本进程的自计时。
+   *
+   * 打点必须在**这一层**而不是 `deliver()` 里：generic bridge 补发 JSONL 时走的是
+   * 同一个 deliver，那时 `performance.now()` 量的是 bridge 自己的存活时长 ——
+   * 报上去就是把一个跟 hook 无关的数字混进采集开销面板。
+   */
+  const send = (ev: CoreEvent): Promise<boolean> => {
+    ev.payload.hook_ms = selfMs();
+    return deliver(ev);
+  };
   let stdin = "";
   process.stdin.on("data", (c) => (stdin += c));
   process.stdin.on("end", async () => {
@@ -273,12 +301,12 @@ async function main(): Promise<void> {
       // 每次会话开始都重新自报家门：安装时报过一次是不够的 —— 换机器、清库、
       // 重装 Core 之后 agents 表就空了，而用户并不会想到要再跑一次安装器。
       if (raw.hook_event_name === "SessionStart" && (agent === "claude_code" || agent === "codex")) {
-        const announced = await deliver(adapterStatusEvent(agent, raw.cwd ?? process.cwd()));
+        const announced = await send(adapterStatusEvent(agent, raw.cwd ?? process.cwd()));
         if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] adapter_status delivered=${announced}`);
       }
       const ev = normalizeHook(raw, agent, { pid: agentPid() });
       if (ev) {
-        const delivered = await deliver(ev);
+        const delivered = await send(ev);
         if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] ${ev.event_type} delivered=${delivered}`);
         // SessionEnd：从 transcript 提取 token 总量 → 补发 token_update（一次性总量）。
         // hooks stdin 无 token 字段（实测），token 只存在于 transcript_path 指向的存档里。
@@ -298,7 +326,7 @@ async function main(): Promise<void> {
               timestamp: new Date().toISOString(),
               payload: { tokens },
             };
-            const ok = await deliver(tokenEv);
+            const ok = await send(tokenEv);
             if (debug) debugLog(`token_update(${tokens}) delivered=${ok}`);
           } else if (debug) {
             debugLog(`no tokens extracted from transcript: ${raw.transcript_path}`);

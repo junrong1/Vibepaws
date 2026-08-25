@@ -59,6 +59,19 @@
       <p class="hint" data-i18n="settings.cap.hint"></p>
     </section>
 
+    <!-- Token 与开销（landscape 0.12 / clawd #102）。紧跟在预算那张卡后面是刻意的：
+         用户刚读完「token 预算」，正是他想问「那你自己花不花我的 token」的时刻。
+         数字由 /api/settings 的轮询带过来（settings.js 的 renderCost）。 -->
+    <section class="card" id="cost-card">
+      <h2 data-i18n="settings.section.cost"></h2>
+      <p class="claim" data-i18n="settings.cost.claim"></p>
+      <p class="meta" id="cost-meter"></p>
+      <p class="meta" id="cost-latency"></p>
+      <p class="hint" id="cost-hint"></p>
+      <!-- 复核用的那条命令。文案的重点是「别信这扇窗口」，所以它必须是可以照抄的 -->
+      <code id="cost-curl"></code>
+    </section>
+
     <section class="card">
       <h2 data-i18n="settings.section.cleanup"></h2>
       <!-- G10：SessionEnd 收不到时（崩溃 / kill -9 / 合盖）唯一的退出边 -->

@@ -40,13 +40,15 @@ The pet also grows — but the growth loop is deliberately built so that **burni
 
 And it never sees your code. Prompts, diffs, file paths, and tool inputs are dropped at the adapter and dropped again at the database. See [Privacy](#privacy-what-leaves-your-machine).
 
+It also can't spend your tokens: there is no API key and no model client in it, and the hook prints nothing on stdout — which is the only channel a hook has into your agent's context. That isn't a promise, it's a counter you can read: see [Can it spend my tokens?](#can-it-spend-my-tokens)
+
 ## Status
 
 **MVP alpha 0.1** — the core loop works end to end on Claude Code, Codex, and pi-coding-agent. Honest state of things:
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · crashed-session cleanup · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
 | ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
@@ -228,6 +230,7 @@ Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal wi
 | --- | --- |
 | **Pet** | Name it. Empty falls back to the species name. |
 | **Budget & warnings** | Default token budget (in k tokens; `0` turns milestones off) · context warning thresholds (off / early / default / late) · daily EXP cap |
+| **Tokens & overhead** | What the pet costs: model API calls (`0`), bytes off this machine (`0`), and the live byte/latency counter for the hook path — see [Can it spend my tokens?](#can-it-spend-my-tokens) |
 | **Idle sessions** | How long a session may go silent before Vibepaws closes it out (default 15 minutes) — see [When an agent dies](#when-an-agent-dies-without-saying-so) |
 | **Running sessions** | Per-session **goal** and **budget** for every agent session that's currently live |
 | **Window** | Show on all Spaces · click-through · language · snap the pet back to the bottom-right |
@@ -377,6 +380,35 @@ One field on the allowlist is worth naming because it's new: the agent's **proce
 
 To delete everything, use **Settings → Reset & uninstall** (see [Reset, delete, uninstall](#reset-delete-uninstall)) — it wipes the database in place and compacts the file, which deleting the directory under a running Core does not do. Without the app, `npm run adapter:uninstall -- --purge-data` does the same from the shell. Everything lives in `.vibepaws/`: the database, your pet, its EXP history, and the API token.
 
+### Can it spend my tokens?
+
+No. There is no API key and no model client anywhere in Vibepaws — no code path in it talks to a model, so there is nothing to bill.
+
+This gets its own section because of [clawd #102](https://github.com/rullerzhou-afk/clawd-on-desk/issues/102): a user asked why *their agent had told them* the desktop pet was consuming a lot of tokens. The agent had made it up, and the user reasonably believed it. Every hook-based pet gets this question eventually, and "trust me" is a poor answer to a claim a language model invented.
+
+So here is the mechanism instead. A hook can reach the model through exactly one channel: **stdout**. Claude Code feeds some of it back into the conversation — `UserPromptSubmit` stdout becomes context, and a non-zero exit turns stderr into feedback. Vibepaws' hook writes nothing to stdout and always exits `0`. Both are pinned by tests in `src/adapters/hook_agent.test.ts`, because one stray `console.log` added while debugging would quietly start costing real tokens and would look completely harmless in review. (The statusLine command does print a line — that's your terminal's status bar, rendered by Claude Code. It isn't sent to the model.)
+
+What it *does* cost, measured on this machine (M-series Mac, Node v25):
+
+| | |
+| --- | --- |
+| Model API calls | **0** |
+| Bytes leaving the machine | **0** |
+| Per event | ~310 bytes of JSON over `127.0.0.1` |
+| Core, to ingest one | ~0.4 ms (p50) |
+| The hook process itself | ~75–80 ms wall clock, nearly all of it Node starting up |
+
+That last row is the honest price of a hook-based design: roughly 80 ms added to a tool call, paid in latency rather than tokens. It's also the number most worth watching, which is why it's on screen instead of in a footnote.
+
+Live numbers are in **Settings → Tokens & overhead**, with a one-line version under the EXP breakdown in the flyout. Don't take that window's word for it either — the same JSON is one request away:
+
+```bash
+curl -s -H "x-vibepaws-token: $(cat ~/.vibepaws/api_token)" \
+  http://127.0.0.1:17893/api/hookstats
+```
+
+Counting starts when Core starts. Byte counts are the request bodies Core actually read; the hook timings are self-reported by each hook process, measured from its own start to the moment it sends.
+
 ---
 
 ## How it works
@@ -409,6 +441,7 @@ Core's HTTP surface (all routes but `/health` need `X-Vibepaws-Token`):
 | `GET /api/sessions` | Session list |
 | `GET /api/exp` | EXP breakdown |
 | `POST /api/action` | mute / unmute / dismiss / actioned |
+| `GET /api/hookstats` | What the collection path costs — events, bytes, latency, and two zeroes |
 
 Design decisions and module-level detail: [`docs/mvp_architecture.md`](docs/mvp_architecture.md) (Chinese).
 
