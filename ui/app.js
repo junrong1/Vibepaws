@@ -520,7 +520,11 @@ function renderPanel() {
     coreReachable(),
     state.adapters === null ? null : state.adapters.length,
     waitTick,
-    sorted.map((s) => [s.agent, s.session_id, s.state, s.is_active, s.token_used, s.needs_input_since, s.title]),
+    // outcome 要进指纹：一个 session 被回收时 is_active 与 outcome 一起变，
+    // 但只看 is_active 的话「进程没了」那行小字永远画不出来
+    sorted.map((s) => [
+      s.agent, s.session_id, s.state, s.is_active, s.token_used, s.needs_input_since, s.title, s.outcome,
+    ]),
   ]);
   if (signature === lastPanelSignature) return;
   lastPanelSignature = signature;
@@ -554,6 +558,14 @@ function freshlyFinished(s) {
   return Number.isFinite(at) && Date.now() - at < FINISHED_MAX_AGE_MS;
 }
 
+/**
+ * 这个 session 是被回收的僵尸吗（G10，与 core/events.ts 的 isReclaimed 同一份判定）。
+ * 「结束了」和「进程没了」在列表里必须长得不一样 —— 否则用户会以为那次会话正常收工了。
+ */
+function reclaimedSession(s) {
+  return !s.is_active && (s.outcome === "orphaned" || s.outcome === "timeout");
+}
+
 function sessionRow(s) {
   const row = document.createElement("div");
   row.className = "session-row";
@@ -567,6 +579,7 @@ function sessionRow(s) {
   if (["idle", "working", "needs-you", "warning", "finished"].includes(s.state)) {
     dot.classList.add(s.state);
   }
+  if (reclaimedSession(s)) dot.classList.add("lost");
   row.appendChild(dot);
 
   const badge = document.createElement("span");
@@ -578,6 +591,15 @@ function sessionRow(s) {
   title.className = "s-title";
   title.textContent = s.title ?? "";
   row.appendChild(title);
+
+  // 僵尸回收的归因（G10）。用户会问的是「它是崩了，还是我自己走开了」——
+  // 这两句话对应完全不同的下一步动作（去看日志 / 直接 resume）。
+  if (reclaimedSession(s)) {
+    const lost = document.createElement("span");
+    lost.className = "s-lost";
+    lost.textContent = t(`ui.session.${s.outcome}`);
+    row.appendChild(lost);
+  }
 
   // 「等了多久」是决定先处理哪个 session 的关键信息
   if (s.state === "needs-you" && s.needs_input_since) {

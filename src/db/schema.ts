@@ -5,7 +5,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- 只靠 notifications 表的 60s 时间窗推断会让宠物在 agent 仍被阻塞时安静下来。
   needs_input_since TEXT,
   needs_input_kind TEXT,
+  -- agent 进程的 pid（僵尸回收 G10）。adapter 上报，Core 用 kill(pid,0) 探活。
+  -- confirmed：同一个 pid 被两条不同事件报到过才算数 —— 见 core/reclaim.ts 的说明。
+  agent_pid     INTEGER,
+  agent_pid_confirmed INTEGER NOT NULL DEFAULT 0,
   parent_id     INTEGER REFERENCES sessions(id),
   branch        TEXT,
   is_active     INTEGER NOT NULL DEFAULT 1,
@@ -130,6 +134,8 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "sessions", column: "token_exp_granted", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "needs_input_since", ddl: "TEXT" },
   { table: "sessions", column: "needs_input_kind", ddl: "TEXT" },
+  { table: "sessions", column: "agent_pid", ddl: "INTEGER" },
+  { table: "sessions", column: "agent_pid_confirmed", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 interface MigrateDb {

@@ -189,6 +189,11 @@ function apply(data, forced) {
   capEl.max = limits.daily_exp_cap_max;
   setValue(capEl, String(settings.daily_exp_cap), forced);
 
+  const zombieEl = $("zombie");
+  zombieEl.min = limits.zombie_timeout_min_min;
+  zombieEl.max = limits.zombie_timeout_min_max;
+  setValue(zombieEl, String(settings.zombie_timeout_min), forced);
+
   renderWarnOptions(settings.context_warn_pcts, forced);
   renderSessions(data.sessions ?? []);
 }
@@ -221,6 +226,7 @@ function effectiveText(fields, data) {
     .map((field) => {
       if (field === "budget_tokens") return `${toK(data.settings.budget_tokens)}k`;
       if (field === "daily_exp_cap") return String(data.settings.daily_exp_cap);
+      if (field === "zombie_timeout_min") return `${data.settings.zombie_timeout_min}m`;
       if (field === "context_warn_pcts") return `${data.settings.context_warn_pcts.join(" / ")}%`;
       if (field === "pet_name") return data.pet.custom_name ?? "";
       return field;
@@ -584,7 +590,7 @@ for (const entry of DANGER) {
 }
 
 /* ---------------- 绑定 ---------------- */
-for (const id of ["pet-name", "budget", "cap"]) {
+for (const id of ["pet-name", "budget", "cap", "zombie"]) {
   $(id).addEventListener("input", () => markDirty($(id)));
 }
 $("pet-name").addEventListener("change", () => patchSettings({ pet_name: $("pet-name").value }, $("pet-name")));
@@ -593,6 +599,9 @@ $("budget").addEventListener("change", () => {
   patchSettings({ budget_tokens: raw === "" ? 0 : Number(raw) * K }, $("budget"));
 });
 $("cap").addEventListener("change", () => patchSettings({ daily_exp_cap: Number($("cap").value) }, $("cap")));
+$("zombie").addEventListener("change", () =>
+  patchSettings({ zombie_timeout_min: Number($("zombie").value) }, $("zombie")),
+);
 $("warn").addEventListener("change", () => {
   const raw = $("warn").value;
   // "" = 「关闭」那一项：空数组，而不是「没选」

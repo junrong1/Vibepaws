@@ -71,6 +71,20 @@ function refineByTool(
 
 /* ---------------- 归一化（可测试的核心） ---------------- */
 
+/**
+ * agent 进程的 pid（僵尸回收 G10 的输入）。
+ *
+ * hook 是 agent 起的子进程，所以 `ppid` 就是 agent —— 前提是中间那层 `sh -c`
+ * exec 掉了自己（我们写进配置的命令是一条不带重定向/管道的简单命令，正是会被
+ * exec 优化的那种）。万一某个平台不这样，ppid 会是一个转瞬即逝的 shell；Core
+ * 侧的「同一个 pid 见过两次才采信」正是为这种情况准备的（见 core/reclaim.ts），
+ * 所以这里报一个**可能**是包装进程的 pid 是安全的。
+ */
+function agentPid(): number | undefined {
+  const ppid = process.ppid;
+  return Number.isInteger(ppid) && ppid > 1 ? ppid : undefined;
+}
+
 export interface HookInput {
   hook_event_name?: string;
   matcher?: string;
@@ -90,7 +104,12 @@ let seqCounter = 0;
 export function normalizeHook(
   raw: HookInput,
   agent: AgentId,
-  opts: { fallbackCwd?: string } = {},
+  /**
+   * `pid` 必须由调用方显式给：只有**真的跑在 agent 子进程里**的那次调用（CLI main）
+   * 知道自己的 ppid 是 agent。bridge 补发 JSONL 时也会走这个函数，那时的 ppid 是
+   * bridge 自己的父进程 —— 报上去就是给 Core 一个和该 session 毫无关系的 pid。
+   */
+  opts: { fallbackCwd?: string; pid?: number } = {},
 ): CoreEvent | null {
   const hookEvent = raw.hook_event_name ?? "";
   const map = MATCHER_MAP[hookEvent];
@@ -129,6 +148,9 @@ export function normalizeHook(
   }
   if (eventType === "token_update" && typeof raw.tokens === "number") payload.tokens = raw.tokens;
   if (raw.turn_id) payload.turn_id = String(raw.turn_id);
+  // 每条事件都带 pid：Core 靠「同一个 pid 反复出现」确认它是 agent 而不是包装 shell，
+  // 只报在 SessionStart 上的话永远攒不到第二次确认（G10）。
+  if (opts.pid !== undefined) payload.pid = opts.pid;
   void raw.transcript_path; // 明确不使用（隐私）
 
   return {
@@ -254,7 +276,7 @@ async function main(): Promise<void> {
         const announced = await deliver(adapterStatusEvent(agent, raw.cwd ?? process.cwd()));
         if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] adapter_status delivered=${announced}`);
       }
-      const ev = normalizeHook(raw, agent);
+      const ev = normalizeHook(raw, agent, { pid: agentPid() });
       if (ev) {
         const delivered = await deliver(ev);
         if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] ${ev.event_type} delivered=${delivered}`);

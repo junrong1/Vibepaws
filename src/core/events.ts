@@ -60,6 +60,12 @@ export interface EventPayload {
   capabilities?: string[];     // adapter_status
   adapter_version?: string;    // adapter_status
   file?: string;               // agent_working: 目标文件（仅文件名 basename，防路径泄漏）
+  /**
+   * agent 进程的 pid（僵尸回收 G10）。Core 用它探活：进程没了 = session 死了，
+   * 不必干等 15 分钟静默超时。隐私上这是一个本机整数，不携带任何用户内容 ——
+   * 它唯一能回答的问题是「这个 session 背后的进程还在不在」。
+   */
+  pid?: number;
 }
 
 /** 标准化事件信封（§3.1） */
@@ -74,6 +80,24 @@ export interface CoreEvent {
   safe_summary: string;
   timestamp: string;           // ISO 8601
   payload: EventPayload;
+}
+
+/**
+ * session 的结束归因。前三个来自 `session_finished` 事件（agent 自己说的），
+ * 后两个由僵尸回收写入（G10，见 core/reclaim.ts）：
+ *   orphaned —— agent 进程没了（崩溃 / kill -9），`SessionEnd` 永远不会来
+ *   timeout  —— 进程在不在不知道，但已经静默超过阈值（休眠、拔网线、adapter 掉了）
+ * 这两种都**不是**收工：不结算 EXP，宠物也不播庆祝动画。
+ */
+export type SessionOutcome = "success" | "partial" | "abandoned" | "orphaned" | "timeout";
+
+/**
+ * 这个 session 是被回收的（而不是正常收工的）吗。
+ * 渲染层有一份等价实现（`ui/app.js` 的 `reclaimedSession`）—— 浏览器里的 app.js
+ * 没法 import 这个模块，两处改动必须一起走。
+ */
+export function isReclaimed(outcome: string | null | undefined): boolean {
+  return outcome === "orphaned" || outcome === "timeout";
 }
 
 /** 宠物聚合状态（7 态，READM 6.1 / 架构 §2.3） */

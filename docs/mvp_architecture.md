@@ -291,6 +291,8 @@ settings(key, value)                                                    -- budge
 | `decision_required` | 不显示决策气泡（仍显示 working） |
 | `token_update` | EXP 只算 outcome + daily care |
 | adapter 断线 | Core 保留最后状态；宠物显示连接灰点；generic JSONL 兜底继续收 |
+| `session_finished`（崩溃 / `kill -9` / 合盖休眠 / 直接关终端） | 僵尸回收 sweep（60s 一轮，`core/reclaim.ts`）：**进程探活**确认 agent 没了 → 立刻 `is_active=0`、`outcome=orphaned`；拿不到 pid 或 pid 还活着 → **静默超时**（默认 15 分钟，可配）→ `outcome=timeout`。两者都不结算 EXP，不播庆祝动画，并撤掉该 session 还挂着的气泡 |
+| `payload.pid`（generic bridge / 手动发射器 / 升级前的老库） | 探活整条路径关掉，只留静默超时。pid 只被采信到「同一个 pid 出现过两次」为止 —— 未确认的 pid 一律按「不知道」处理，绝不作为判死依据 |
 | hooks 版本漂移 | 模板集中维护；simulator 常驻回归；`adapter_status` 上报能力差异 |
 
 核心原则：**adapter 只报事件，所有判定在 Core**；缺任何单一信号都不阻塞宠物循环。

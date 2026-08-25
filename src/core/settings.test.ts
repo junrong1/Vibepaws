@@ -18,6 +18,9 @@ import {
   normalizeDailyExpCap,
   normalizeContextWarnPcts,
   normalizeSessionBudget,
+  normalizeZombieTimeoutMin,
+  getZombieTimeoutMin,
+  DEFAULT_ZOMBIE_TIMEOUT_MIN,
   normalizeText,
   parseSettingsPatch,
   readSettings,
@@ -324,3 +327,37 @@ function countNotifications(server: VibepawsServer, type: string): number {
     .get(type) as { c: number };
   return row.c ?? 0;
 }
+
+/* ---------------- 僵尸回收阈值（G10） ---------------- */
+
+test("静默阈值：0 不是「关闭」，收到下限 1 分钟", () => {
+  assert.deepEqual(normalizeZombieTimeoutMin(15), { ok: true, value: 15, clamped: false });
+  assert.deepEqual(normalizeZombieTimeoutMin(0), {
+    ok: true,
+    value: SETTINGS_LIMITS.zombie_timeout_min_min,
+    clamped: true,
+  });
+  assert.deepEqual(normalizeZombieTimeoutMin(1e9), {
+    ok: true,
+    value: SETTINGS_LIMITS.zombie_timeout_min_max,
+    clamped: true,
+  });
+  assert.deepEqual(normalizeZombieTimeoutMin("20"), { ok: true, value: 20, clamped: false });
+  assert.deepEqual(normalizeZombieTimeoutMin("abc"), { ok: false });
+});
+
+test("静默阈值：脏值与缺 key 都回默认（读不出来不该让回收变激进或停摆）", () => {
+  const db = new Database(":memory:");
+  applySchema(db);
+  assert.equal(getZombieTimeoutMin(db), DEFAULT_ZOMBIE_TIMEOUT_MIN);
+  db.prepare("INSERT INTO settings(key, value) VALUES('zombie_timeout_min', 'nonsense')").run();
+  assert.equal(getZombieTimeoutMin(db), DEFAULT_ZOMBIE_TIMEOUT_MIN);
+  db.prepare("UPDATE settings SET value='7' WHERE key='zombie_timeout_min'").run();
+  assert.equal(getZombieTimeoutMin(db), 7);
+  assert.equal(readSettings(db).zombie_timeout_min, 7);
+});
+
+test("静默阈值也守原子性：同一份 patch 里有非法值时一个字段都不落库", () => {
+  const parsed = parseSettingsPatch({ zombie_timeout_min: "abc", daily_exp_cap: 50 });
+  assert.deepEqual(parsed.invalid, ["zombie_timeout_min"]);
+});

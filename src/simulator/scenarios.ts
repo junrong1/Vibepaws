@@ -9,7 +9,8 @@ export type ScenarioName =
   | "frequent_decisions"
   | "context_overload"
   | "correction_loop"
-  | "multi_session";
+  | "multi_session"
+  | "crashed_session";
 
 export const SCENARIOS: ScenarioName[] = [
   "normal",
@@ -17,6 +18,7 @@ export const SCENARIOS: ScenarioName[] = [
   "context_overload",
   "correction_loop",
   "multi_session",
+  "crashed_session",
 ];
 
 let seqCounter = 0;
@@ -116,12 +118,39 @@ function multiSession(): CoreEvent[] {
   return out;
 }
 
+/**
+ * 崩掉的会话（G10）：卡在权限询问上，然后**再也没有任何事件** —— 没有 `session_finished`，
+ * 因为 `kill -9` / 崩溃 / 合盖都不会发出它。
+ *
+ * 全部事件的时间戳都落在 20 分钟前，这样注入完就已经越过默认的 15 分钟静默阈值：
+ * 宠物先红一下（needs-you 还在 30 分钟安全阀之内），随后被 Core 的 sweep 收掉 ——
+ * 一个周期内最多 60 秒。旁边那个正常 session 用来验证「回收不会连坐」。
+ *
+ * 这个场景走的是**静默超时**那条路。进程探活那条路需要一个真实的、已经死掉的进程，
+ * 生成器里造不出来 —— 它由 `src/core/reclaim.test.ts` 的真进程 kill 用例覆盖。
+ */
+function crashedSession(): CoreEvent[] {
+  const out: CoreEvent[] = [];
+  const ago = (min: number): number => -min * 60;
+  const proj = "/Users/demo/api-server";
+  out.push(ev("claude_code", "sim-zombie-1", proj, "session_started", "Session started", { source: "startup", cwd: proj, title: "api-server" }, "low", ago(25)));
+  out.push(ev("claude_code", "sim-zombie-1", proj, "agent_working", "Editing config", { tool_name: "Edit" }, "low", ago(23)));
+  out.push(ev("claude_code", "sim-zombie-1", proj, "token_update", "Tokens used", { tokens: 42_000 }, "low", ago(22)));
+  // 最后一声：在等你放行。然后进程就没了。
+  out.push(ev("claude_code", "sim-zombie-1", proj, "permission_required", "Approve Bash command", { tool_name: "Bash" }, "high", ago(20)));
+  // 同时还有一个真的在干活的 session：它不该被这次回收连坐
+  out.push(ev("claude_code", "sim-zombie-2", "/Users/demo/frontend", "session_started", "Session started", { source: "startup", cwd: "/Users/demo/frontend", title: "frontend" }));
+  out.push(ev("claude_code", "sim-zombie-2", "/Users/demo/frontend", "agent_working", "Running tests", { tool_name: "Bash" }, "low", 2));
+  return out;
+}
+
 const GENERATORS: Record<ScenarioName, () => CoreEvent[]> = {
   normal,
   frequent_decisions: frequentDecisions,
   context_overload: contextOverload,
   correction_loop: correctionLoop,
   multi_session: multiSession,
+  crashed_session: crashedSession,
 };
 
 export function generateScenario(name: ScenarioName): CoreEvent[] {

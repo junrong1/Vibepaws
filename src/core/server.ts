@@ -14,6 +14,8 @@
  *   POST /api/reset        重置本地数据（scope=pet|data，需要 confirm）
  *   GET  /api/uninstall    卸载预览（哪些 agent 配置里还留着我们的 hooks）
  *   POST /api/uninstall    移除 adapter hooks（需要 confirm；dry_run 只算不写）
+ *
+ * 后台循环：僵尸 session 回收（G10，见 core/reclaim.ts）—— 启动时一次 + 60s 一轮。
  */
 import { createServer } from "node:http";
 import { existsSync, mkdirSync } from "node:fs";
@@ -26,12 +28,15 @@ import {
   applySettingsPatch,
   parseSettingsPatch,
   parseSessionPatch,
+  getZombieTimeoutMin,
   SETTINGS_LIMITS,
   DEFAULT_BUDGET_TOKENS,
   DEFAULT_DAILY_EXP_CAP,
   DEFAULT_CONTEXT_WARN_PCTS,
+  DEFAULT_ZOMBIE_TIMEOUT_MIN,
   type VibepawsSettings,
 } from "./settings.ts";
+import { reclaimZombies, SWEEP_INTERVAL_MS, type ReclaimedSession } from "./reclaim.ts";
 import { writeApiToken } from "./token.ts";
 import { dataFootprint, resetLocalData, type ResetScope } from "./reset.ts";
 import {
@@ -85,7 +90,12 @@ export interface SettingsView {
   settings: VibepawsSettings;
   /** 取值范围与默认值：界面拿它设 input 的 min/max，不必再抄一份常量 */
   limits: typeof SETTINGS_LIMITS;
-  defaults: { budget_tokens: number; daily_exp_cap: number; context_warn_pcts: number[] };
+  defaults: {
+    budget_tokens: number;
+    daily_exp_cap: number;
+    context_warn_pcts: number[];
+    zombie_timeout_min: number;
+  };
   pet: {
     name: string;
     custom_name: string | null;
@@ -111,6 +121,7 @@ export class VibepawsServer {
   private sseClients = new Set<import("node:http").ServerResponse>();
   private ssePing: ReturnType<typeof setInterval> | null = null;
   private stateFlush: ReturnType<typeof setTimeout> | null = null;
+  private zombieSweep: ReturnType<typeof setInterval> | null = null;
   private httpServer: import("node:http").Server | null = null;
 
   constructor(cfg: ServerConfig = {}) {
@@ -223,6 +234,11 @@ export class VibepawsServer {
       });
 
       this.httpServer = server;
+      // 起来的第一件事就是扫一遍（G10）：上一次 Core 退出时还 is_active=1 的那些
+      // session，绝大多数已经随着它们的 agent 一起没了。等 60 秒才扫的话，用户
+      // 打开 App 看到的第一屏是一堆幻影会话，宠物还在为它们「工作」。
+      this.sweepZombies();
+      this.startZombieSweep();
       server.listen(this.port, this.host, () => {
         // port 0（测试/嵌入）时把真实端口写回来，调用方才知道该连哪里
         this.port = (server.address() as { port: number } | null)?.port ?? this.port;
@@ -239,9 +255,46 @@ export class VibepawsServer {
     return Boolean(this.token) && header === this.token;
   }
 
+  /**
+   * 僵尸 session 回收（G10）。60s 一轮 + 启动时一次。
+   *
+   * 这是 `SessionEnd` 收不到时唯一的退出边：`kill -9`、崩溃、合盖睡一晚、
+   * 直接关掉终端窗口，都不会有任何事件告诉 Core「结束了」。
+   * 返回被回收的 session（测试与日志用）。
+   */
+  sweepZombies(): ReclaimedSession[] {
+    let reclaimed: ReclaimedSession[] = [];
+    try {
+      reclaimed = reclaimZombies(this.db, { timeoutMs: getZombieTimeoutMin(this.db) * 60_000 });
+    } catch (err) {
+      // sweep 是后台计时器：它抛出去就是 uncaught exception，整个 Core 陪它一起死。
+      // 一轮扫不动远好于 Core 挂掉 —— 下一轮 60 秒后自己会再来。
+      console.error("[vibepaws] zombie sweep failed:", err);
+      return [];
+    }
+    if (reclaimed.length === 0) return reclaimed;
+    for (const s of reclaimed) {
+      console.log(
+        `[vibepaws] reclaimed ${s.agent}/${s.session_id} as ${s.outcome} ` +
+          `(silent ${Math.round(s.idle_ms / 60_000)}m)`,
+      );
+    }
+    // 宠物的聚合状态刚变了（可能正是从「需要你」松开）—— 别等下一个事件才告诉界面
+    this.broadcastState();
+    return reclaimed;
+  }
+
+  private startZombieSweep(): void {
+    if (this.zombieSweep) return;
+    this.zombieSweep = setInterval(() => this.sweepZombies(), SWEEP_INTERVAL_MS);
+    this.zombieSweep.unref?.(); // 后台清理不该成为进程退不出去的原因
+  }
+
   /** 优雅收摊：断开 SSE、停掉计时器、关掉监听（测试与未来的重启都要用） */
   close(): Promise<void> {
     this.stopSsePing();
+    if (this.zombieSweep) clearInterval(this.zombieSweep);
+    this.zombieSweep = null;
     if (this.stateFlush) clearTimeout(this.stateFlush);
     this.stateFlush = null;
     for (const client of [...this.sseClients]) client.end();
@@ -281,6 +334,9 @@ export class VibepawsServer {
       // 改完阈值/预算要重新武装闩锁，否则新设置要等下一个 session 才看得见效果
       if (changed.includes("context_warn_pcts")) this.notifications.resetLatches("context");
       if (changed.includes("budget_tokens")) this.notifications.resetLatches("budget");
+      // 静默阈值同理：刚从 15 分钟调到 2 分钟的用户，等的是「现在就把那个僵尸收掉」，
+      // 而不是「下一轮 sweep 也许会」。
+      if (changed.includes("zombie_timeout_min")) this.sweepZombies();
       // 名字改了要立刻反映到宠物脚下的名牌上
       if (changed.includes("pet_name")) this.broadcastState();
       sendJson(res, 200, { ok: true, changed, clamped: parsed.clamped, ...this.settingsSnapshot() });
@@ -404,6 +460,7 @@ export class VibepawsServer {
         budget_tokens: DEFAULT_BUDGET_TOKENS,
         daily_exp_cap: DEFAULT_DAILY_EXP_CAP,
         context_warn_pcts: [...DEFAULT_CONTEXT_WARN_PCTS],
+        zombie_timeout_min: DEFAULT_ZOMBIE_TIMEOUT_MIN,
       },
       pet: {
         name: pet.name ?? "vibepaws",

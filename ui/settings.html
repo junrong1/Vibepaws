@@ -60,6 +60,19 @@
     </section>
 
     <section class="card">
+      <h2 data-i18n="settings.section.cleanup"></h2>
+      <!-- G10：SessionEnd 收不到时（崩溃 / kill -9 / 合盖）唯一的退出边 -->
+      <div class="row">
+        <label for="zombie" data-i18n="settings.zombie.label"></label>
+        <span class="field">
+          <input id="zombie" type="number" min="1" step="1" inputmode="numeric">
+          <span class="unit" data-i18n="settings.zombie.unit"></span>
+        </span>
+      </div>
+      <p class="hint" data-i18n="settings.zombie.hint"></p>
+    </section>
+
+    <section class="card">
       <h2 data-i18n="settings.section.sessions"></h2>
       <!-- G17 的录入口：session 在终端里诞生，goal / budget 只能在这里补上 -->
       <div id="sessions"></div>

@@ -25,6 +25,7 @@ const PAYLOAD_WHITELIST: Record<keyof EventPayload, true> = {
   capabilities: true,
   adapter_version: true,
   file: true,
+  pid: true,
 };
 
 const SEVERITIES = new Set(["low", "medium", "high"]);

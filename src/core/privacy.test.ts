@@ -87,3 +87,44 @@ test("safe_summary 永远是固定措辞，不含事件动态内容", () => {
   assert.ok(!ev.safe_summary.includes("TOP_SECRET"));
   assert.equal(ev.safe_summary, "Tool permission needed: Bash");
 });
+
+test("pid 是白名单里刻意加宽的一项：进得去，但只能是数字（G10）", () => {
+  const db = new Database(":memory:");
+  applySchema(db);
+  seedPetTypes(db);
+  ingestEvent(
+    {
+      event_id: "p-pid",
+      seq: 1,
+      agent: "claude_code",
+      session_id: "s1",
+      project_id: "/p",
+      event_type: "agent_working",
+      severity: "low",
+      safe_summary: "Working",
+      timestamp: new Date().toISOString(),
+      // 探活只需要一个整数。任何试图借这个字段捎带内容的东西都过不去 ——
+      // sanitizePayload 只放行 string/number/boolean，且键必须在白名单里。
+      payload: { pid: 4242, pid_cmdline: "node /Users/x/secret-project/TOP_SECRET.ts" },
+    },
+    { db, onEvent: () => {} },
+  );
+  const row = db.prepare("SELECT payload_json FROM events WHERE event_id='p-pid'").get() as {
+    payload_json: string;
+  };
+  assert.deepEqual(JSON.parse(row.payload_json), { pid: 4242 });
+  assert.ok(!row.payload_json.includes("TOP_SECRET"));
+});
+
+test("adapter 只在真的跑在 agent 子进程里时才报 pid（bridge 补发不许自作主张）", () => {
+  const hook = {
+    hook_event_name: "PreToolUse" as const,
+    matcher: "Bash",
+    session_id: "s-pid",
+    cwd: "/p",
+    tool_name: "Bash",
+  };
+  // bridge 走的是这条路：它的 ppid 与该 session 的 agent 毫无关系
+  assert.equal(normalizeHook(hook, "claude_code")!.payload.pid, undefined);
+  assert.equal(normalizeHook(hook, "claude_code", { pid: 4242 })!.payload.pid, 4242);
+});

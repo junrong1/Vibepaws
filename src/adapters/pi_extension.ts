@@ -140,13 +140,19 @@ export interface MapInput {
   sessionId: string;
   cwd: string;
   now?: string;
+  /**
+   * agent 进程的 pid（僵尸回收 G10）。插件跑在 pi 进程**内部**，所以调用方传的是
+   * `process.pid` —— 这是最干净的一路：不需要猜 ppid，也没有包装 shell 的歧义。
+   * 参数化而不是直接读 process.pid，是为了让 mapEvent 保持纯函数（单测可断言）。
+   */
+  pid?: number;
 }
 
 /**
  * pi 事件 → CoreEvent 列表（纯函数，可测试）。
  * 返回空数组 = 该事件不上报（成功类 tool_execution_end、非 assistant message 等）。
  */
-export function mapEvent({ type, data, sessionId, cwd, now }: MapInput): CoreEvent[] {
+export function mapEvent({ type, data, sessionId, cwd, now, pid }: MapInput): CoreEvent[] {
   const ts = now ?? new Date().toISOString();
   const projectId = normalizeProject(cwd);
   const mk = (
@@ -164,7 +170,9 @@ export function mapEvent({ type, data, sessionId, cwd, now }: MapInput): CoreEve
     severity,
     safe_summary: summary,
     timestamp: ts,
-    payload,
+    // pid 挂在每条事件上，不只是 session_start：Core 要同一个 pid 出现两次才采信它
+    // （见 core/reclaim.ts 的 notePid）。
+    payload: pid === undefined ? payload : { ...payload, pid },
   });
 
   switch (type) {
@@ -269,7 +277,14 @@ export default function (pi: PiAPI): void {
   for (const name of SUBSCRIPTIONS) {
     pi.on(name, (event, ctx) => {
       try {
-        for (const ev of mapEvent({ type: name, data: event, sessionId: sessionIdOf(ctx), cwd: ctx.cwd })) {
+        // process.pid 就是 pi 自己：插件在 pi 进程里跑，这是最准的一路探活输入（G10）
+        for (const ev of mapEvent({
+          type: name,
+          data: event,
+          sessionId: sessionIdOf(ctx),
+          cwd: ctx.cwd,
+          pid: process.pid,
+        })) {
           void deliverToCore(ev, ctx.cwd);
         }
       } catch {

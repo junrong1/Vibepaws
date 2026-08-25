@@ -4,6 +4,8 @@
  * 宠物聚合状态：needs-you > warning > working > idle（finished/tired/level-up 由宠物引擎设置）。
  */
 import type Database from "better-sqlite3";
+import { isReclaimed } from "./events.ts";
+import { notePid } from "./reclaim.ts";
 import type { CoreEvent, PetState, SessionView, SessionState } from "./events.ts";
 
 export type RegistryHandler = (ev: CoreEvent) => void;
@@ -192,6 +194,9 @@ export class SessionRegistry {
         break;
       }
     }
+    // 进程探活的输入（G10）。放在 switch 之后：这时 session 行必然已经存在，
+    // 而 adapter_status 那种不建 session 的事件只会更新到零行（无害）。
+    notePid(this.db, ev.agent, ev.session_id, ev.payload.pid);
     this.onUpdate?.();
   }
 
@@ -329,7 +334,12 @@ export class SessionRegistry {
 
   /** 推断单个 session 状态（Core 判定；tired/level-up 由宠物引擎叠加） */
   private sessionState(r: Record<string, unknown>): SessionState {
-    if ((r.is_active as number) !== 1) return "finished";
+    // 被回收的僵尸不是「收工」（G10）。finished 在这个产品里是有奖励含义的状态 ——
+    // 打勾、庆祝动画、outcome bonus 都挂在它上面。一个崩掉的会话显示成 finished
+    // 等于告诉用户「这次干得不错」。它就是安静地停了：idle。
+    if ((r.is_active as number) !== 1) {
+      return isReclaimed(r.outcome as string | null) ? "idle" : "finished";
+    }
     const agent = r.agent as string;
     const sessionId = r.session_id as string;
     // 需要你：session 上挂着未清除的「等你」标记（由 decision/permission 事件置位，
@@ -377,8 +387,11 @@ export class SessionRegistry {
     if (hasNeeds) return "needs-you";
     if (hasWarning) return "warning";
     if (hasWorking) return "working";
-    // 刚收工：短暂庆祝一下再回 idle（README 6.1 的 finished 态）
-    if (list.some((s) => !s.is_active && recentlyFinished(s.finished_at))) return "finished";
+    // 刚收工：短暂庆祝一下再回 idle（README 6.1 的 finished 态）。
+    // 被回收的僵尸有 finished_at（那是回收时刻），但它不是收工 —— 不庆祝崩溃（G10）。
+    if (list.some((s) => !s.is_active && recentlyFinished(s.finished_at) && !isReclaimed(s.outcome))) {
+      return "finished";
+    }
     return "idle";
   }
 

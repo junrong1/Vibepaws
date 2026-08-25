@@ -168,3 +168,54 @@ test("坏时间戳不会把宠物永久钉在 needs-you", () => {
   db.prepare("UPDATE sessions SET needs_input_since = 'pending'").run();
   assert.notEqual(reg.listSessions()[0]!.state, "needs-you", "解析不出的时间戳应当按「不在等」处理");
 });
+
+/* ---------------- 僵尸回收之后的视图（G10） ---------------- */
+
+test("被回收的僵尸显示成 idle，不是 finished —— 崩溃不发打勾", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+  assert.equal(reg.listSessions()[0]!.state, "needs-you");
+
+  // reclaimZombies 写的就是这几列
+  db.prepare(
+    `UPDATE sessions SET is_active=0, outcome='orphaned', finished_at=?,
+       needs_input_since=NULL, needs_input_kind=NULL`,
+  ).run(new Date().toISOString());
+
+  const view = reg.listSessions()[0]!;
+  assert.equal(view.state, "idle");
+  assert.equal(view.is_active, false);
+  // 宠物既不该继续被钉住，也不该为一次崩溃播庆祝动画
+  assert.equal(reg.aggregatePetState(), "idle");
+  assert.deepEqual(reg.needsAttention(), []);
+});
+
+test("正常收工仍然庆祝（回收的排除逻辑没有误伤 session_finished）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "session_finished", payload: { outcome: "success" } }));
+  assert.equal(reg.listSessions()[0]!.state, "finished");
+  assert.equal(reg.aggregatePetState(), "finished");
+});
+
+test("pid 随事件记录：同一个 pid 来两次才确认（探活的输入）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup", pid: 9090 } }));
+  const read = () =>
+    db.prepare("SELECT agent_pid, agent_pid_confirmed FROM sessions").get() as {
+      agent_pid: number | null;
+      agent_pid_confirmed: number;
+    };
+  assert.deepEqual(read(), { agent_pid: 9090, agent_pid_confirmed: 0 });
+
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash", pid: 9090 } }));
+  assert.deepEqual(read(), { agent_pid: 9090, agent_pid_confirmed: 1 });
+
+  // 不带 pid 的通道（statusline / bridge 补发）不该把结论擦掉
+  reg.handle(ev({ event_type: "token_update", payload: { tokens: 100 } }));
+  assert.deepEqual(read(), { agent_pid: 9090, agent_pid_confirmed: 1 });
+});

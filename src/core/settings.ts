@@ -9,6 +9,9 @@
  */
 import type Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
+import { DEFAULT_ZOMBIE_TIMEOUT_MIN } from "./reclaim.ts";
+
+export { DEFAULT_ZOMBIE_TIMEOUT_MIN };
 
 export function getSetting(db: Database.Database, key: string): string | null {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
@@ -46,6 +49,7 @@ export function randomToken(): string {
 const KEY_BUDGET = "budget_tokens";
 const KEY_DAILY_CAP = "daily_exp_cap";
 const KEY_WARN_PCTS = "context_warn_pcts";
+const KEY_ZOMBIE_TIMEOUT = "zombie_timeout_min";
 
 /** 默认 token 预算：0 = 关掉里程碑提醒（没有分母就没有百分比可报） */
 export const DEFAULT_BUDGET_TOKENS = 0;
@@ -64,6 +68,13 @@ export const SETTINGS_LIMITS = {
   pet_name_max: 24,
   goal_max: 200,
   warn_pcts_max: 3,
+  /**
+   * 僵尸回收的静默阈值区间（分钟）。下限 1 分钟：再短就会把「agent 正在想」
+   * 当成死亡。上限 24 小时：更长的话这条规则等于没有，而它的存在意义就是
+   * 「宠物不该被一个已经不存在的 session 永久钉住」。
+   */
+  zombie_timeout_min_min: 1,
+  zombie_timeout_min_max: 24 * 60,
 } as const;
 
 export interface VibepawsSettings {
@@ -72,6 +83,8 @@ export interface VibepawsSettings {
   daily_exp_cap: number;
   /** 升序，最多 3 档；空 = 关闭 context 警告 */
   context_warn_pcts: number[];
+  /** 静默多久算僵尸 session（分钟，G10）。进程探活确认死亡时不等这个阈值 */
+  zombie_timeout_min: number;
 }
 
 /**
@@ -99,6 +112,11 @@ export function normalizeBudgetTokens(raw: unknown): Normalized<number> {
 /** 下限是 1 而不是 0：cap=0 会让 token EXP 全部落空，那不是「无上限」而是「全没了」 */
 export function normalizeDailyExpCap(raw: unknown): Normalized<number> {
   return normInt(raw, 1, SETTINGS_LIMITS.daily_exp_cap_max);
+}
+
+/** 僵尸回收的静默阈值（分钟，G10）。不允许 0 —— 那不是「关闭」，那是「立刻全杀」 */
+export function normalizeZombieTimeoutMin(raw: unknown): Normalized<number> {
+  return normInt(raw, SETTINGS_LIMITS.zombie_timeout_min_min, SETTINGS_LIMITS.zombie_timeout_min_max);
 }
 
 /** session 级预算：0 / null = 跟随全局默认（列写 NULL，读取时自然回落） */
@@ -189,11 +207,23 @@ export function getContextWarnPcts(db: Database.Database): number[] {
   return n.ok ? n.value : [...DEFAULT_CONTEXT_WARN_PCTS];
 }
 
+/**
+ * 僵尸回收阈值（分钟）。脏值 / 缺 key 一律回默认 —— 一个读不出来的值不该让
+ * 回收变得过于激进（把在想的 agent 杀掉）或者彻底停摆（宠物又被钉住）。
+ */
+export function getZombieTimeoutMin(db: Database.Database): number {
+  const raw = getSetting(db, KEY_ZOMBIE_TIMEOUT);
+  if (raw === null) return DEFAULT_ZOMBIE_TIMEOUT_MIN;
+  const n = normalizeZombieTimeoutMin(raw);
+  return n.ok ? n.value : DEFAULT_ZOMBIE_TIMEOUT_MIN;
+}
+
 export function readSettings(db: Database.Database): VibepawsSettings {
   return {
     budget_tokens: getDefaultBudgetTokens(db),
     daily_exp_cap: getDailyExpCap(db),
     context_warn_pcts: getContextWarnPcts(db),
+    zombie_timeout_min: getZombieTimeoutMin(db),
   };
 }
 
@@ -246,6 +276,14 @@ export function parseSettingsPatch(raw: unknown): ParsedSettingsPatch {
       if (n.clamped) out.clamped.push("context_warn_pcts");
     }
   }
+  if ("zombie_timeout_min" in body) {
+    const n = normalizeZombieTimeoutMin(body.zombie_timeout_min);
+    if (!n.ok) out.invalid.push("zombie_timeout_min");
+    else {
+      out.settings.zombie_timeout_min = n.value;
+      if (n.clamped) out.clamped.push("zombie_timeout_min");
+    }
+  }
   if ("pet_name" in body) {
     const n = normalizeText(body.pet_name, SETTINGS_LIMITS.pet_name_max);
     if (!n.ok) out.invalid.push("pet_name");
@@ -268,6 +306,10 @@ export function applySettingsPatch(db: Database.Database, patch: Partial<Vibepaw
   if (patch.daily_exp_cap !== undefined && patch.daily_exp_cap !== before.daily_exp_cap) {
     setSetting(db, KEY_DAILY_CAP, String(patch.daily_exp_cap));
     changed.push("daily_exp_cap");
+  }
+  if (patch.zombie_timeout_min !== undefined && patch.zombie_timeout_min !== before.zombie_timeout_min) {
+    setSetting(db, KEY_ZOMBIE_TIMEOUT, String(patch.zombie_timeout_min));
+    changed.push("zombie_timeout_min");
   }
   if (patch.context_warn_pcts !== undefined) {
     const next = patch.context_warn_pcts;

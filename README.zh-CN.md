@@ -46,7 +46,7 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
+| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· 崩溃会话回收 · Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
 | ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
@@ -97,6 +97,7 @@ npm run sim -- --scenario frequent_decisions  # 多次需要你 → needs-you �
 npm run sim -- --scenario context_overload    # context 88% → 96% → 警告 + EXP 倍率下降
 npm run sim -- --scenario correction_loop     # 反复改同一文件 → correction 计数
 npm run sim -- --scenario multi_session       # 3 个 session 并行 → 聚合状态 + 轮播
+npm run sim -- --scenario crashed_session     # agent 卡在提问上崩掉 → 一分钟内被回收
 ```
 
 如果宠物对 `normal` 有反应，说明安装没问题。接下来接真实 agent。
@@ -227,6 +228,7 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 | --- | --- |
 | **宠物** | 起名字。留空回落物种名。 |
 | **预算与警告** | 默认 token 预算（单位 k tokens，填 `0` 就是关掉里程碑）· 上下文警告阈值（关 / 早 / 默认 / 晚）· 每日 EXP 上限 |
+| **闲置 session** | 一个 session 静默多久之后算它结束了（默认 15 分钟）—— 见 [agent 没打招呼就没了](#agent-没打招呼就没了) |
 | **在跑的 session** | 给每个当前活跃的 session 单独设**目标**与**预算** |
 | **窗口** | 在所有桌面显示 · 点击穿透 · 界面语言 · 把宠物放回右下角 |
 | **重置与卸载** | 换一只新宠物 · 删除全部本地数据 · 把 adapter hooks 从你的 agent 配置里移除 |
@@ -265,6 +267,21 @@ npm run adapter:uninstall -- --purge-data  # 连 .vibepaws 目录一起删（先
 ```
 
 它刻意留了两样东西不动，并且在运行时说出来：你原来的配置仍在旁边的 `*.vibepaws.bak` 里；`~/.codex/config.toml` 的项目信任条目不碰 —— 没有 TOML 解析器就去改写别人的 TOML，是把「清理残留」变成「吃掉配置」。
+
+### agent 没打招呼就没了
+
+`kill -9`、崩溃、直接关掉终端窗口、合上笔记本 —— 这些情况都不会发出任何「结束了」的事件。没有办法察觉的话，一个已经不存在的 session 会永远显示成「在跑」；而如果它恰好是**卡在权限询问上**死掉的，宠物就会为一个你永远回答不了的会话一直红着。
+
+Core 每 60 秒扫一轮，启动时先扫一次 —— 上一次 Core 退出时还留着「在跑」的那些 session，恰恰是最可能的僵尸。两条出路：
+
+| | 怎么发现的 | 需要多久 |
+| --- | --- | --- |
+| **进程没了** | adapter 上报 agent 的进程号，Core 去看那个进程还在不在 | 一个 sweep 周期 —— 是秒，不是分钟 |
+| **没声了** | 超过你设的时长完全没有任何事件（设置 → 闲置 session，默认 15 分钟） | 就是那个时长 |
+
+两种情况都**不发 EXP** —— 崩溃不是胜利，奖励它等于把成长回路教反了 —— 宠物也不会播庆祝动画，并且这个 session 还挂在屏幕上的气泡会一起撤掉。浮层里它们显示成一个空心圆点，写着「进程没了」或「没声了」，让你能把「它干完了」和「它死了」分开。
+
+进程判定是刻意保守的：一个进程号只有在**同一个**号码出现在两条不同事件上之后才会被采信。hook 是 agent 起的子进程，所以它的父进程通常就是 agent 本身 —— 但万一中间夹进了一层转瞬即逝的包装 shell，那个号码一分钟后看起来就是「已死」，于是 Vibepaws 会去杀一个还在干活的 session。真正的 agent 进程整个会话只有一个号码，包装 shell 每次都是新的。完全没有可信号码时（通用 JSONL bridge、或者这个功能上线之前的老库），就只靠静默超时那一条。
 
 ### 静音是可见状态，不是静默开关
 
@@ -355,6 +372,8 @@ session_exp = capped_token_exp
 2. **Core 落库前** —— 按 schema 再丢一次未知字段。原始 hook JSON 永不写入数据库。
 
 具体意味着：气泡绝不显示原始 prompt、源代码、secret path 或文件内容。`safe_summary` 用的是固定措辞（`"需要工具权限"`），不是 agent 的输出。这一条由测试保证 —— 见 `src/core/privacy.test.ts`。
+
+白名单里有一个字段值得单独点名，因为它是新加的：agent 的**进程号**。它是一个本机整数，只用来回答「那个进程还活着吗」（见 [agent 没打招呼就没了](#agent-没打招呼就没了)），永远不出 `127.0.0.1`，也没法还原成你敲过的任何东西。
 
 想全部删掉，用**设置 → 重置与卸载**（见[重置、删除、卸载](#重置删除卸载)）—— 它在库里就地清空并压缩文件，而在 Core 还开着的时候删目录做不到这一点。没有应用时，`npm run adapter:uninstall -- --purge-data` 在命令行里做同一件事。一切都在 `.vibepaws/`：数据库、你的宠物、它的 EXP 历史和 API token。
 

@@ -288,3 +288,79 @@ test("HTTP：卸载预览是只读的（dry_run 不需要 confirm，也不写任
     await server.close();
   }
 });
+
+/* ---------------- 僵尸 session 回收（G10） ---------------- */
+
+/** 把 session 的最后活动时间推回去 —— 模拟「agent 从这一刻起再没说过话」 */
+function silenceFor(server: VibepawsServer, minutes: number): void {
+  const at = new Date(Date.now() - minutes * 60_000).toISOString();
+  server.db
+    .prepare(
+      `UPDATE sessions SET last_event_at=?,
+         needs_input_since=CASE WHEN needs_input_since IS NULL THEN NULL ELSE ? END`,
+    )
+    .run(at, at);
+}
+
+test("僵尸回收把宠物从「需要你」上松开（G10 叠加 G02 才是最坏的那种卡死）", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+  assert.equal(server.stateSnapshot().pet.state, "needs-you");
+
+  // agent 崩在了权限弹窗上：SessionEnd 永远不会来，宠物却一直红着
+  silenceFor(server, 16);
+  const reclaimed = server.sweepZombies();
+  assert.equal(reclaimed.length, 1);
+  assert.equal(reclaimed[0]!.outcome, "timeout");
+  assert.equal(server.stateSnapshot().pet.state, "idle", "回收之后宠物必须松开");
+  assert.deepEqual(server.stateSnapshot().needs_you, []);
+});
+
+test("回收不结算 EXP：崩掉的会话不发 outcome bonus", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  const before = server.exp.getPetSnapshot().exp;
+  silenceFor(server, 16);
+  server.sweepZombies();
+  assert.equal(server.exp.getPetSnapshot().exp, before, "崩溃不该被结算成一次成功的收工");
+});
+
+test("Core 起来时先扫一遍：上次退出时留下的活跃 session 不该变成幻影", async () => {
+  const server = makeServer();
+  server.port = 0;
+  const stale = new Date(Date.now() - 3 * 3_600_000).toISOString();
+  server.db
+    .prepare(
+      `INSERT INTO sessions(agent, agent_session_id, project_id, title, is_active, last_event_at, started_at)
+       VALUES('claude_code','ghost','/p/app','app',1,?,?)`,
+    )
+    .run(stale, stale);
+  await server.start();
+  try {
+    const row = server.db.prepare("SELECT is_active, outcome FROM sessions WHERE agent_session_id='ghost'").get() as {
+      is_active: number;
+      outcome: string;
+    };
+    assert.equal(row.is_active, 0);
+    assert.equal(row.outcome, "timeout");
+    assert.equal(server.stateSnapshot().pet.state, "idle", "打开 App 的第一屏不该有幻影会话在「工作」");
+  } finally {
+    await server.close();
+  }
+});
+
+test("改静默阈值当场生效，而不是等下一轮 sweep", async () => {
+  await withServer(async (server, base) => {
+    server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+    silenceFor(server, 3);
+    assert.equal(server.stateSnapshot().sessions[0]!.is_active, true, "默认 15 分钟阈值下它还活着");
+
+    const r = await post(base, "/api/settings", server.token, { zombie_timeout_min: 2 });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { settings: { zombie_timeout_min: number }; changed: string[] };
+    assert.equal(body.settings.zombie_timeout_min, 2);
+    assert.ok(body.changed.includes("zombie_timeout_min"));
+    assert.equal(server.stateSnapshot().sessions[0]!.is_active, false);
+  });
+});

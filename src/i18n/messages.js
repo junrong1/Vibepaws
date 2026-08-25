@@ -82,6 +82,10 @@ export const MESSAGES = {
     "ui.toast.copied": "Copied: {cmd}",
     "ui.toast.command": "Copy this: {cmd}",
     "ui.session.tooltip": "{project} · last activity {time}",
+    // 僵尸回收的两种归因（G10）。措辞要让用户知道下一步：进程没了 → 去看发生了什么；
+    // 只是没声了 → 大概是你走开了，resume 就行。
+    "ui.session.orphaned": "process gone",
+    "ui.session.timeout": "went quiet",
 
     // ---- EXP 明细表 ----
     "ui.exp.col.category": "Category",
@@ -148,6 +152,12 @@ export const MESSAGES = {
     "settings.cap.label": "Daily EXP cap",
     "settings.cap.unit": "EXP / day",
     "settings.cap.hint": "How much EXP tokens can earn per day — keeps one long session from farming levels.",
+
+    "settings.section.cleanup": "Idle sessions",
+    "settings.zombie.label": "Give up on a silent session after",
+    "settings.zombie.unit": "minutes",
+    "settings.zombie.hint":
+      "A crashed agent never says goodbye, so a session that goes quiet this long is closed out — no EXP, no celebration. If the agent's process is gone, that's detected in seconds and this wait doesn't apply.",
 
     "settings.section.sessions": "Running sessions",
     "settings.sessions.hint":
@@ -311,6 +321,8 @@ export const MESSAGES = {
     "ui.toast.copied": "已复制：{cmd}",
     "ui.toast.command": "手动复制：{cmd}",
     "ui.session.tooltip": "{project} · 最后活动 {time}",
+    "ui.session.orphaned": "进程没了",
+    "ui.session.timeout": "没声了",
 
     // ---- EXP 明细表 ----
     "ui.exp.col.category": "类别",
@@ -377,6 +389,12 @@ export const MESSAGES = {
     "settings.cap.label": "每日 EXP 上限",
     "settings.cap.unit": "EXP / 天",
     "settings.cap.hint": "token 每天最多换多少 EXP —— 免得一个长会话把等级刷出来。",
+
+    "settings.section.cleanup": "闲置 session",
+    "settings.zombie.label": "静默多久算它结束了",
+    "settings.zombie.unit": "分钟",
+    "settings.zombie.hint":
+      "崩掉的 agent 不会跟你道别，所以静默超过这个时长的 session 会被收掉 —— 不发 EXP，也不庆祝。如果 agent 进程已经没了，秒级就能发现，不用等这个时长。",
 
     "settings.section.sessions": "在跑的 session",
     "settings.sessions.hint": "填了目标能拿 1.1× EXP，漂移判定也才有基准。这里的预算会覆盖上面的默认值。",

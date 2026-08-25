@@ -46,7 +46,7 @@ And it never sees your code. Prompts, diffs, file paths, and tool inputs are dro
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · crashed-session cleanup · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
 | ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
@@ -97,6 +97,7 @@ npm run sim -- --scenario frequent_decisions  # repeated "needs you" → bubbles
 npm run sim -- --scenario context_overload    # context 88% → 96% → warnings + EXP penalty
 npm run sim -- --scenario correction_loop     # same file edited over and over → correction count
 npm run sim -- --scenario multi_session       # 3 parallel sessions → aggregated state + carousel
+npm run sim -- --scenario crashed_session     # agent dies mid-question → reclaimed within a minute
 ```
 
 If the pet reacts to `normal`, your install is good. Now connect a real agent.
@@ -227,6 +228,7 @@ Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal wi
 | --- | --- |
 | **Pet** | Name it. Empty falls back to the species name. |
 | **Budget & warnings** | Default token budget (in k tokens; `0` turns milestones off) · context warning thresholds (off / early / default / late) · daily EXP cap |
+| **Idle sessions** | How long a session may go silent before Vibepaws closes it out (default 15 minutes) — see [When an agent dies](#when-an-agent-dies-without-saying-so) |
 | **Running sessions** | Per-session **goal** and **budget** for every agent session that's currently live |
 | **Window** | Show on all Spaces · click-through · language · snap the pet back to the bottom-right |
 | **Reset & uninstall** | Start over with a new pet · delete all local data · remove the adapter hooks from your agent's config |
@@ -265,6 +267,21 @@ npm run adapter:uninstall -- --purge-data  # also delete the .vibepaws directori
 ```
 
 It backs off from two things on purpose, and says so when it runs: your original config stays in the `*.vibepaws.bak` file next to it, and the project-trust entry in `~/.codex/config.toml` is left alone — rewriting someone's TOML without a TOML parser is how a cleanup turns into an eaten config.
+
+### When an agent dies without saying so
+
+`kill -9`, a crash, closing the terminal window, shutting the laptop — none of these send a goodbye event. Without a way to notice, a session that no longer exists stays "running" forever, and if it happened to die while asking you a permission question, the pet stays pinned on **needs-you** for a session you can never answer.
+
+Core sweeps for that every 60 seconds, and once at startup, because the sessions left running by the previous Core are the likeliest zombies of all. Two ways out:
+
+| | How it's detected | How long it takes |
+| --- | --- | --- |
+| **process gone** | Adapters report the agent's process id; Core checks whether that process still exists | One sweep — seconds, not minutes |
+| **went quiet** | No events at all for longer than your threshold (Settings → Idle sessions, default 15 minutes) | The threshold |
+
+Either way the session closes with **no EXP** — a crash is not a win, and rewarding one would teach the growth loop exactly the wrong lesson — the pet doesn't play its celebration animation, and any bubble still on screen for that session goes away. In the flyout these sessions show a hollow dot and say *process gone* or *went quiet*, so you can tell "it finished" from "it died".
+
+The process check is deliberately careful: a process id is only trusted after the **same** id shows up on two separate events. A hook runs as a child of the agent, so its parent is normally the agent itself — but if a short-lived wrapper shell ends up in between, that id would look dead a minute later and Vibepaws would kill a session that's still working. A real agent process keeps one id for the whole session; a wrapper gets a new one every time. When there's no id to trust — the generic JSONL bridge, or a database from before this shipped — the silent timeout handles it alone.
 
 ### Mute is a visible state, not a silent switch
 
@@ -355,6 +372,8 @@ Inside your machine, there are two independent gates:
 2. **At Core, before persistence** — unknown fields are dropped again by schema. Raw hook JSON is never written to the database.
 
 What that means concretely: bubbles never show raw prompts, source code, secret paths, or file contents. `safe_summary` uses fixed wording (`"Tool permission needed"`), not agent output. This is enforced by tests — see `src/core/privacy.test.ts`.
+
+One field on the allowlist is worth naming because it's new: the agent's **process id**, a local integer used only to answer "is that process still alive?" (see [When an agent dies](#when-an-agent-dies-without-saying-so)). It never leaves `127.0.0.1`, and it can't be turned back into anything you typed.
 
 To delete everything, use **Settings → Reset & uninstall** (see [Reset, delete, uninstall](#reset-delete-uninstall)) — it wipes the database in place and compacts the file, which deleting the directory under a running Core does not do. Without the app, `npm run adapter:uninstall -- --purge-data` does the same from the shell. Everything lives in `.vibepaws/`: the database, your pet, its EXP history, and the API token.
 
