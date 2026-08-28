@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { t as translate, detectNodeLocale } from "../i18n/messages.js";
 
-export type UninstallAgent = "claude_code" | "codex" | "pi";
+export type UninstallAgent = "claude_code" | "codex" | "pi" | "dsh";
 export type UninstallScope = "project" | "global";
 
 /** 我们留在用户配置旁边的备份后缀（install.ts 的 backup()） */
@@ -132,6 +132,13 @@ export function targetPaths(opts: UninstallOptions = {}): TargetPath[] {
     // 迁移残留：0.1.0 之前 pi 装的是 skill，install.ts 现在顺带删，卸载也要覆盖
     { agent: "pi", scope: "project", kind: "dir", file: join(repoRoot, ".pi", "skills", "vibepaws") },
     { agent: "pi", scope: "global", kind: "dir", file: join(home, ".pi", "skills", "vibepaws") },
+    // dsh：自包含 Cordis 插件（.cjs，install 转译产物）+ 旧版 ESM 残留（.ts）+ 指向它的 patch
+    { agent: "dsh", scope: "project", kind: "file", file: join(repoRoot, ".dsh", "extensions", "vibepaws.cjs") },
+    { agent: "dsh", scope: "project", kind: "file", file: join(repoRoot, ".dsh", "extensions", "vibepaws.ts") },
+    { agent: "dsh", scope: "project", kind: "file", file: join(repoRoot, ".dsh", "vibepaws.cordis.yml") },
+    { agent: "dsh", scope: "global", kind: "file", file: join(home, ".dsh", "extensions", "vibepaws.cjs") },
+    { agent: "dsh", scope: "global", kind: "file", file: join(home, ".dsh", "extensions", "vibepaws.ts") },
+    { agent: "dsh", scope: "global", kind: "file", file: join(home, ".dsh", "vibepaws.cordis.yml") },
   ];
 }
 
@@ -364,7 +371,7 @@ const LOCALE = detectNodeLocale();
 const t = (key: string, params?: Record<string, string | number>): string => translate(LOCALE, key, params);
 
 function agentLabel(agent: UninstallAgent): string {
-  return agent === "claude_code" ? "Claude Code" : agent === "codex" ? "Codex" : "pi";
+  return agent === "claude_code" ? "Claude Code" : agent === "codex" ? "Codex" : agent === "pi" ? "pi" : "DeepSeek Harness";
 }
 
 /** 一行说清一个位置发生了什么（CLI 与设置窗口的措辞刻意保持一致） */
@@ -403,7 +410,7 @@ async function main(): Promise<void> {
   const dry = has("dry-run");
   const raw = arg("agent") ?? "all";
   const agents: UninstallAgent[] | undefined =
-    raw === "all" ? undefined : (raw.split(",").filter((a) => a === "claude_code" || a === "codex" || a === "pi") as UninstallAgent[]);
+    raw === "all" ? undefined : (raw.split(",").filter((a) => a === "claude_code" || a === "codex" || a === "pi" || a === "dsh") as UninstallAgent[]);
   if (agents && agents.length === 0) {
     console.error(t("cli.unknownAgent", { agent: raw }));
     process.exit(1);

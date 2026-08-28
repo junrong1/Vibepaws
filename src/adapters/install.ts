@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { claudeHooksConfig, claudeStatusLineConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
 import { isVibepawsEntry } from "./uninstall.ts";
 import { deliver } from "./hook_agent.ts";
+import { transpileDshPlugin } from "./dsh_compile.ts";
 import { t as translate, detectNodeLocale } from "../i18n/messages.js";
 
 /** 安装向导是 onboarding 的第一屏，跟着系统语言走（issue #3）；VIBEPAWS_LOCALE 可覆盖。 */
@@ -28,7 +29,7 @@ function has(name: string): boolean {
 }
 
 const REPO = process.cwd();
-type InstallAgent = "claude_code" | "codex" | "pi";
+type InstallAgent = "claude_code" | "codex" | "pi" | "dsh";
 const AGENT = (arg("agent") ?? "claude_code") as InstallAgent;
 const DRY = has("dry-run");
 const GLOBAL = has("global");
@@ -192,6 +193,35 @@ function installPi(): void {
   console.log(t("cli.pi.note", { repo: REPO }));
 }
 
+/** dsh 安装：把 src/adapters/dsh_plugin.ts 转译成 CommonJS 写到 dsh 插件目录，并写一份 cordis patch。
+ * dsh 用 require()/internal.import 加载扩展，ESM 的 .ts 会触发 require(esm) 环
+ * （ERR_REQUIRE_CYCLE_MODULE）；转译成 .cjs 后 require() 即普通 CJS 加载，绕开该环。
+ * 项目级：<repo>/.dsh/extensions/vibepaws.cjs + <repo>/.dsh/vibepaws.cordis.yml
+ * 全局：  ~/.dsh/extensions/vibepaws.cjs + ~/.dsh/vibepaws.cordis.yml（所有项目生效）
+ * patch 里是绝对路径（dsh 要求绝对路径），用户用 `dsh web --patch <patch>` 加载。 */
+function installDsh(): void {
+  const dir = GLOBAL ? join(homedir(), ".dsh", "extensions") : join(REPO, ".dsh", "extensions");
+  const file = join(dir, "vibepaws.cjs");
+  const legacyFile = join(dir, "vibepaws.ts");
+  const patchFile = GLOBAL ? join(homedir(), ".dsh", "vibepaws.cordis.yml") : join(REPO, ".dsh", "vibepaws.cordis.yml");
+  const source = join(REPO, "src", "adapters", "dsh_plugin.ts");
+  if (DRY) {
+    console.log(t("cli.dsh.dryrun", { file }));
+    return;
+  }
+  mkdirSync(dir, { recursive: true });
+  backup(file);
+  const cjs = transpileDshPlugin(readFileSync(source, "utf-8"));
+  writeFileSync(file, cjs);
+  // 迁移清理：旧版装的是 ESM 的 vibepaws.ts，会触发 require(esm) 环，删掉避免混淆。
+  if (existsSync(legacyFile)) rmSync(legacyFile, { force: true });
+  const patch = `- insert:\n  - id: vibepaws\n    name: '${file.replace(/'/g, "''")}'\n`;
+  backup(patchFile);
+  writeFileSync(patchFile, patch);
+  console.log(t("cli.dsh.written", { file }));
+  console.log(t("cli.dsh.note", { patch: patchFile }));
+}
+
 async function selfCheck(): Promise<void> {
   console.log(t("cli.selfcheck.start"));
   // 自检发 adapter_status 而不是假的 session_started：既证明 Core 收得到，
@@ -217,6 +247,9 @@ async function main(): Promise<void> {
   } else if (AGENT === "pi") {
     installPi();
     console.log(t("cli.capabilities", { list: capabilities("pi").join(", ") }));
+  } else if (AGENT === "dsh") {
+    installDsh();
+    console.log(t("cli.capabilities", { list: capabilities("dsh").join(", ") }));
   } else {
     console.error(t("cli.unknownAgent", { agent: AGENT }));
     process.exit(1);
