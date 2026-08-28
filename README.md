@@ -44,11 +44,11 @@ It also can't spend your tokens: there is no API key and no model client in it, 
 
 ## Status
 
-**MVP alpha 0.1** — the core loop works end to end on Claude Code, Codex, and pi-coding-agent. Honest state of things:
+**MVP alpha 0.1** — the core loop works end to end on Claude Code, Codex, pi-coding-agent, and DeepSeek Harness (dsh). Honest state of things:
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi adapters · generic JSONL bridge · event simulator · privacy allowlist |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist |
 | ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
@@ -122,6 +122,10 @@ npm run adapter:install -- --agent codex --global         # all projects    → 
 # pi-coding-agent — installed as a pi extension, not a hook config
 npm run adapter:install -- --agent pi                     # this repo only  → <repo>/.pi/extensions/vibepaws.ts
 npm run adapter:install -- --agent pi --global            # all projects    → ~/.pi/agent/extensions/vibepaws.ts
+
+# DeepSeek Harness (dsh) — installed as a Cordis plugin
+npm run adapter:install -- --agent dsh                    # this repo only  → <repo>/.dsh/extensions/vibepaws.cjs
+npm run adapter:install -- --agent dsh --global           # all projects    → ~/.dsh/extensions/vibepaws.cjs
 ```
 
 **Global or project — pick one.** Switching to `--global` automatically removes Vibepaws' project-level hooks from this repo, because running both means duplicate events: double EXP, double bubbles.
@@ -138,19 +142,21 @@ npm run adapter:install -- --agent pi --global            # all projects    → 
   node --experimental-strip-types src/adapters/pi_agent.ts --event=decision_required
   ```
 
+- **DeepSeek Harness** — dsh is Cordis-based, so the stable integration is a **Cordis plugin** (`src/adapters/dsh_plugin.ts`), the same tier as Claude/Codex hooks and the pi extension. The installer copies the plugin into dsh's plugin directory and writes a patch file; the plugin binds to dsh's lifecycle events (`agent/created`, `session/event`, …) and reports state deterministically. **Load it by booting dsh with the patch overlay** (`dsh web --patch <repo>/.dsh/vibepaws.cordis.yml`, or persist the insert in `~/.dsh/profiles/web/cordis.patch.yml`), then **restart dsh** — plugins load at boot. Errors are reported via `turn/end`, tokens via real `usage` counts, context via token-meter ÷ `contextWindow`. Full guide: [docs/dsh_integration.zh-CN.md](docs/dsh_integration.zh-CN.md).
+
 <details>
 <summary><strong>What each agent event maps to</strong></summary>
 
-| Vibepaws event | Claude Code | Codex | pi |
-| --- | --- | --- | --- |
-| `session_started` | `SessionStart` | `SessionStart` | `session_start` (startup/resume/fork/reload) |
-| `agent_working` | `UserPromptSubmit`, `PreToolUse` | `UserPromptSubmit`, `PreToolUse` | `before_agent_start`, `tool_execution_start` |
-| `decision_required` | `Stop`, `Notification` | `Stop` | `agent_settled` (agent is idle, waiting on you) |
-| `permission_required` | `PermissionRequest` | `PermissionRequest` | tool approval path |
-| `token_update` | **statusLine (live)**, `PostToolUse` | `SessionEnd` transcript extraction | `message_end` usage (**real tokens/cost**) |
-| `context_update` | statusLine `used_percentage`, `PreCompact`/`PostCompact` | `PreCompact`/`PostCompact` | `session_compact` |
-| `session_error` | `PostToolUseFailure`, `PostToolUse` (error) | `PostToolUse` (error) | `tool_execution_end` (isError) |
-| `session_finished` | `SessionEnd` | `SessionEnd` | `session_shutdown` |
+| Vibepaws event | Claude Code | Codex | pi | dsh |
+| --- | --- | --- | --- | --- |
+| `session_started` | `SessionStart` | `SessionStart` | `session_start` (startup/resume/fork/reload) | `agent/created` |
+| `agent_working` | `UserPromptSubmit`, `PreToolUse` | `UserPromptSubmit`, `PreToolUse` | `before_agent_start`, `tool_execution_start` | `turn/start`, `user/message`, `tool/call` |
+| `decision_required` | `Stop`, `Notification` | `Stop` | `agent_settled` (agent is idle, waiting on you) | `turn/end` (blocked) |
+| `permission_required` | `PermissionRequest` | `PermissionRequest` | tool approval path | `approval/asked` |
+| `token_update` | **statusLine (live)**, `PostToolUse` | `SessionEnd` transcript extraction | `message_end` usage (**real tokens/cost**) | `assistant/message` usage (**real tokens**) |
+| `context_update` | statusLine `used_percentage`, `PreCompact`/`PostCompact` | `PreCompact`/`PostCompact` | `session_compact` | token-meter ÷ `contextWindow` |
+| `session_error` | `PostToolUseFailure`, `PostToolUse` (error) | `PostToolUse` (error) | `tool_execution_end` (isError) | `turn/end` (error), `tool/result` (error) |
+| `session_finished` | `SessionEnd` | `SessionEnd` | `session_shutdown` | `agent/disposed` |
 
 `Stop` is the important one on Claude Code: it's the only immediate "your turn" signal. `SessionEnd` only fires when the session actually exits, and `Notification` is either a permission popup or a 60-second idle timeout.
 
@@ -166,6 +172,7 @@ Adapters never block your agent and never lose events. When Core is unreachable 
 
 - Claude/Codex hooks → `.vibepaws/events/fallback.jsonl` (repo root)
 - pi extension → `~/.vibepaws/events/pi_*.jsonl` (user-level — the plugin is self-contained and doesn't know your repo path)
+- dsh plugin → `~/.vibepaws/events/dsh_*.jsonl` (user-level, same reason)
 
 Then backfill:
 
@@ -173,7 +180,7 @@ Then backfill:
 npm run bridge   # watches both directories, normalizes, forwards to Core
 ```
 
-The same bridge is the **generic integration path** for any tool that isn't Claude/Codex/pi: write normalized JSON lines into `.vibepaws/events/`, and they become pet state. The envelope:
+The same bridge is the **generic integration path** for any tool that isn't Claude/Codex/pi/dsh: write normalized JSON lines into `.vibepaws/events/`, and they become pet state. The envelope:
 
 ```json
 {

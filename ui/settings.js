@@ -312,7 +312,7 @@ async function patchSettings(patch, el) {
 
 /* ---------------- 在跑的 session（G17） ---------------- */
 function shortAgent(agent) {
-  return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : agent === "pi" ? "Pi" : String(agent ?? "?");
+  return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : agent === "pi" ? "Pi" : agent === "dsh" ? "DeepSeek" : String(agent ?? "?");
 }
 
 function renderSessions(sessions) {

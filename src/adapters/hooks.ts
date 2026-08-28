@@ -141,9 +141,27 @@ export function piCapabilities(): string[] {
   ];
 }
 
+/** dsh 能力声明：对齐 src/adapters/dsh_plugin.ts 插件真实能发的事件
+ * （DeepSeek Harness：token 来自 assistant/message 的 usage，context 来自 compaction 与 token-meter，
+ *  approval/asked → permission_required，turn/end blocked → decision_required，subagent/descriptor → subagent_started） */
+export function dshCapabilities(): string[] {
+  return [
+    "session_started",
+    "agent_working",
+    "decision_required",
+    "permission_required",
+    "token_update",
+    "context_update",
+    "session_finished",
+    "session_error",
+    "subagent_started",
+  ];
+}
+
 /** 能力声明（adapter_status 用） */
 export function capabilities(agent: AgentId): string[] {
   if (agent === "pi") return piCapabilities();
+  if (agent === "dsh") return dshCapabilities();
   const base = [
     "session_started",
     "agent_working",

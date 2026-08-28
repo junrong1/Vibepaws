@@ -30,7 +30,7 @@ const PAYLOAD_WHITELIST: Record<keyof EventPayload, true> = {
 };
 
 const SEVERITIES = new Set(["low", "medium", "high"]);
-const AGENTS = new Set(["claude_code", "codex", "generic", "pi"]);
+const AGENTS = new Set(["claude_code", "codex", "generic", "pi", "dsh"]);
 
 /** 白名单过滤 payload：未知字段一律丢弃（第二道隐私闸） */
 export function sanitizePayload(input: unknown): EventPayload {

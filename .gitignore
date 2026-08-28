@@ -2,9 +2,13 @@ node_modules/
 .vibepaws/
 .claude/
 .codex/
+.dsh/
 .pi/
 ui/node_modules/
 dist/
 .DS_Store
 output/
 __pycache__/
+review/
+ui/*/*
+ui/pets/index.json

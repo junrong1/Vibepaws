@@ -669,6 +669,7 @@ function resumeCommand(s) {
   const project = shellQuote(s.project_id ?? "");
   if (s.agent === "claude_code") return `cd ${project} && claude --resume ${s.session_id}`;
   if (s.agent === "codex") return `cd ${project} && codex resume ${s.session_id}`;
+  if (s.agent === "dsh") return `cd ${project} && dsh web`;
   return `cd ${project}`;
 }
 
@@ -989,7 +990,7 @@ function localizedOr(key, fallback) {
 
 /* ---------------- 工具 ---------------- */
 function shortAgent(a) {
-  return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : a === "pi" ? "Pi" : String(a ?? "?");
+  return a === "claude_code" ? "Claude" : a === "codex" ? "Codex" : a === "pi" ? "Pi" : a === "dsh" ? "DeepSeek" : String(a ?? "?");
 }
 function shortId(id) {
   return String(id ?? "").slice(0, 10) || "?";
