@@ -44,11 +44,11 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 ## 当前状态
 
-**MVP alpha 0.1** —— 核心循环在 Claude Code、Codex、pi-coding-agent 上已经端到端跑通。实话实说：
+**MVP alpha 0.1** —— 核心循环在 Claude Code、Codex、pi-coding-agent、DeepSeek Harness (dsh) 上已经端到端跑通。实话实说：
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
+| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
 | ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
@@ -122,6 +122,10 @@ npm run adapter:install -- --agent codex --global         # 所有项目 → ~/.
 # pi-coding-agent —— 装成 pi 插件，不是 hook 配置
 npm run adapter:install -- --agent pi                     # 仅本仓库 → <repo>/.pi/extensions/vibepaws.ts
 npm run adapter:install -- --agent pi --global            # 所有项目 → ~/.pi/agent/extensions/vibepaws.ts
+
+# DeepSeek Harness (dsh) —— 装成 Cordis 插件
+npm run adapter:install -- --agent dsh                    # 仅本仓库 → <repo>/.dsh/extensions/vibepaws.cjs
+npm run adapter:install -- --agent dsh --global           # 所有项目 → ~/.dsh/extensions/vibepaws.cjs
 ```
 
 **全局与项目级二选一。** 切到 `--global` 会自动移除本仓库项目级配置里 Vibepaws 的 hooks —— 两边都装意味着事件重复：重复 EXP、重复气泡。
@@ -138,19 +142,21 @@ npm run adapter:install -- --agent pi --global            # 所有项目 → ~/.
   node --experimental-strip-types src/adapters/pi_agent.ts --event=decision_required
   ```
 
+- **DeepSeek Harness** —— dsh 是 Cordis 架构，稳定的集成方式是 **Cordis 插件**（`src/adapters/dsh_plugin.ts`），和 Claude/Codex 的 hooks、pi 的插件同一层级。安装器把插件复制进 dsh 的插件目录并写一份 patch 文件；插件挂到 dsh 生命周期事件（`agent/created`、`session/event` 等）上确定性上报状态。**加载方式是带着 patch 启动 dsh**（`dsh web --patch <repo>/.dsh/vibepaws.cordis.yml`，或把 insert 持久化进 `~/.dsh/profiles/web/cordis.patch.yml`），然后**重启 dsh** —— 插件只在启动时加载。错误走 `turn/end` 上报，token 用真实的 `usage` 计数，context 用 token-meter ÷ `contextWindow`。完整指南：[docs/dsh_integration.zh-CN.md](docs/dsh_integration.zh-CN.md)。
+
 <details>
 <summary><strong>各 agent 事件映射</strong></summary>
 
-| Vibepaws 事件 | Claude Code | Codex | pi |
-| --- | --- | --- | --- |
-| `session_started` | `SessionStart` | `SessionStart` | `session_start`（startup/resume/fork/reload） |
-| `agent_working` | `UserPromptSubmit`、`PreToolUse` | `UserPromptSubmit`、`PreToolUse` | `before_agent_start`、`tool_execution_start` |
-| `decision_required` | `Stop`、`Notification` | `Stop` | `agent_settled`（agent 忙完在等你） |
-| `permission_required` | `PermissionRequest` | `PermissionRequest` | 工具批准路径 |
-| `token_update` | **statusLine（实时）**、`PostToolUse` | `SessionEnd` transcript 提取 | `message_end` usage（**真实 token/cost**） |
-| `context_update` | statusLine `used_percentage`、`PreCompact`/`PostCompact` | `PreCompact`/`PostCompact` | `session_compact` |
-| `session_error` | `PostToolUseFailure`、`PostToolUse`（error） | `PostToolUse`（error） | `tool_execution_end`（isError） |
-| `session_finished` | `SessionEnd` | `SessionEnd` | `session_shutdown` |
+| Vibepaws 事件 | Claude Code | Codex | pi | dsh |
+| --- | --- | --- | --- | --- |
+| `session_started` | `SessionStart` | `SessionStart` | `session_start`（startup/resume/fork/reload） | `agent/created` |
+| `agent_working` | `UserPromptSubmit`、`PreToolUse` | `UserPromptSubmit`、`PreToolUse` | `before_agent_start`、`tool_execution_start` | `turn/start`、`user/message`、`tool/call` |
+| `decision_required` | `Stop`、`Notification` | `Stop` | `agent_settled`（agent 忙完在等你） | `turn/end`（blocked） |
+| `permission_required` | `PermissionRequest` | `PermissionRequest` | 工具批准路径 | `approval/asked` |
+| `token_update` | **statusLine（实时）**、`PostToolUse` | `SessionEnd` transcript 提取 | `message_end` usage（**真实 token/cost**） | `assistant/message` usage（**真实 token**） |
+| `context_update` | statusLine `used_percentage`、`PreCompact`/`PostCompact` | `PreCompact`/`PostCompact` | `session_compact` | token-meter ÷ `contextWindow` |
+| `session_error` | `PostToolUseFailure`、`PostToolUse`（error） | `PostToolUse`（error） | `tool_execution_end`（isError） | `turn/end`（error）、`tool/result`（error） |
+| `session_finished` | `SessionEnd` | `SessionEnd` | `session_shutdown` | `agent/disposed` |
 
 Claude Code 里 `Stop` 是最关键的一条：它才是即时的「该你了」信号。`SessionEnd` 只在会话真正退出时才发，而 `Notification` 要么是权限弹窗，要么得等 60s 空闲。
 
@@ -166,6 +172,7 @@ adapter 永远不会阻塞你的 agent，也不会丢事件。Core 连不上时�
 
 - Claude/Codex hooks → `.vibepaws/events/fallback.jsonl`（仓库根）
 - pi 插件 → `~/.vibepaws/events/pi_*.jsonl`（用户级 —— 插件自包含，不知道你的仓库路径也能写）
+- dsh 插件 → `~/.vibepaws/events/dsh_*.jsonl`（用户级，同理）
 
 之后补收：
 
@@ -173,7 +180,7 @@ adapter 永远不会阻塞你的 agent，也不会丢事件。Core 连不上时�
 npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 ```
 
-这个 bridge 同时也是**通用集成路径**：任何不是 Claude/Codex/pi 的工具，只要把归一化后的 JSON 行写进 `.vibepaws/events/`，就能变成宠物状态。信封格式：
+这个 bridge 同时也是**通用集成路径**：任何不是 Claude/Codex/pi/dsh 的工具，只要把归一化后的 JSON 行写进 `.vibepaws/events/`，就能变成宠物状态。信封格式：
 
 ```json
 {

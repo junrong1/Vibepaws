@@ -3,10 +3,10 @@
  * 隐私：payload 仅允许白名单字段（第一道闸在 adapter，第二道闸在 ingress）。
  */
 
-export type AgentId = "claude_code" | "codex" | "generic" | "pi";
+export type AgentId = "claude_code" | "codex" | "generic" | "pi" | "dsh";
 export type Severity = "low" | "medium" | "high";
 
-export const AGENTS: AgentId[] = ["claude_code", "codex", "generic", "pi"];
+export const AGENTS: AgentId[] = ["claude_code", "codex", "generic", "pi", "dsh"];
 
 export type EventType =
   | "session_started"

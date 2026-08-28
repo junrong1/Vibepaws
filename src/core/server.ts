@@ -470,7 +470,7 @@ export class VibepawsServer {
       }
       let list: UninstallAgent[] | undefined;
       if (Array.isArray(agents)) {
-        list = agents.filter((a): a is UninstallAgent => a === "claude_code" || a === "codex" || a === "pi");
+        list = agents.filter((a): a is UninstallAgent => a === "claude_code" || a === "codex" || a === "pi" || a === "dsh");
         if (list.length === 0) {
           sendJson(res, 400, { error: "unknown agents" });
           return;
