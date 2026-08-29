@@ -195,7 +195,7 @@ function reclaim(
   db.prepare(
     `UPDATE sessions
         SET is_active = 0, outcome = ?, finished_at = ?,
-            needs_input_since = NULL, needs_input_kind = NULL
+            needs_input_since = NULL, needs_input_kind = NULL, ready_since = NULL
       WHERE agent = ? AND agent_session_id = ?`,
   ).run(outcome, at, agent, sessionId);
   db.prepare(

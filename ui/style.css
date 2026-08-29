@@ -253,6 +253,7 @@ body.dragging #pet { filter: none; }
 .s-state.working { background: var(--accent); }
 .s-state.needs-you { background: var(--danger); animation: pulse 1s infinite; }
 .s-state.warning { background: var(--warn); }
+.s-state.ready { background: #3fb950; }
 .s-state.finished { background: #57606a; }
 /* 被回收的僵尸：空心圈 —— 它不是「打勾收工」，是没声了（G10） */
 .s-state.lost { background: transparent; border: 1px solid #6e7681; }

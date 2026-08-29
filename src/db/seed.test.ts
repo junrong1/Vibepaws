@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "./schema.ts";
-import { seedPetTypes, petTypeSeeds, spriteRoster, LEGACY_PET_TYPES } from "./seed.ts";
+import { seedPetTypes, petTypeSeeds, spriteRoster, mergePetSeeds, LEGACY_PET_TYPES, type PetTypeSeed } from "./seed.ts";
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
@@ -37,7 +37,9 @@ test("素材清单里的宠物都进了表，且 sprite_pack = slug", () => {
     // sprite_pack 以前存的是 "pixelcat" 这种指向不存在文件的值，谁也没读。
     // 现在它必须等于素材目录名 —— 这是表和 ui/pets/ 之间唯一的联系。
     assert.equal(row.sprite_pack, p.sprite_pack);
-    assert.equal(row.starter, 1, `${p.sprite_pack} 应该可抽`);
+    // starter 标记必须与清单一致：清单里显式 starter:false 的（本地专属素材，如 denia）
+    // 不该被强行要求可抽 —— 之前硬编码 === 1 会因本地多出的素材在本地测试失败。
+    assert.equal(row.starter, p.starter, `${p.sprite_pack} 的 starter 标记应与清单一致`);
   }
 });
 
@@ -57,7 +59,10 @@ test("starter 池恰好等于素材清单", () => {
   const db = makeDb();
   seedPetTypes(db);
   const starters = rows(db).filter((r) => r.starter === 1).map((r) => r.id);
-  assert.deepEqual(starters, spriteRoster().map((p) => p.id).sort((a, b) => a - b));
+  assert.deepEqual(
+    starters,
+    spriteRoster().filter((p) => p.starter === 1).map((p) => p.id).sort((a, b) => a - b),
+  );
 });
 
 test("重复 seed 幂等：不重复插入、不改变内容", () => {
@@ -82,8 +87,11 @@ test("老库也能拿到内容更新（这是 upsert 之前做不到的）", () 
   seedPetTypes(db);
 
   const after = rows(db);
-  assert.equal(after.filter((r) => r.starter === 1).length, spriteRoster().length,
-    "老库的 starter 池没有被更新");
+  assert.equal(
+    after.filter((r) => r.starter === 1).length,
+    spriteRoster().filter((p) => p.starter === 1).length,
+    "老库的 starter 池没有被更新",
+  );
   for (const legacy of LEGACY_PET_TYPES) {
     assert.equal(after.find((r) => r.id === legacy.id)?.starter, 0);
   }
@@ -92,4 +100,29 @@ test("老库也能拿到内容更新（这是 upsert 之前做不到的）", () 
 test("petTypeSeeds：id 不重复", () => {
   const ids = petTypeSeeds().map((p) => p.id);
   assert.equal(new Set(ids).size, ids.length, "pet_type id 撞了");
+});
+
+test("mergePetSeeds：仓库是兜底，本地覆盖按 id 追加", () => {
+  const base: PetTypeSeed[] = [
+    { id: 20, name: "A", rarity: "common", sprite_pack: "a", starter: 1, evolution_meta: [] },
+    { id: 21, name: "B", rarity: "uncommon", sprite_pack: "b", starter: 1, evolution_meta: [] },
+  ];
+  const override: PetTypeSeed[] = [
+    { id: 25, name: "Local", rarity: "rare", sprite_pack: "local", starter: 0, evolution_meta: [] },
+  ];
+  const merged = mergePetSeeds(base, override);
+  assert.deepEqual(merged.map((p) => p.id), [20, 21, 25]);
+});
+
+test("mergePetSeeds：同 id 本地优先覆盖（starter 标记也跟着本地走）", () => {
+  const base: PetTypeSeed[] = [
+    { id: 20, name: "Base", rarity: "common", sprite_pack: "base", starter: 1, evolution_meta: [] },
+  ];
+  const override: PetTypeSeed[] = [
+    { id: 20, name: "Local", rarity: "rare", sprite_pack: "local", starter: 0, evolution_meta: [] },
+  ];
+  const merged = mergePetSeeds(base, override);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]!.name, "Local");
+  assert.equal(merged[0]!.starter, 0);
 });

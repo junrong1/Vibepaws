@@ -158,12 +158,12 @@ export function applyExpression(grid, expr) {
 
 /** 宠物定义：形状参数 + 配色 + 状态→表情 */
 export const PETS = [
-  { id: 1, name: "Pixel Cat", kind: "cat", palette: PET_COLORS.cat, shape: { ears: "pointy", tail: "curly", spot: null }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
-  { id: 2, name: "Byte Pup", kind: "pup", palette: PET_COLORS.pup, shape: { ears: "round", tail: "straight", spot: null }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
-  { id: 3, name: "Git Raccoon", kind: "raccoon", palette: PET_COLORS.raccoon, shape: { ears: "pointy", tail: "curly", spot: "stripe" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
-  { id: 4, name: "Turbo Turtle", kind: "turtle", palette: PET_COLORS.turtle, shape: { ears: null, tail: null, spot: "shell" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
-  { id: 5, name: "Mono Fox", kind: "fox", palette: PET_COLORS.fox, shape: { ears: "pointy", tail: "curly", spot: null }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
-  { id: 6, name: "Shell Slug", kind: "slug", palette: PET_COLORS.slug, shape: { ears: null, tail: null, spot: "stripe" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed" } },
+  { id: 1, name: "Pixel Cat", kind: "cat", palette: PET_COLORS.cat, shape: { ears: "pointy", tail: "curly", spot: null }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed", ready: "normal" } },
+  { id: 2, name: "Byte Pup", kind: "pup", palette: PET_COLORS.pup, shape: { ears: "round", tail: "straight", spot: null }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed", ready: "normal" } },
+  { id: 3, name: "Git Raccoon", kind: "raccoon", palette: PET_COLORS.raccoon, shape: { ears: "pointy", tail: "curly", spot: "stripe" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed", ready: "normal" } },
+  { id: 4, name: "Turbo Turtle", kind: "turtle", palette: PET_COLORS.turtle, shape: { ears: null, tail: null, spot: "shell" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed", ready: "normal" } },
+  { id: 5, name: "Mono Fox", kind: "fox", palette: PET_COLORS.fox, shape: { ears: "pointy", tail: "curly", spot: null }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed", ready: "normal" } },
+  { id: 6, name: "Shell Slug", kind: "slug", palette: PET_COLORS.slug, shape: { ears: null, tail: null, spot: "stripe" }, stateExpr: { idle: "normal", working: "normal", "needs-you": "alert", warning: "angry", finished: "happy", "level-up": "star", tired: "closed", ready: "normal" } },
 ];
 
 /** 进化家族（DB seed 里的 pet_type 10/11/12），三阶各有配色 */

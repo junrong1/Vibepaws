@@ -16,6 +16,10 @@ import { fileURLToPath } from "node:url";
 /** 与渲染层共用的素材清单。定位方式对齐 src/ui/server.ts 的 I18N_FILE ——
  *  打包后 resources/src/db/ → resources/ui/ 同样成立（package.json 的 extraResources 已经带上 ui）。 */
 const SPRITE_INDEX = fileURLToPath(new URL("../../ui/pets/index.json", import.meta.url));
+/** 本地覆盖清单：与 index.json 同格式，按 id 覆盖/新增（本地专属素材，不入仓库）。
+ *  注意：移出仓库的本地专属宠物（如 denia）占用的 id 是「本地保留段」——
+ *  仓库里新增正式宠物时别再用这些 id，否则会和用户本地的 index.local.json 撞车。 */
+const LOCAL_INDEX = fileURLToPath(new URL("../../ui/pets/index.local.json", import.meta.url));
 
 export interface PetTypeSeed {
   id: number;
@@ -56,23 +60,41 @@ interface SpriteManifest {
   starter: boolean;
 }
 
-/** 读素材清单。读不到就返回空数组 —— 由 petTypeSeeds() 决定怎么退。 */
-export function spriteRoster(): PetTypeSeed[] {
-  let parsed: { pets?: SpriteManifest[] };
+/** 读一个素材清单文件，映射成 PetTypeSeed，读不到就返回空数组（不抛） */
+function readRoster(path: string): PetTypeSeed[] {
   try {
-    parsed = JSON.parse(readFileSync(SPRITE_INDEX, "utf8")) as { pets?: SpriteManifest[] };
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { pets?: SpriteManifest[] };
+    return (Array.isArray(parsed.pets) ? parsed.pets : []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      rarity: p.rarity,
+      sprite_pack: p.slug,
+      starter: p.starter ? 1 : 0,
+      evolution_meta: [],
+    }));
   } catch {
     return [];
   }
-  const pets = Array.isArray(parsed.pets) ? parsed.pets : [];
-  return pets.map((p) => ({
-    id: p.id,
-    name: p.name,
-    rarity: p.rarity,
-    sprite_pack: p.slug,
-    starter: p.starter ? 1 : 0,
-    evolution_meta: [],
-  }));
+}
+
+/**
+ * 按 id 合并两份素材清单：override 优先（同 id 覆盖，新 id 追加）。
+ * 顺序：base 原有顺序在前，override 里新出现的 id 追加到末尾（同 id 覆盖不改变位置）。
+ * 抽成纯函数是为了可单测 —— spriteRoster 只是读两个文件后调它。
+ */
+export function mergePetSeeds(base: PetTypeSeed[], override: PetTypeSeed[]): PetTypeSeed[] {
+  const byId = new Map<number, PetTypeSeed>();
+  for (const p of base) byId.set(p.id, p);
+  for (const p of override) byId.set(p.id, p);
+  return [...byId.values()];
+}
+
+/**
+ * 读素材清单（仓库 index.json 是兜底，本地 index.local.json 按 id 覆盖/新增）。
+ * 这样本地专属素材（如 denia）只影响本地，仓库始终干净。
+ */
+export function spriteRoster(): PetTypeSeed[] {
+  return mergePetSeeds(readRoster(SPRITE_INDEX), readRoster(LOCAL_INDEX));
 }
 
 /**

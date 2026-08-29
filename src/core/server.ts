@@ -699,6 +699,7 @@ export class VibepawsServer {
       needs_you: sessions.filter((s) => s.is_active && s.state === "needs-you"),
       warning: sessions.filter((s) => s.is_active && s.state === "warning"),
       working: sessions.filter((s) => s.is_active && s.state === "working"),
+      ready: sessions.filter((s) => s.is_active && s.state === "ready"),
       idle: sessions.filter((s) => s.is_active && s.state === "idle"),
     };
   }

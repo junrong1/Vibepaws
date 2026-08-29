@@ -153,6 +153,14 @@ test("回收时清掉「等你」标记：resume 回来不该带着三小时前�
   assert.equal(row(db).needs_input_kind, null);
 });
 
+test("回收时清掉 ready 标记：resume 回来不该带着旧一轮的待命复活", () => {
+  const db = makeDb();
+  seedSession(db, { idleMs: TIMEOUT_MS + 1000 });
+  db.prepare("UPDATE sessions SET ready_since = ?").run(new Date(NOW - 1000).toISOString());
+  reclaimZombies(db, { now: NOW, timeoutMs: TIMEOUT_MS });
+  assert.equal(row(db).ready_since, null);
+});
+
 test("回收顺带撤掉还挂着的气泡（orphan cleanup）", () => {
   const db = makeDb();
   seedSession(db, { idleMs: TIMEOUT_MS + 1000 });

@@ -12,6 +12,8 @@
 import { getProceduralPet } from "./procedural.js";
 
 const INDEX_URL = "/pets/index.json";
+/** 本地覆盖清单：与 index.json 同格式，按 id 覆盖/新增（本地专属素材，不入仓库） */
+const LOCAL_INDEX_URL = "/pets/index.local.json";
 
 /** id → manifest。null = 还没加载 / 加载失败（两种情况都走兜底） */
 let roster = null;
@@ -20,7 +22,8 @@ let rosterPromise = null;
 const sets = new Map();
 
 /**
- * 加载一次清单。失败**不抛**：素材层挂了不该让整个界面白屏，宠物退回程序生成就行。
+ * 加载一次清单（仓库 index.json 是兜底，本地 index.local.json 按 id 覆盖/新增）。
+ * 失败**不抛**：素材层挂了不该让整个界面白屏，宠物退回程序生成就行。
  */
 export function preload() {
   if (rosterPromise) return rosterPromise;
@@ -29,8 +32,18 @@ export function preload() {
       const r = await fetch(INDEX_URL, { cache: "no-store" });
       if (!r.ok) throw new Error(String(r.status));
       const data = await r.json();
-      const list = Array.isArray(data?.pets) ? data.pets : [];
-      roster = new Map(list.map((p) => [p.id, p]));
+      const byId = new Map((Array.isArray(data?.pets) ? data.pets : []).map((p) => [p.id, p]));
+      // 本地覆盖：不存在（404）就忽略，存在就按 id 覆盖/新增
+      try {
+        const local = await fetch(LOCAL_INDEX_URL, { cache: "no-store" });
+        if (local.ok) {
+          const localData = await local.json();
+          for (const p of Array.isArray(localData?.pets) ? localData.pets : []) byId.set(p.id, p);
+        }
+      } catch {
+        // 本地覆盖文件读失败：用仓库兜底即可
+      }
+      roster = byId;
     } catch {
       roster = null; // 全员兜底
     }

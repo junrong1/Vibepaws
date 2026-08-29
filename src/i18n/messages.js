@@ -230,9 +230,9 @@ export const MESSAGES = {
 
     // ---- 通知气泡 ----
     "notif.decision.title": "{agent} needs you",
-    "notif.decision.body": "Waiting for your decision",
-    "notif.decision.body_kind": "Waiting for your decision ({kind})",
     "notif.decision.body_question": "Waiting for your answer",
+    "notif.ready.title": "{agent} is ready",
+    "notif.ready.body": "Finished a turn — waiting for you",
     "notif.permission.title": "Permission request",
     "notif.permission.body": "{agent} wants to run {tool}",
     "notif.permission.body_unknown": "{agent} is waiting for approval",
@@ -483,9 +483,9 @@ export const MESSAGES = {
 
     // ---- 通知气泡 ----
     "notif.decision.title": "{agent} 需要你",
-    "notif.decision.body": "等待你的决定",
-    "notif.decision.body_kind": "等待你的决定（{kind}）",
     "notif.decision.body_question": "等待你的回答",
+    "notif.ready.title": "{agent} 待命",
+    "notif.ready.body": "已完成一轮，待命中",
     "notif.permission.title": "权限请求",
     "notif.permission.body": "{agent} 想要使用 {tool}",
     "notif.permission.body_unknown": "{agent} 正在等待批准",

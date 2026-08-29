@@ -112,17 +112,23 @@ export class NotificationEngine {
     switch (ev.event_type) {
       case "decision_required": {
         const kind = ev.payload.kind;
+        // ready 分流（与 registry.ts 一致）：question = 阻塞等你回答；其余 = 一轮结束待命
+        if (kind !== "question") {
+          return {
+            ...base,
+            type: "ready",
+            i18n: {
+              title: { key: "notif.ready.title", params: { agent } },
+              body: { key: "notif.ready.body" },
+            },
+          };
+        }
         return {
           ...base,
           type: "decision",
           i18n: {
             title: { key: "notif.decision.title", params: { agent } },
-            body:
-              kind === "question"
-                ? { key: "notif.decision.body_question" }
-                : kind
-                  ? { key: "notif.decision.body_kind", params: { kind } }
-                  : { key: "notif.decision.body" },
+            body: { key: "notif.decision.body_question" },
           },
         };
       }

@@ -109,17 +109,41 @@ export function isReclaimed(outcome: string | null | undefined): boolean {
   return outcome === "orphaned" || outcome === "timeout";
 }
 
-/** 宠物聚合状态（7 态，READM 6.1 / 架构 §2.3） */
+/**
+ * 宠物聚合状态（8 态，README 6.1 / 架构 §2.3）。
+ *
+ * ## ready 状态设计契约（单一事实来源）
+ *
+ * `decision_required` 事件被 5 个 adapter 复用来表达两种不同语义，registry 必须按
+ * `payload.kind` 分流，不能再一律置 needs-you：
+ *
+ *   kind = "question"                      → needs-you（阻塞：agent 停下等回答）
+ *   kind = "Stop" | "idle" | "blocked" | "Notification"（及其余非 question 值）
+ *                                           → ready（非阻塞：一轮结束，待命）
+ *   permission_required（任何来源）          → needs-you（阻塞：停下等批准）
+ *
+ * 聚合优先级（高 → 低）：needs-you > warning > working > ready > idle
+ * （finished / tired / level-up 由宠物引擎叠加，不在这个排序里）
+ *
+ * ready 保鲜期：READY_MAX_MS = 15 min（与 idle 阈值一致，见 registry.ts）；
+ * 进入 = 收到非 question 的 decision_required；退出 = agent_working 或 session 生命周期。
+ * 超过保鲜期后由 last_event_at 判定自然回落（见 registry.ts 的 sessionState）。
+ *
+ * 视觉：ready 目前复用 idle 外观 —— 素材清单（ui/pets/index.json）的 frames 没有
+ * ready 帧（渲染兜底到 base），程序生成宠物（ui/pets/procedural.js）的 stateExpr
+ * 显式映射到 normal。加独立素材前，宠物本体在 ready 时与 idle 一致，只有 session
+ * 圆点（.s-state.ready）是绿色的。
+ */
 export type PetState =
   | "idle" | "working" | "needs-you" | "warning"
-  | "finished" | "tired" | "level-up";
+  | "ready" | "finished" | "tired" | "level-up";
 
 export const PET_STATES: PetState[] = [
-  "idle", "working", "needs-you", "warning", "finished", "tired", "level-up",
+  "idle", "working", "needs-you", "warning", "ready", "finished", "tired", "level-up",
 ];
 
 /** Session 状态（Registry 内部） */
-export type SessionState = "idle" | "working" | "needs-you" | "warning" | "finished";
+export type SessionState = "idle" | "working" | "needs-you" | "warning" | "ready" | "finished";
 
 /** 聚合后的 session 视图（SSE /api/state 输出） */
 export interface SessionView {
@@ -135,6 +159,8 @@ export interface SessionView {
   finished_at: string | null;
   /** agent 卡在「等你」的起始时刻（ISO），null = 不在等 */
   needs_input_since: string | null;
+  /** agent 一轮结束待命的起始时刻（ISO），null = 不待命 */
+  ready_since: string | null;
   /** 这次要做什么（设置窗口录入）。有 goal → topic_multiplier 1.1，也是漂移判定的基准 */
   goal: string | null;
   /** 本 session 的 token 预算；null = 跟随设置里的全局默认 */
@@ -182,5 +208,6 @@ export interface PetStatePush {
   needs_you: SessionView[];
   warning: SessionView[];
   working: SessionView[];
+  ready: SessionView[];
   idle: SessionView[];
 }

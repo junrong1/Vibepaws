@@ -12,6 +12,8 @@ export type RegistryHandler = (ev: CoreEvent) => void;
 
 /** 「等你」标记的安全阀：超过这个时长仍没有任何进展事件，就不再当成在等 */
 const NEEDS_INPUT_MAX_MS = 30 * 60_000;
+/** 「待命」标记的保鲜期：与 idle 阈值一致，超时后 ready 自然回落 idle */
+const READY_MAX_MS = 15 * 60_000;
 /** session_finished 之后仍算 finished 态的时长 */
 const FINISHED_GLOW_MS = 60_000;
 
@@ -54,7 +56,10 @@ export class SessionRegistry {
       case "session_started": {
         const source = ev.payload.source ?? "startup";
         const existing = this.findSession(ev);
-        if (existing) this.clearNeedsInput(ev);
+        if (existing) {
+          this.clearNeedsInput(ev);
+          this.clearReady(ev);
+        }
         if (source === "resume" || source === "continue") {
           if (existing) {
             // 同一 (agent, session_id) 复用
@@ -73,7 +78,7 @@ export class SessionRegistry {
           if (existing) {
             db.prepare(
               `UPDATE sessions SET is_active=1, context_pct=0, token_used=0, token_exp_granted=0,
-                 needs_input_since=NULL, needs_input_kind=NULL, last_event_at=?
+                 needs_input_since=NULL, needs_input_kind=NULL, ready_since=NULL, last_event_at=?
                WHERE agent=? AND agent_session_id=?`,
             ).run(ev.timestamp, ev.agent, ev.session_id);
           } else {
@@ -110,37 +115,59 @@ export class SessionRegistry {
           this.lastEdit.set(key, { file, at: now });
         }
         this.clearNeedsInput(ev);
+        this.clearReady(ev);
+        // B2 复活边：被回收（timeout/orphaned）的 session 其实还活着，agent_working = 它又动了
+        db.prepare(
+          `UPDATE sessions SET is_active=1, outcome=NULL, finished_at=NULL
+           WHERE agent=? AND agent_session_id=? AND is_active=0
+             AND (outcome='timeout' OR outcome='orphaned')`,
+        ).run(ev.agent, ev.session_id);
         db.prepare(
           `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.agent, ev.session_id);
+        // B3 解除边：agent 恢复工作后，把还挂着的 error/drift 气泡标成已处理 → warning 立即回落 working
+        db.prepare(
+          `UPDATE notifications SET status='actioned'
+           WHERE agent=? AND session_id=? AND status='shown' AND type IN ('error','drift')`,
+        ).run(ev.agent, ev.session_id);
         break;
       }
 
       case "decision_required":
       case "permission_required": {
         this.ensureSession(ev);
-        // 「等你」是状态，不是瞬间事件：把起点记在 session 上，直到该 session
-        // 再发来任何别的事件（= 用户已经回答 / agent 已经继续）才清掉。
-        // 只靠 notifications 表的 60s 时间窗推断，会让宠物在 agent 仍被阻塞时
-        // 悄悄安静下来 —— 而这正是这个产品唯一必须做对的提醒。
-        db.prepare(
-          `UPDATE sessions SET last_event_at=?,
-             needs_input_since=COALESCE(needs_input_since, ?), needs_input_kind=?
-           WHERE agent=? AND agent_session_id=?`,
-        ).run(
-          ev.timestamp,
-          ev.timestamp,
-          ev.event_type === "permission_required" ? "permission" : "decision",
-          ev.agent,
-          ev.session_id,
-        );
+        // kind 分流（events.ts 的 ready 设计契约）：
+        //   permission_required                   → 阻塞等你批准（needs-you）
+        //   decision_required + kind=question     → 阻塞等你回答（needs-you）
+        //   decision_required + 其余 kind         → 一轮结束待命（ready）
+        const blocking = ev.event_type === "permission_required" || ev.payload.kind === "question";
+        if (blocking) {
+          // 阻塞（等你回答/批准）：顺手清掉 ready 标记，别让「待命」和「等你」两个时间戳并存成脏数据
+          db.prepare(
+            `UPDATE sessions SET last_event_at=?,
+               needs_input_since=COALESCE(needs_input_since, ?), needs_input_kind=?, ready_since=NULL
+             WHERE agent=? AND agent_session_id=?`,
+          ).run(
+            ev.timestamp,
+            ev.timestamp,
+            ev.event_type === "permission_required" ? "permission" : "decision",
+            ev.agent,
+            ev.session_id,
+          );
+        } else {
+          // 非阻塞（一轮结束待命）：语义与 needs 互斥，清掉对方标记
+          db.prepare(
+            `UPDATE sessions SET last_event_at=?, ready_since=COALESCE(ready_since, ?),
+               needs_input_since=NULL, needs_input_kind=NULL
+             WHERE agent=? AND agent_session_id=?`,
+          ).run(ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
+        }
         break;
       }
 
       case "session_error":
       case "topic_drift_warning": {
         this.ensureSession(ev);
-        this.clearNeedsInput(ev);
         db.prepare(
           `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.agent, ev.session_id);
@@ -149,7 +176,6 @@ export class SessionRegistry {
 
       case "token_update": {
         this.ensureSession(ev);
-        this.clearNeedsInput(ev);
         const tokens = typeof ev.payload.tokens === "number" ? ev.payload.tokens : 0;
         db.prepare(
           `UPDATE sessions SET token_used=MAX(token_used, ?), last_event_at=? WHERE agent=? AND agent_session_id=?`,
@@ -159,7 +185,6 @@ export class SessionRegistry {
 
       case "context_update": {
         this.ensureSession(ev);
-        this.clearNeedsInput(ev);
         const pct = typeof ev.payload.context_pct === "number" ? ev.payload.context_pct : 0;
         db.prepare(
           `UPDATE sessions SET context_pct=?, last_event_at=? WHERE agent=? AND agent_session_id=?`,
@@ -169,7 +194,6 @@ export class SessionRegistry {
 
       case "subagent_started": {
         this.ensureSession(ev);
-        this.clearNeedsInput(ev);
         db.prepare(
           `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.agent, ev.session_id);
@@ -179,6 +203,7 @@ export class SessionRegistry {
       case "session_finished": {
         this.ensureSession(ev);
         this.clearNeedsInput(ev);
+        this.clearReady(ev);
         const reason = ev.payload.reason ?? "completion";
         const outcome = ev.payload.outcome ?? "success";
         db.prepare(
@@ -206,6 +231,16 @@ export class SessionRegistry {
       .prepare(
         `UPDATE sessions SET needs_input_since=NULL, needs_input_kind=NULL
          WHERE agent=? AND agent_session_id=? AND needs_input_since IS NOT NULL`,
+      )
+      .run(ev.agent, ev.session_id);
+  }
+
+  /** 收到「用户已提交下一条 prompt」（agent_working）→ 停止「待命」 */
+  private clearReady(ev: CoreEvent): void {
+    this.db
+      .prepare(
+        `UPDATE sessions SET ready_since=NULL
+         WHERE agent=? AND agent_session_id=? AND ready_since IS NOT NULL`,
       )
       .run(ev.agent, ev.session_id);
   }
@@ -251,7 +286,7 @@ export class SessionRegistry {
   /** session 视图共用的列清单（listSessions 与 sessionView 必须取一样的字段） */
   private static readonly VIEW_COLUMNS = `agent, agent_session_id as session_id, project_id, title, is_active,
                 token_used, context_pct, correction_count, last_event_at, finished_at,
-                needs_input_since, parent_id, outcome, goal, budget_tokens`;
+                needs_input_since, ready_since, parent_id, outcome, goal, budget_tokens`;
 
   /** 全部 session 视图（按最后活动倒序） */
   listSessions(limit = 50): SessionView[] {
@@ -324,6 +359,7 @@ export class SessionRegistry {
       last_event_at: r.last_event_at as string,
       finished_at: (r.finished_at as string | null) ?? null,
       needs_input_since: (r.needs_input_since as string | null) ?? null,
+      ready_since: (r.ready_since as string | null) ?? null,
       goal: (r.goal as string | null) ?? null,
       budget_tokens: (r.budget_tokens as number | null) ?? null,
       is_active: (r.is_active as number) === 1,
@@ -364,29 +400,37 @@ export class SessionRegistry {
       )
       .get(agent, sessionId);
     if (warn) return "warning";
+    // ready：一轮结束待命（非阻塞），保鲜期 READY_MAX_MS，超时后自然回落 idle
+    const readySince = r.ready_since as string | null;
+    if (readySince) {
+      const since = new Date(readySince).getTime();
+      if (Number.isFinite(since) && Date.now() - since < READY_MAX_MS) return "ready";
+    }
     const last = new Date((r.last_event_at as string) ?? 0).getTime();
     const idleMs = Date.now() - last;
     return idleMs > 15 * 60_000 ? "idle" : "working";
   }
 
   /**
-   * 聚合宠物状态：needs-you > warning > working > finished > idle。
+   * 聚合宠物状态：needs-you > warning > working > ready > finished > idle。
    * `sessions` 可传入已算好的列表 —— 每次事件都重新查一遍会让 listSessions
    * 的 per-session 子查询翻倍（一次事件几百条 SQL）。
    */
   aggregatePetState(overrides?: PetState, sessions?: SessionView[]): PetState {
     if (overrides && overrides !== "idle") return overrides;
     const list = sessions ?? this.listSessions(100);
-    let hasNeeds = false, hasWarning = false, hasWorking = false;
+    let hasNeeds = false, hasWarning = false, hasWorking = false, hasReady = false;
     for (const s of list) {
       if (!s.is_active) continue;
       if (s.state === "needs-you") hasNeeds = true;
       else if (s.state === "warning") hasWarning = true;
       else if (s.state === "working") hasWorking = true;
+      else if (s.state === "ready") hasReady = true;
     }
     if (hasNeeds) return "needs-you";
     if (hasWarning) return "warning";
     if (hasWorking) return "working";
+    if (hasReady) return "ready";
     // 刚收工：短暂庆祝一下再回 idle（README 6.1 的 finished 态）。
     // 被回收的僵尸有 finished_at（那是回收时刻），但它不是收工 —— 不庆祝崩溃（G10）。
     if (list.some((s) => !s.is_active && recentlyFinished(s.finished_at) && !isReclaimed(s.outcome))) {

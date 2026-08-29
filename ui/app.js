@@ -425,6 +425,7 @@ function bubbleTone(type) {
   if (type === "error") return "danger";
   if (type === "milestone") return "ok";
   if (type === "context" || type === "drift") return "warn";
+  if (type === "ready") return "ok";
   return "";
 }
 
@@ -511,7 +512,7 @@ function emptyPanelKey() {
 
 function renderPanel() {
   const container = $("sessions");
-  const rank = { "needs-you": 0, warning: 1, working: 2, idle: 3, finished: 4 };
+  const rank = { "needs-you": 0, warning: 1, working: 2, ready: 3, idle: 4, finished: 5 };
   const sorted = [...state.sessions].sort((a, b) => (rank[a.state] ?? 5) - (rank[b.state] ?? 5));
   // 有 session 在等你时，「等了多久」要继续走表 —— 让指纹每分钟变一次，
   // 其余时候完全不重建（不然焦点每 5 秒被清一次）。
@@ -576,7 +577,7 @@ function sessionRow(s) {
   const dot = document.createElement("span");
   dot.className = "s-state";
   // class 里也不拼外部字符串：state 只可能是这几个已知值，别的一律不加 class
-  if (["idle", "working", "needs-you", "warning", "finished"].includes(s.state)) {
+  if (["idle", "working", "needs-you", "warning", "ready", "finished"].includes(s.state)) {
     dot.classList.add(s.state);
   }
   if (reclaimedSession(s)) dot.classList.add("lost");

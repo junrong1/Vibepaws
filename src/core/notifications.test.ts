@@ -68,7 +68,7 @@ test("按 session mute 只影响该 session", () => {
   n.muteSession("s1", 30);
   assert.equal(n.getForEvent(ev({ event_id: "a", session_id: "s1" })), null);
   const other = n.getForEvent(ev({ event_id: "b", session_id: "s2", payload: { kind: "Stop" } }));
-  assert.equal(other?.type, "decision", "其他 session 不受影响");
+  assert.equal(other?.type, "ready", "其他 session 不受影响");
 });
 
 test("dismiss 与 history", () => {
@@ -219,4 +219,29 @@ test("muteStatus 记住用户选的时长（界面据此点亮对应按钮）", 
     [n.muteStatus().global_until, n.muteStatus().global_minutes],
     [null, null],
   );
+});
+
+test("decision_required kind=question → decision 通知（需要你）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const r = n.getForEvent(ev({ payload: { kind: "question" } }));
+  assert.equal(r?.type, "decision");
+  assert.equal(r?.i18n?.title.key, "notif.decision.title");
+  assert.equal(r?.i18n?.body.key, "notif.decision.body_question");
+});
+
+test("decision_required kind=Stop → ready 通知（待命，不是需要你）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const r = n.getForEvent(ev({ payload: { kind: "Stop" } }));
+  assert.equal(r?.type, "ready");
+  assert.equal(r?.i18n?.title.key, "notif.ready.title");
+  assert.equal(r?.i18n?.body.key, "notif.ready.body");
+});
+
+test("decision_required 无 kind → ready（非阻塞的安全默认）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const r = n.getForEvent(ev({ payload: {} }));
+  assert.equal(r?.type, "ready");
 });

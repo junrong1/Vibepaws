@@ -38,7 +38,7 @@ test("v1 老库升级：补上 token_exp_granted / needs_input_* 且数据不丢
   assert.equal(applySchema(db), SCHEMA_VERSION);
 
   const cols = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((c) => c.name);
-  for (const col of ["token_exp_granted", "needs_input_since", "needs_input_kind"]) {
+  for (const col of ["token_exp_granted", "needs_input_since", "needs_input_kind", "ready_since"]) {
     assert.ok(cols.includes(col), `缺少列 ${col}`);
   }
   const row = db.prepare("SELECT agent_session_id, token_exp_granted FROM sessions").get() as {

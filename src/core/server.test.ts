@@ -70,6 +70,22 @@ test("宠物状态跟着 session 走：working → needs-you → working → fin
   assert.equal(server.stateSnapshot().pet.state, "finished");
 });
 
+test("decision_required kind=Stop → ready（待命），stateSnapshot 有 ready 分组", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+  const snap = server.stateSnapshot();
+  assert.equal(snap.pet.state, "ready", "Stop 是一轮结束，不该 needs-you");
+  assert.equal(snap.ready.length, 1);
+  assert.equal(snap.needs_you.length, 0);
+
+  // 用户提交下一条 → agent 继续，ready 解除
+  server.handleEvent(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  const after = server.stateSnapshot();
+  assert.equal(after.pet.state, "working");
+  assert.equal(after.ready.length, 0);
+});
+
 test("needs-you 不会因为通知过期而自己消失（agent 还在等）", () => {
   const server = makeServer();
   server.handleEvent(ev({ payload: { source: "startup" } }));
