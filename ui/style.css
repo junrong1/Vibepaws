@@ -249,11 +249,17 @@ body.dragging #pet { filter: none; }
 }
 .session-row .s-title { font-weight: 600; font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-row .s-state { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.session-row .s-label { font-size: 9px; flex-shrink: 0; }
+.s-label.working { color: var(--accent); }
+.s-label.ready { color: var(--ok); }
+.s-label.needs-you { color: var(--danger); }
+.s-label.warning { color: var(--warn); }
+.s-label.idle { color: var(--dim); }
 .s-state.idle { background: #6e7681; }
 .s-state.working { background: var(--accent); }
 .s-state.needs-you { background: var(--danger); animation: pulse 1s infinite; }
 .s-state.warning { background: var(--warn); }
-.s-state.ready { background: #3fb950; }
+.s-state.ready { background: var(--ok); }
 .s-state.finished { background: #57606a; }
 /* 被回收的僵尸：空心圈 —— 它不是「打勾收工」，是没声了（G10） */
 .s-state.lost { background: transparent; border: 1px solid #6e7681; }

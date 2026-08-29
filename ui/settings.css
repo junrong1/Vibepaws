@@ -155,6 +155,20 @@ button:hover:enabled { border-color: var(--accent); color: var(--accent); }
   color: var(--dim);
   flex-shrink: 0;
 }
+/* 状态 pill：与浮层面板 s-state 圆点同一套配色，只是这里带文字 */
+.session-state {
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  flex-shrink: 0;
+}
+.session-state.working { color: var(--accent); border-color: var(--accent); }
+.session-state.ready { color: var(--ok); border-color: var(--ok); }
+.session-state.needs-you { color: var(--danger); border-color: var(--danger); }
+.session-state.warning { color: var(--warn); border-color: var(--warn); }
+.session-state.idle, .session-state.finished { color: var(--dim); }
 .session .row { min-height: 28px; }
 .session .row > label { flex: 0 0 auto; font-size: 10px; color: var(--dim); }
 .session input[type="text"] { flex: 1; width: auto; }

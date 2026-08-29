@@ -144,7 +144,7 @@ export const MESSAGES = {
     "settings.budget.label": "Default token budget",
     "settings.budget.unit": "k tokens",
     "settings.budget.hint":
-      "Milestone bubbles fire at 25 / 50 / 75 / 90% of the budget. 0 turns them off. A running session can override this below.",
+      "Milestone bubbles fire at 25 / 50 / 75 / 90% of the budget. 0 turns them off. An active session can override this below.",
     "settings.warn.label": "Context warnings",
     "settings.warn.hint": "The pet warns you when a session's context window fills past these marks.",
     "settings.warn.off": "Off",
@@ -176,16 +176,22 @@ export const MESSAGES = {
     "settings.zombie.hint":
       "A crashed agent never says goodbye, so a session that goes quiet this long is closed out — no EXP, no celebration. If the agent's process is gone, that's detected in seconds and this wait doesn't apply.",
 
-    "settings.section.sessions": "Running sessions",
+    "settings.section.sessions": "Active sessions",
     "settings.sessions.hint":
       "A goal pays 1.1× EXP and gives drift detection something to compare against. A budget here overrides the default above.",
-    "settings.sessions.empty": "No running sessions — start your coding agent",
+    "settings.sessions.empty": "No active sessions — start your coding agent",
     "settings.session.goal.placeholder": "What is this session for?",
     // 这一行在 session 卡片里，说的是「这个 session 的预算」——
     // 借用上面那句「默认 token 预算」会读成「默认预算：默认」，自相矛盾
     "settings.session.budget": "Budget",
     "settings.session.budget.placeholder": "default",
     "settings.session.meta": "{used}k tokens · context {pct}%",
+    "settings.session.state.working": "Working",
+    "settings.session.state.ready": "Ready",
+    "settings.session.state.needs-you": "Needs you",
+    "settings.session.state.warning": "Warning",
+    "settings.session.state.idle": "Idle",
+    "settings.session.state.finished": "Finished",
 
     "settings.section.window": "Window",
     "settings.window.allspaces": "Show on all Spaces",
@@ -404,7 +410,7 @@ export const MESSAGES = {
     "settings.budget.label": "默认 token 预算",
     "settings.budget.unit": "k tokens",
     "settings.budget.hint":
-      "里程碑气泡在预算的 25 / 50 / 75 / 90% 触发；填 0 就是关掉。下面每个在跑的 session 可以单独覆盖。",
+      "里程碑气泡在预算的 25 / 50 / 75 / 90% 触发；填 0 就是关掉。下面每个活跃的 session 可以单独覆盖。",
     "settings.warn.label": "上下文警告",
     "settings.warn.hint": "某个 session 的上下文越过这几道线时，宠物会提醒你。",
     "settings.warn.off": "关闭",
@@ -433,13 +439,19 @@ export const MESSAGES = {
     "settings.zombie.hint":
       "崩掉的 agent 不会跟你道别，所以静默超过这个时长的 session 会被收掉 —— 不发 EXP，也不庆祝。如果 agent 进程已经没了，秒级就能发现，不用等这个时长。",
 
-    "settings.section.sessions": "在跑的 session",
+    "settings.section.sessions": "活跃的 session",
     "settings.sessions.hint": "填了目标能拿 1.1× EXP，漂移判定也才有基准。这里的预算会覆盖上面的默认值。",
-    "settings.sessions.empty": "没有在跑的 session —— 启动你的 coding agent 试试",
+    "settings.sessions.empty": "没有活跃的 session —— 启动你的 coding agent 试试",
     "settings.session.goal.placeholder": "这次要做什么？",
     "settings.session.budget": "预算",
     "settings.session.budget.placeholder": "默认",
     "settings.session.meta": "{used}k tokens · 上下文 {pct}%",
+    "settings.session.state.working": "干活中",
+    "settings.session.state.ready": "待命",
+    "settings.session.state.needs-you": "等你",
+    "settings.session.state.warning": "告警",
+    "settings.session.state.idle": "空闲",
+    "settings.session.state.finished": "已结束",
 
     "settings.section.window": "窗口",
     "settings.window.allspaces": "在所有桌面显示",
