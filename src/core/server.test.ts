@@ -54,10 +54,10 @@ function ev(partial: Partial<CoreEvent>): CoreEvent {
   };
 }
 
-test("宠物状态跟着 session 走：working → needs-you → working → finished", () => {
+test("宠物状态跟着 session 走：idle → needs-you → working → finished", () => {
   const server = makeServer();
   server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
-  assert.equal(server.stateSnapshot().pet.state, "working", "有活跃 session 时不该还是 idle");
+  assert.equal(server.stateSnapshot().pet.state, "idle", "刚启动、还没干活的 session 不该是 working");
 
   server.handleEvent(ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }));
   assert.equal(server.stateSnapshot().pet.state, "needs-you");

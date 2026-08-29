@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   branch        TEXT,
   is_active     INTEGER NOT NULL DEFAULT 1,
   last_event_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 「真干活」的最近时刻（agent_working / token_update / context_update / subagent_started）。
+  -- 与 last_event_at 区分：session_started 这类生命周期事件只刷 last_event_at，不刷它 ——
+  -- 否则刚启动、还没干活的 session 会被判成 working（registry.sessionState 的 working/idle 只看它）。
+  last_working_at TEXT,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
   finished_at   TEXT,
   outcome       TEXT,
@@ -138,6 +142,7 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "sessions", column: "needs_input_since", ddl: "TEXT" },
   { table: "sessions", column: "needs_input_kind", ddl: "TEXT" },
   { table: "sessions", column: "ready_since", ddl: "TEXT" },
+  { table: "sessions", column: "last_working_at", ddl: "TEXT" },
   { table: "sessions", column: "agent_pid", ddl: "INTEGER" },
   { table: "sessions", column: "agent_pid_confirmed", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];

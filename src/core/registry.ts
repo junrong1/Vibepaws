@@ -78,7 +78,7 @@ export class SessionRegistry {
           if (existing) {
             db.prepare(
               `UPDATE sessions SET is_active=1, context_pct=0, token_used=0, token_exp_granted=0,
-                 needs_input_since=NULL, needs_input_kind=NULL, ready_since=NULL, last_event_at=?
+                 needs_input_since=NULL, needs_input_kind=NULL, ready_since=NULL, last_working_at=NULL, last_event_at=?
                WHERE agent=? AND agent_session_id=?`,
             ).run(ev.timestamp, ev.agent, ev.session_id);
           } else {
@@ -123,8 +123,8 @@ export class SessionRegistry {
              AND (outcome='timeout' OR outcome='orphaned')`,
         ).run(ev.agent, ev.session_id);
         db.prepare(
-          `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
-        ).run(ev.timestamp, ev.agent, ev.session_id);
+          `UPDATE sessions SET last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
+        ).run(ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
         // B3 解除边：agent 恢复工作后，把还挂着的 error/drift 气泡标成已处理 → warning 立即回落 working
         db.prepare(
           `UPDATE notifications SET status='actioned'
@@ -178,8 +178,8 @@ export class SessionRegistry {
         this.ensureSession(ev);
         const tokens = typeof ev.payload.tokens === "number" ? ev.payload.tokens : 0;
         db.prepare(
-          `UPDATE sessions SET token_used=MAX(token_used, ?), last_event_at=? WHERE agent=? AND agent_session_id=?`,
-        ).run(tokens, ev.timestamp, ev.agent, ev.session_id);
+          `UPDATE sessions SET token_used=MAX(token_used, ?), last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
+        ).run(tokens, ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
         break;
       }
 
@@ -187,16 +187,16 @@ export class SessionRegistry {
         this.ensureSession(ev);
         const pct = typeof ev.payload.context_pct === "number" ? ev.payload.context_pct : 0;
         db.prepare(
-          `UPDATE sessions SET context_pct=?, last_event_at=? WHERE agent=? AND agent_session_id=?`,
-        ).run(pct, ev.timestamp, ev.agent, ev.session_id);
+          `UPDATE sessions SET context_pct=?, last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
+        ).run(pct, ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
         break;
       }
 
       case "subagent_started": {
         this.ensureSession(ev);
         db.prepare(
-          `UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`,
-        ).run(ev.timestamp, ev.agent, ev.session_id);
+          `UPDATE sessions SET last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
+        ).run(ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
         break;
       }
 
@@ -285,7 +285,7 @@ export class SessionRegistry {
 
   /** session 视图共用的列清单（listSessions 与 sessionView 必须取一样的字段） */
   private static readonly VIEW_COLUMNS = `agent, agent_session_id as session_id, project_id, title, is_active,
-                token_used, context_pct, correction_count, last_event_at, finished_at,
+                token_used, context_pct, correction_count, last_event_at, last_working_at, finished_at,
                 needs_input_since, ready_since, parent_id, outcome, goal, budget_tokens`;
 
   /** 全部 session 视图（按最后活动倒序） */
@@ -406,9 +406,14 @@ export class SessionRegistry {
       const since = new Date(readySince).getTime();
       if (Number.isFinite(since) && Date.now() - since < READY_MAX_MS) return "ready";
     }
-    const last = new Date((r.last_event_at as string) ?? 0).getTime();
-    const idleMs = Date.now() - last;
-    return idleMs > 15 * 60_000 ? "idle" : "working";
+    // working 只看「真干活」的最近时刻（last_working_at），而不是 last_event_at：
+    // session_started 这类生命周期事件会刷 last_event_at，一旦共用就会让
+    // 「刚启动、一条命令没输」的 session 也显示 working。空值 = 从没干过活 → idle。
+    const workedAt = (r.last_working_at as string | null) ?? null;
+    if (!workedAt) return "idle";
+    const last = new Date(workedAt).getTime();
+    if (!Number.isFinite(last)) return "idle";
+    return Date.now() - last > 15 * 60_000 ? "idle" : "working";
   }
 
   /**
