@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- 只靠 notifications 表的 60s 时间窗推断会让宠物在 agent 仍被阻塞时安静下来。
   needs_input_since TEXT,
   needs_input_kind TEXT,
+  -- agent 一轮结束、待命的起始时刻（NULL = 不待命）。
+  -- 与 needs_input_since 区分：needs_* 是阻塞（等你回答/批准），ready_* 是非阻塞（干完了，等你下一步）。
+  ready_since TEXT,
   -- agent 进程的 pid（僵尸回收 G10）。adapter 上报，Core 用 kill(pid,0) 探活。
   -- confirmed：同一个 pid 被两条不同事件报到过才算数 —— 见 core/reclaim.ts 的说明。
   agent_pid     INTEGER,
@@ -134,6 +137,7 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "sessions", column: "token_exp_granted", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "needs_input_since", ddl: "TEXT" },
   { table: "sessions", column: "needs_input_kind", ddl: "TEXT" },
+  { table: "sessions", column: "ready_since", ddl: "TEXT" },
   { table: "sessions", column: "agent_pid", ddl: "INTEGER" },
   { table: "sessions", column: "agent_pid_confirmed", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];

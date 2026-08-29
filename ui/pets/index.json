@@ -130,32 +130,6 @@
       },
       "components": 1,
       "motion": {}
-    },
-    {
-      "id": 25,
-      "slug": "denia",
-      "name": "Denia",
-      "rarity": "rare",
-      "starter": false,
-      "w": 156,
-      "h": 160,
-      "anchor": {
-        "feetX": 0.5,
-        "feetY": 1.0
-      },
-      "accent": "#e878a8",
-      "base": "denia/idle.png",
-      "frames": {
-        "idle": "denia/idle.png",
-        "working": "denia/working.png",
-        "needs-you": "denia/needs-you.png",
-        "warning": "denia/warning.png",
-        "finished": "denia/finished.png",
-        "tired": "denia/tired.png",
-        "level-up": "denia/level-up.png"
-      },
-      "components": 1,
-      "motion": {}
     }
   ]
 }

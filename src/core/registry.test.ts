@@ -97,7 +97,7 @@ test("projectShortName 取最后一段", () => {
   assert.equal(projectShortName("C:\\dev\\proj"), "proj");
 });
 
-test("decision_required 置位「等你」，后续进展事件清除", () => {
+test("decision_required 置位「等你」，只有 agent_working 才清除（token_update 不清）", () => {
   const db = makeDb();
   const reg = new SessionRegistry({ db });
   reg.handle(ev({ payload: { source: "startup" } }));
@@ -105,9 +105,104 @@ test("decision_required 置位「等你」，后续进展事件清除", () => {
   assert.equal(reg.listSessions()[0]!.state, "needs-you");
   assert.ok(reg.listSessions()[0]!.needs_input_since);
 
+  // B1 回归：statusline 的 token_update 不该清除「等你」
   reg.handle(ev({ event_type: "token_update", payload: { tokens: 100 } }));
-  assert.equal(reg.listSessions()[0]!.needs_input_since, null, "用户回答后不该继续告警");
+  assert.equal(reg.listSessions()[0]!.state, "needs-you", "token_update 不该清除「等你」");
+
+  // 真正清除「等你」的是 agent_working（用户已作答）
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  assert.equal(reg.listSessions()[0]!.needs_input_since, null, "agent_working 后才该停止告警");
   assert.notEqual(reg.listSessions()[0]!.state, "needs-you");
+});
+
+test("decision_required kind=Stop → ready（非阻塞，不是 needs-you）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+  const s = reg.listSessions()[0]!;
+  assert.equal(s.state, "ready", "Stop 是一轮结束，不该 needs-you");
+  assert.ok(s.ready_since, "ready_since 应被置位");
+  assert.equal(s.needs_input_since, null, "Stop 不应置 needs_input_since");
+  assert.equal(reg.aggregatePetState(), "ready");
+});
+
+test("decision_required kind=question → needs-you（阻塞）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+  const s = reg.listSessions()[0]!;
+  assert.equal(s.state, "needs-you");
+  assert.equal(s.ready_since, null, "question 不应置 ready_since");
+});
+
+test("agent_working 清除 ready", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+  assert.equal(reg.listSessions()[0]!.state, "ready");
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  assert.equal(reg.listSessions()[0]!.ready_since, null, "agent_working 后应清 ready");
+  assert.notEqual(reg.listSessions()[0]!.state, "ready");
+});
+
+test("session_finished 清掉 ready 标记（避免 resume 后带着旧一轮的待命复活）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+  assert.equal(reg.listSessions()[0]!.state, "ready");
+  reg.handle(ev({ event_type: "session_finished", payload: { outcome: "success" } }));
+  const s = reg.listSessions()[0]!;
+  assert.equal(s.ready_since, null, "session 结束后 ready_since 应清掉");
+  assert.equal(s.state, "finished");
+});
+
+test("session_started(resume) 清掉上一轮的 ready 标记", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+  assert.equal(reg.listSessions()[0]!.state, "ready");
+  reg.handle(ev({ payload: { source: "resume" } }));
+  assert.equal(reg.listSessions()[0]!.ready_since, null, "resume 后 ready_since 应清掉");
+});
+
+test("B2 复活：被回收（timeout）的 session 收到 agent_working 后复活", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  db.prepare(
+    "UPDATE sessions SET is_active=0, outcome='timeout', finished_at=? WHERE agent=? AND agent_session_id=?",
+  ).run(new Date().toISOString(), "claude_code", "s1");
+  const before = reg.listSessions()[0]!;
+  assert.equal(before.is_active, false);
+  assert.equal(before.state, "idle", "被回收的僵尸不是 finished");
+
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  const after = reg.listSessions()[0]!;
+  assert.equal(after.is_active, true, "agent_working 应复活被回收的 session");
+  assert.equal(after.outcome, null);
+  assert.equal(after.finished_at, null);
+  assert.equal(after.state, "working");
+});
+
+test("B3 解除：agent_working 把 shown error/drift 通知标 actioned，warning 回落", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body, status, shown_at)
+     VALUES('claude_code', 's1', 'error', 't', 'b', 'shown', ?)`,
+  ).run(new Date().toISOString());
+  assert.equal(reg.listSessions()[0]!.state, "warning");
+
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  assert.notEqual(reg.listSessions()[0]!.state, "warning", "agent 恢复后 warning 应解除");
+  const notif = db.prepare("SELECT status FROM notifications").get() as { status: string };
+  assert.equal(notif.status, "actioned", "error 通知应被标成已处理");
 });
 
 test("「等你」超过安全阀（30min）后不再告警", () => {

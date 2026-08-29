@@ -10,5 +10,5 @@ dist/
 output/
 __pycache__/
 review/
-ui/*/*
-ui/pets/index.json
+ui/pets/denia/
+ui/pets/index.local.json
