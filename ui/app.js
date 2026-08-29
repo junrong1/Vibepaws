@@ -588,6 +588,16 @@ function sessionRow(s) {
   badge.textContent = shortAgent(s.agent);
   row.appendChild(badge);
 
+  // 状态文字（与设置窗口共用 settings.session.state.* 同一份文案）。
+  // 只有还活着的 session 需要：已结束的靠 finished 圆点、被回收的靠 s-lost 小字表达，
+  // 再贴一个「空闲」反而重复。
+  if (s.is_active && ["working", "ready", "needs-you", "warning", "idle"].includes(s.state)) {
+    const label = document.createElement("span");
+    label.className = `s-label ${s.state}`;
+    label.textContent = t(`settings.session.state.${s.state}`);
+    row.appendChild(label);
+  }
+
   const title = document.createElement("span");
   title.className = "s-title";
   title.textContent = s.title ?? "";

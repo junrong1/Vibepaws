@@ -315,6 +315,18 @@ function shortAgent(agent) {
   return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : agent === "pi" ? "Pi" : agent === "dsh" ? "DeepSeek" : String(agent ?? "?");
 }
 
+/** 与 core/events.ts 的 SessionState 一致；未知值不渲染标签（不把外部字符串拼进 class） */
+const SESSION_STATES = ["working", "ready", "needs-you", "warning", "idle", "finished"];
+
+/** 状态 pill：干活中 / 待命 / 等你 / 告警 / 空闲。finished 不该出现在活跃列表里，但兜底渲染。 */
+function sessionStateBadge(state) {
+  if (!SESSION_STATES.includes(state)) return null;
+  const el = document.createElement("span");
+  el.className = `session-state ${state}`;
+  el.textContent = t(`settings.session.state.${state}`);
+  return el;
+}
+
 function renderSessions(sessions) {
   const box = $("sessions");
   // 有人正在这一段里打字就整段不重建：重建会连输入框一起换掉，字和焦点都没了
@@ -326,6 +338,7 @@ function renderSessions(sessions) {
       s.title,
       s.goal,
       s.budget_tokens,
+      s.state,
       Math.round((s.token_used ?? 0) / K),
       Math.round(s.context_pct ?? 0),
     ]),
@@ -364,7 +377,10 @@ function sessionRow(s) {
     used: Math.round((s.token_used ?? 0) / K),
     pct: Math.round(s.context_pct ?? 0),
   });
-  head.append(badge, title, meta);
+  head.append(badge);
+  const stateBadge = sessionStateBadge(s.state);
+  if (stateBadge) head.appendChild(stateBadge);
+  head.append(title, meta);
   wrap.appendChild(head);
 
   const goal = document.createElement("input");
