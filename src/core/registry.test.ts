@@ -40,6 +40,45 @@ test("startup 新建 session", () => {
   assert.equal(rows[0]!.is_active, true);
 });
 
+test("刚启动（仅 session_started）是 idle，不是 working", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  const s = reg.listSessions()[0]!;
+  assert.equal(s.state, "idle", "刚启动、还没干活的 session 不该是 working");
+  assert.equal(reg.aggregatePetState(), "idle");
+});
+
+test("agent_working 后才转 working", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  const s = reg.listSessions()[0]!;
+  assert.equal(s.state, "working", "真的干活了才是 working");
+  assert.equal(reg.aggregatePetState(), "working");
+});
+
+test("token_update 也算工作活动（Claude statusline 通道）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "token_update", payload: { tokens: 100 } }));
+  assert.equal(reg.listSessions()[0]!.state, "working", "token 在涨说明在干活");
+});
+
+test("工作活动超过 15 分钟回落 idle（last_working_at 判定）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  assert.equal(reg.listSessions()[0]!.state, "working");
+  db.prepare("UPDATE sessions SET last_working_at = ?").run(
+    new Date(Date.now() - 16 * 60_000).toISOString(),
+  );
+  assert.equal(reg.listSessions()[0]!.state, "idle", "超过 15 分钟无工作应回 idle");
+});
+
 test("resume 复用同一 session，不新建", () => {
   const db = makeDb();
   const reg = new SessionRegistry({ db });
