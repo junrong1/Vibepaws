@@ -92,10 +92,23 @@
       <p class="hint" data-i18n="settings.sessions.hint"></p>
     </section>
 
+    <!-- 开机自启（0.4）。单独成段而不是塞进「窗口」里：它管的不是窗口怎么摆，
+         而是这个应用什么时候存在 —— 而且它有三种「装不上」的情形要就地解释。 -->
+    <section class="card" id="startup-card">
+      <h2 data-i18n="settings.section.startup"></h2>
+      <p class="hint shell-only" hidden data-i18n="settings.shellonly"></p>
+      <label class="check">
+        <input id="autostart" type="checkbox">
+        <span data-i18n="settings.startup.openatlogin"></span>
+      </label>
+      <!-- 支持时说它会做什么，不支持时说为什么不行；由 settings.js 填 -->
+      <p class="hint" id="autostart-note"></p>
+    </section>
+
     <section class="card" id="window-card">
       <h2 data-i18n="settings.section.window"></h2>
       <!-- 这一段是壳层设定（窗口怎么摆、界面什么语言），浏览器里打开时无从生效 -->
-      <p class="hint" id="shell-only" hidden data-i18n="settings.shellonly"></p>
+      <p class="hint shell-only" id="shell-only" hidden data-i18n="settings.shellonly"></p>
       <label class="check">
         <input id="allspaces" type="checkbox">
         <span data-i18n="settings.window.allspaces"></span>

@@ -13,7 +13,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vibepaws", {
   isElectron: true,
-  /** 读壳偏好：{ allSpaces, clickThrough, locale, osLocale, platform } */
+  /** 读壳偏好：{ allSpaces, clickThrough, openAtLogin, openAtLoginSupported, openAtLoginReason,
+   *  locale, osLocale, platform } */
   getPrefs: () => ipcRenderer.invoke("vibepaws:prefs-get"),
   /** 写壳偏好（部分字段即可），返回写入后的完整偏好 */
   setPrefs: (patch) => ipcRenderer.invoke("vibepaws:prefs-set", patch),

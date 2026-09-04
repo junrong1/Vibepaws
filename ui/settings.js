@@ -469,24 +469,45 @@ function renderLanguageOptions(prefs) {
   el.value = LANGUAGES.some((l) => l.id === prefs.locale) ? prefs.locale : "auto";
 }
 
+/**
+ * 开机自启这一格有三种「装不上」（dev 构建 / 平台不支持 / app 还在 dmg 里），
+ * 每一种都得就地说清楚：一个灰掉却不解释的开关，用户只会当成 bug。
+ */
+function applyAutostart(prefs) {
+  const box = $("autostart");
+  const supported = Boolean(prefs.openAtLoginSupported);
+  box.checked = Boolean(prefs.openAtLogin);
+  box.disabled = !supported;
+  $("autostart-note").textContent = supported
+    ? t("settings.startup.hint")
+    : t(`settings.startup.na.${prefs.openAtLoginReason ?? "platform"}`);
+}
+
 function applyPrefs(prefs) {
   if (!prefs) return;
   $("allspaces").checked = Boolean(prefs.allSpaces);
   $("clickthrough").checked = Boolean(prefs.clickThrough);
+  applyAutostart(prefs);
   renderLanguageOptions(prefs);
 }
 
 async function initShell() {
-  const controls = [$("allspaces"), $("clickthrough"), $("language"), $("reset-pos")];
+  const controls = [$("allspaces"), $("clickthrough"), $("autostart"), $("language"), $("reset-pos")];
   if (!shell?.getPrefs) {
     // 浏览器里打开：把这一段禁掉并说明原因，而不是留一排点了没反应的开关
-    $("shell-only").hidden = false;
+    for (const el of document.querySelectorAll(".shell-only")) el.hidden = false;
     for (const el of controls) el.disabled = true;
+    $("autostart-note").textContent = "";
     renderLanguageOptions({ locale: "auto", osLocale: LOCALE });
     return;
   }
   applyPrefs(await shell.getPrefs());
 
+  $("autostart").addEventListener("change", async () => {
+    // 以主进程回读的系统状态为准，不是以刚点的那一下为准 —— 写失败时开关要弹回去
+    applyPrefs(await shell.setPrefs({ openAtLogin: $("autostart").checked }));
+    status(t("settings.status.saved"), "ok");
+  });
   $("allspaces").addEventListener("change", async () => {
     applyPrefs(await shell.setPrefs({ allSpaces: $("allspaces").checked }));
     status(t("settings.status.saved"), "ok");

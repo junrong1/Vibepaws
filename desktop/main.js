@@ -1,17 +1,28 @@
 /**
- * Vibepaws 桌面宠物壳（Electron）— npm run desktop
- * 架构 D5：Core 独立守护进程，本壳只是 UI 客户端（SSE 消费）。
+ * Vibepaws 桌面宠物壳（Electron）— npm start
+ * 架构 D5：Core 是独立守护进程，本壳是它的 UI 客户端（SSE 消费）**兼监护人**：
+ * 找 node、拉起 Core、崩了重拉、退出时收摊（0.4「一个托盘应用负责 Core」）。
  * 特性：透明无边框窗口、always-on-top、右下角驻留、可拖拽、
- *       点击穿透开关（托盘）、点击宠物呼出浮层。
+ *       点击穿透开关（托盘）、点击宠物呼出浮层、开机自启。
  * 说明：Tauri v2（架构 D6 首选）待本机 Rust 工具链就绪后替换本壳，
  *       渲染层（ui/）与通信协议（SSE）不变，替换成本仅壳层。
  */
 import { app, BrowserWindow, Tray, Menu, screen, nativeImage, nativeTheme, ipcMain, dialog } from "electron";
-import { spawn } from "node:child_process";
-import { existsSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import {
+  MAX_CORE_RESTARTS,
+  CORE_HEALTHY_MS,
+  findNodeBinary,
+  loginItemSupport,
+  nodeCandidates,
+  parseNodeVersion,
+  restartDelay,
+} from "./launch.js";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
 function writeLog(prefix, line) {
@@ -164,7 +175,31 @@ function applyLocalePref(pref) {
   }
 }
 
-/* ---------------- Core ---------------- */
+/* ---------------- Core（0.4：一个托盘应用负责它的整个生命周期） ----------------
+ *
+ * 从前 dev 和 packaged 走两条路：packaged 自动拉起 Core，dev 打一行「请手动 npm run core」。
+ * 于是「怎么启动 Vibepaws」这个问题有两个答案，而其中一个是两条命令 —— 那是开发流程，
+ * 不是产品。现在两边同一条路：壳负责找 node、拉起 Core、看着它、退出时收摊。
+ *
+ * 三个状态要分清，因为它们的**收摊责任不同**：
+ *   · running  —— 我们拉起来的，退出时我们杀掉；崩了我们重拉。
+ *   · adopted  —— 端口上本来就有一个（`npm run core`，或上一次壳被 kill -9 留下的孤儿）。
+ *                 沿用它，但**绝不杀它**：杀掉一个不是自己拉起来的进程，等于把用户
+ *                 另一个终端里正在跑的东西掐了。
+ *   · failed   —— node 找不到 / 版本不够 / 连续崩溃到放弃。宠物窗口会显示「Core 未连接」。
+ */
+let coreProc = null;
+/** "starting" | "running" | "adopted" | "failed" —— 托盘里那一行显示的就是它 */
+let coreState = "starting";
+let coreRestarts = 0;
+let coreRestartTimer = null;
+let coreStartedAt = 0;
+/** before-quit 之后 Core 的退出是我们要的，不该触发重拉 */
+let quitting = false;
+/** undefined = 还没找过；null = 找过了，没有够版本的 */
+let nodeBinary = undefined;
+let nodeErrorShown = false;
+
 async function coreRunning() {
   try {
     const r = await fetch(`http://127.0.0.1:${CORE_PORT}/health`);
@@ -174,50 +209,192 @@ async function coreRunning() {
   }
 }
 
-let coreProc = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function findSystemNode() {
-  const candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
-  for (const c of candidates) {
-    try {
-      if (existsSync(c)) return c;
-    } catch {}
+function listDir(dir) {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
   }
-  return null;
+}
+
+/** 3 秒够任何一个 node 打印自己的版本号；探不通的候选路径在列表里是常态，不是异常。 */
+function probeNode(path) {
+  const r = spawnSync(path, ["--version"], { encoding: "utf8", timeout: 3000 });
+  if (r.error || r.status !== 0) return null;
+  return parseNodeVersion(r.stdout);
+}
+
+/**
+ * 找一个能跑 Core 的 node。**不能用 Electron 自己**（ELECTRON_RUN_AS_NODE）：
+ * better-sqlite3 的预编译产物是按系统 node 的 ABI 编的，Electron 加载它会直接报
+ * NODE_MODULE_VERSION 不匹配。UI server 没这个约束，所以它仍然跑在 Electron 里。
+ */
+function resolveNode() {
+  if (nodeBinary !== undefined) return nodeBinary;
+  const candidates = nodeCandidates({
+    env: process.env,
+    platform: process.platform,
+    home: homedir(),
+    listDir,
+  });
+  const found = findNodeBinary(candidates, probeNode);
+  nodeBinary = found.path;
+  if (found.path) {
+    log(`[vibepaws] Core 将由 ${found.path} (${found.version}) 运行`);
+  } else {
+    err(`[vibepaws] 在 ${candidates.length} 个候选位置里没找到 node ≥ 22.6`);
+    for (const old of found.tooOld) err(`[vibepaws]   ${old.path} 是 ${old.version}，太老`);
+    reportNodeMissing(found.tooOld);
+  }
+  return nodeBinary;
+}
+
+/**
+ * 这个错必须弹出来。它只有一个成因（机器上没有够版本的 node），只有一个解法（去装），
+ * 而从 GUI 启动时 stdout 没人看得见 —— 不弹的话用户看到的是一只永远「Core 未连接」的宠物。
+ * 一次运行只弹一次：开机自启的场景下，每次重试都弹一个模态框是灾难。
+ */
+function reportNodeMissing(tooOld) {
+  if (nodeErrorShown) return;
+  nodeErrorShown = true;
+  const detail = tooOld.length ? `${tooOld[0].path} — ${tooOld[0].version}` : "";
+  try {
+    dialog.showErrorBox(t("core.node.missing.title"), t("core.node.missing.body", { found: detail }));
+  } catch {}
+}
+
+function setCoreState(next) {
+  if (coreState === next) return;
+  coreState = next;
+  updateTrayMenu();
+}
+
+function spawnCore() {
+  const node = resolveNode();
+  if (!node) {
+    setCoreState("failed");
+    return false;
+  }
+  const entry = join(resourcesDir(), "src", "core", "server.ts");
+  const child = spawn(node, ["--experimental-strip-types", entry, "--port", String(CORE_PORT)], {
+    cwd: workDir(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  coreProc = child;
+  coreStartedAt = Date.now();
+  child.on("error", (e) => {
+    err(`[core] spawn failed: ${e}`);
+    // spawn 本身失败时不保证还有 exit 事件；不接这一下，状态会永远停在 starting
+    onCoreExit(child, null, "spawn-error");
+  });
+  child.stdout?.on("data", (d) => log(`[core] ${String(d).trim()}`));
+  child.stderr?.on("data", (d) => err(`[core] ${String(d).trim()}`));
+  child.on("exit", (code, signal) => onCoreExit(child, code, signal));
+  return true;
+}
+
+/** 等 Core 的 /health 通。它已经退了就立刻返回 —— exit 处理器会接手重拉。 */
+async function waitForCore(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await coreRunning()) {
+      setCoreState(coreProc ? "running" : "adopted");
+      return true;
+    }
+    if (!coreProc) return false;
+    await sleep(250);
+  }
+  return false;
+}
+
+function onCoreExit(child, code, signal) {
+  // 上一代进程的迟到讣告：restartCore 已经把 coreProc 换掉了，别拿它去重拉
+  if (child !== coreProc) return;
+  coreProc = null;
+  if (quitting) return;
+  // 撑过一分钟才崩的，跟启动期那串连崩不是一回事，计数重来
+  if (Date.now() - coreStartedAt >= CORE_HEALTHY_MS) coreRestarts = 0;
+  coreRestarts += 1;
+  const delay = restartDelay(coreRestarts);
+  if (delay === null) {
+    err(`[vibepaws] Core 连崩 ${MAX_CORE_RESTARTS} 次（最后 code=${code} signal=${signal}）—— 不再重拉，托盘里可手动重启`);
+    setCoreState("failed");
+    return;
+  }
+  err(`[vibepaws] Core 退出（code=${code} signal=${signal}），${delay}ms 后第 ${coreRestarts} 次重拉`);
+  setCoreState("starting");
+  coreRestartTimer = setTimeout(async () => {
+    coreRestartTimer = null;
+    if (quitting) return;
+    // 这段时间里用户可能自己起了一个（或者端口被别的东西占了）——
+    // 先探一下再决定，否则就是拿 EADDRINUSE 去撞一个活着的 Core
+    if (await coreRunning()) {
+      coreRestarts = 0;
+      setCoreState("adopted");
+      return;
+    }
+    if (spawnCore()) await waitForCore();
+  }, delay);
 }
 
 async function ensureCore() {
   if (await coreRunning()) {
-    log("[vibepaws] Core 已在运行");
+    setCoreState("adopted");
+    log("[vibepaws] Core 已在运行 —— 沿用它（退出时不会关掉它）");
     return;
   }
-  if (!app.isPackaged) {
-    log("[vibepaws] Core 未运行 — dev 模式请手动 npm run core（packaged 版会自动拉起）");
-    return;
+  setCoreState("starting");
+  if (!spawnCore()) return;
+  if (!(await waitForCore())) {
+    err("[vibepaws] Core 未能就绪 —— 宠物窗口会显示「Core 未连接」");
   }
-  // packaged：自动拉起 Core（用系统 node 跑，与 better-sqlite3 ABI 兼容；数据目录=userData/.vibepaws）
-  const nodePath = findSystemNode();
-  if (!nodePath) {
-    err("[vibepaws] 找不到系统 node — 请先安装 Node.js ≥ 20，或手动 npm run core");
-    return;
+}
+
+/**
+ * adopted 的那一路没有 exit 事件可听 —— 它不是我们的子进程，用户在自己的终端里
+ * Ctrl-C 一下，壳这边是完全静默的：宠物从此不动，托盘上还写着「运行中」。
+ * 所以 adopted 期间要自己探活；探不到就接管（这正是「一个托盘应用负责 Core」的意思）。
+ * 我们自己拉起来的那一路不走这里 —— 那边有 exit 事件，比轮询快也比轮询准。
+ */
+const CORE_WATCH_MS = 5000;
+let coreWatch = null;
+
+function startCoreWatch() {
+  if (coreWatch) return;
+  coreWatch = setInterval(async () => {
+    if (quitting || coreProc || coreState !== "adopted") return;
+    if (await coreRunning()) return;
+    err("[vibepaws] 外部启动的 Core 不见了 —— 接管，改由本应用拉起");
+    await ensureCore();
+  }, CORE_WATCH_MS);
+}
+
+/** 托盘里的手动出口：装完 node、或者放弃重拉之后，不必退出整个 app 重来。 */
+async function restartCore() {
+  if (coreRestartTimer) {
+    clearTimeout(coreRestartTimer);
+    coreRestartTimer = null;
   }
-  const entry = join(resourcesDir(), "src", "core", "server.ts");
-  coreProc = spawn(nodePath, ["--experimental-strip-types", entry, "--port", String(CORE_PORT)], {
-    cwd: workDir(),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  coreProc.on("error", (e) => err(`[core] spawn failed: ${e}`));
-  coreProc.stdout?.on("data", (d) => log(`[core] ${String(d).trim()}`));
-  coreProc.stderr?.on("data", (d) => err(`[core] ${String(d).trim()}`));
-  // 等待 Core 就绪
-  for (let i = 0; i < 40; i++) {
-    if (await coreRunning()) {
-      log("[vibepaws] Core 已自动拉起");
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 250));
+  coreRestarts = 0;
+  nodeBinary = undefined; // 用户很可能刚把 node 装上，缓存的「没找到」得作废
+  nodeErrorShown = false;
+  const mine = coreProc;
+  if (!mine && coreState === "adopted") {
+    // 点了「重启 Core」但那个 Core 不是我们拉起来的 —— 不去动它，只重新探一次活。
+    // 想真的重启它，得回到起它的那个终端：那里才有它的日志和 Ctrl-C。
+    log("[vibepaws] Core 不是本应用启动的 —— 只重新探活，不去杀它");
   }
-  err("[vibepaws] Core 启动失败 — 宠物窗口会显示「Core 未连接」");
+  if (mine) {
+    // 先摘掉引用再杀：否则 exit 处理器会把这次主动重启当成崩溃，又排一次退避重拉
+    coreProc = null;
+    mine.kill();
+    // 端口要一小会儿才放开；不等的话新进程一起来就 EADDRINUSE
+    for (let i = 0; i < 20 && (await coreRunning()); i++) await sleep(100);
+  }
+  setCoreState("starting");
+  await ensureCore();
 }
 
 /* ---------------- UI server ---------------- */
@@ -751,7 +928,43 @@ function fromSettings(e) {
   return Boolean(settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents);
 }
 
+/* ---------------- 开机自启（0.4） ----------------
+ * 真值存在操作系统里，不存在我们的 window-prefs.json 里 —— 用户随时可以在
+ * 「系统设置 → 通用 → 登录项」里把它关掉，那一刻任何自己记的一份都会开始撒谎。
+ * 所以每次都现读，写完之后也以回读的结果为准。 */
+function loginItemState() {
+  const support = loginItemSupport({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    appPath: app.getPath("exe"),
+  });
+  if (!support.supported) return { ...support, enabled: false };
+  try {
+    return { ...support, enabled: Boolean(app.getLoginItemSettings().openAtLogin) };
+  } catch (e) {
+    err(`[vibepaws] 读登录项失败: ${e}`);
+    return { supported: false, reason: "platform", enabled: false };
+  }
+}
+
+function setOpenAtLogin(value) {
+  const state = loginItemState();
+  if (!state.supported) return state;
+  try {
+    // openAsHidden = false：宠物就是这个产品本身，开机后藏起来等于没启动。
+    // 它的窗口不抢焦点、不进 Dock（accessory 档），所以「出现」本身不打扰任何人。
+    app.setLoginItemSettings({ openAtLogin: Boolean(value), openAsHidden: false });
+  } catch (e) {
+    err(`[vibepaws] 写登录项失败: ${e}`);
+  }
+  const next = loginItemState();
+  log(`[vibepaws] 开机自启 → ${next.enabled ? "on" : "off"}`);
+  updateTrayMenu();
+  return next;
+}
+
 function prefsPayload() {
+  const login = loginItemState();
   return {
     allSpaces: prefs.allSpaces,
     clickThrough,
@@ -759,6 +972,10 @@ function prefsPayload() {
     /** 「跟随系统」那一项要说出来跟随的是什么 */
     osLocale: normalizeLocale(app.getLocale()),
     platform: process.platform,
+    openAtLogin: login.enabled,
+    /** 装不上时开关要禁用**并说出原因** —— 一个点了没反应的开关比一个灰的难查得多 */
+    openAtLoginSupported: login.supported,
+    openAtLoginReason: login.reason,
   };
 }
 
@@ -779,6 +996,7 @@ ipcMain.handle("vibepaws:prefs-set", (e, patch) => {
   if (!fromSettings(e) || !patch || typeof patch !== "object") return null;
   if (typeof patch.allSpaces === "boolean") setAllSpaces(patch.allSpaces);
   if (typeof patch.clickThrough === "boolean") setClickThrough(patch.clickThrough);
+  if (typeof patch.openAtLogin === "boolean") setOpenAtLogin(patch.openAtLogin);
   const payload = prefsPayload();
   if (typeof patch.locale === "string") {
     payload.locale = patch.locale === "en" || patch.locale === "zh-CN" ? patch.locale : "auto";
@@ -797,7 +1015,13 @@ ipcMain.handle("vibepaws:reset-position", (e) => {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const menu = Menu.buildFromTemplate([
+  const login = loginItemState();
+  const template = [
+    // Core 的状态排第一：壳活着而 Core 没活着时，宠物只是安静地什么都不做 ——
+    // 「为什么它不动」的答案必须在第一屏，而不是在 userData 里的日志文件中
+    { label: t("tray.core", { state: t(`tray.core.state.${coreState}`) }), enabled: false },
+    { label: t("tray.core.restart"), click: () => void restartCore() },
+    { type: "separator" },
     {
       label: t("tray.clickthrough", { state: t(clickThrough ? "tray.state.on" : "tray.state.off") }),
       click: toggleClickThrough,
@@ -806,14 +1030,24 @@ function updateTrayMenu() {
       label: t("tray.allspaces", { state: t(prefs.allSpaces ? "tray.state.on" : "tray.state.off") }),
       click: toggleAllSpaces,
     },
+  ];
+  // 装不上时不列这一项：托盘菜单没有地方解释「为什么这条是灰的」，
+  // 而设置窗口里有 —— 那边的开关会带着原因一起禁用
+  if (login.supported) {
+    template.push({
+      label: t("tray.autostart", { state: t(login.enabled ? "tray.state.on" : "tray.state.off") }),
+      click: () => setOpenAtLogin(!login.enabled),
+    });
+  }
+  template.push(
     { label: t("tray.show"), click: () => ensureWindow()?.show() },
     // 不给 accelerator：托盘菜单里的快捷键在 macOS 上只是显示出来、并不会真的生效，
     // 印一个按了没反应的 ⌘, 比不印更糟
     { label: t("tray.settings"), click: openSettings },
     { label: t("tray.reset"), click: resetWindowPosition },
     { label: t("tray.quit"), click: () => app.quit() },
-  ]);
-  tray.setContextMenu(menu);
+  );
+  tray.setContextMenu(Menu.buildFromTemplate(template));
 }
 
 /* 托盘图标：必须是 PNG。
@@ -858,6 +1092,7 @@ async function boot() {
   // 而不是「点了图标什么都没发生」。
   createTray();
   await ensureCore();
+  startCoreWatch();
   uiPort = await startUiServer();
   uiReady = true;
   ensureWindow();
@@ -882,6 +1117,9 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  quitting = true;
+  if (coreRestartTimer) clearTimeout(coreRestartTimer);
+  if (coreWatch) clearInterval(coreWatch);
   stopDrag();
   stopHitRescue(); // stopDrag 末尾会重算穿透状态，可能又把兜底 timer 拉起来
   if (levelKeepAlive) clearInterval(levelKeepAlive);
@@ -894,6 +1132,7 @@ app.on("before-quit", () => {
     }
   }
   uiServer?.kill();
+  // adopted 的 Core 在这里是 null —— 别去关一个用户自己在别的终端里跑着的进程
   coreProc?.kill();
 });
 

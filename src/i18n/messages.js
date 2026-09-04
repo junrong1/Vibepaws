@@ -125,6 +125,17 @@ export const MESSAGES = {
     "tray.quit": "Quit Vibepaws",
     "tray.startfailed.title": "Vibepaws could not start",
     "tray.startfailed.body": "The pet window needs its local UI server.\n\n{error}",
+    "tray.autostart": "Start at login: {state}",
+    "tray.core": "Core: {state}",
+    "tray.core.state.starting": "starting…",
+    "tray.core.state.running": "running",
+    "tray.core.state.adopted": "running (started outside the app)",
+    "tray.core.state.failed": "not running",
+    "tray.core.restart": "Restart Core",
+    "core.node.missing.title": "Vibepaws needs Node 22.6 or newer",
+    "core.node.missing.body":
+      "Core runs on `node --experimental-strip-types`, and that flag doesn't exist before 22.6. " +
+      "Install Node from nodejs.org, then pick \u201cRestart Core\u201d in the tray menu.\n\n{found}",
 
     // ---- 设置窗口 ----
     "settings.title": "Vibepaws Settings",
@@ -192,6 +203,15 @@ export const MESSAGES = {
     "settings.session.state.warning": "Warning",
     "settings.session.state.idle": "Idle",
     "settings.session.state.finished": "Finished",
+
+    "settings.section.startup": "Startup",
+    "settings.startup.openatlogin": "Start Vibepaws when I log in",
+    "settings.startup.hint":
+      "One login item starts the pet and Core together — the same thing the app does when you launch it by hand.",
+    "settings.startup.na.dev": "Only available in the packaged app — a dev run would register the Electron binary instead.",
+    "settings.startup.na.platform": "Not available on this platform.",
+    "settings.startup.na.volume":
+      "Move Vibepaws to your Applications folder first — a login item pointing inside the disk image dies when you eject it.",
 
     "settings.section.window": "Window",
     "settings.window.allspaces": "Show on all Spaces",
@@ -391,6 +411,17 @@ export const MESSAGES = {
     "tray.quit": "退出 Vibepaws",
     "tray.startfailed.title": "Vibepaws 启动失败",
     "tray.startfailed.body": "宠物窗口依赖本机 UI 服务。\n\n{error}",
+    "tray.autostart": "开机自启：{state}",
+    "tray.core": "Core：{state}",
+    "tray.core.state.starting": "启动中…",
+    "tray.core.state.running": "运行中",
+    "tray.core.state.adopted": "运行中（不是本应用启动的）",
+    "tray.core.state.failed": "未运行",
+    "tray.core.restart": "重启 Core",
+    "core.node.missing.title": "Vibepaws 需要 Node 22.6 或更高版本",
+    "core.node.missing.body":
+      "Core 跑在 `node --experimental-strip-types` 上，而这个 flag 在 22.6 之前不存在。" +
+      "请到 nodejs.org 安装，然后在托盘菜单里选「重启 Core」。\n\n{found}",
 
     // ---- 设置窗口 ----
     "settings.title": "Vibepaws 设置",
@@ -452,6 +483,13 @@ export const MESSAGES = {
     "settings.session.state.warning": "告警",
     "settings.session.state.idle": "空闲",
     "settings.session.state.finished": "已结束",
+
+    "settings.section.startup": "启动",
+    "settings.startup.openatlogin": "登录时启动 Vibepaws",
+    "settings.startup.hint": "一条登录项同时拉起宠物和 Core —— 和你手动打开这个应用时做的是同一件事。",
+    "settings.startup.na.dev": "只有打包后的应用能用 —— dev 模式注册进去的会是 Electron 那个可执行文件。",
+    "settings.startup.na.platform": "当前平台不支持。",
+    "settings.startup.na.volume": "先把 Vibepaws 拖进「应用程序」文件夹 —— 指向磁盘映像里的登录项，映像一弹出就失效了。",
 
     "settings.section.window": "窗口",
     "settings.window.allspaces": "在所有桌面显示",

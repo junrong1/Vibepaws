@@ -69,25 +69,25 @@ npm install
 
 macOS is the tested platform today. Windows and Linux aren't blocked by design, but haven't been exercised.
 
-### 1. Start Core
-
-Core is the daemon: it ingests events, tracks sessions, runs the notification and EXP engines, and owns the SQLite database.
+### 1. Start it
 
 ```bash
-npm run core     # listens on 127.0.0.1:17893
+npm start        # transparent always-on-top window, bottom-right, with a tray icon
 ```
+
+One command. The tray app owns everything else: it finds a Node ≥ 22.6 on your machine, starts **Core** (the daemon that ingests events, tracks sessions, runs the notification and EXP engines, and owns the SQLite database) on `127.0.0.1:17893`, starts the local UI server, and stops both when you quit.
 
 First run initializes `.vibepaws/vibepaws.db`, rolls you a **random starter pet**, and writes an API token to `.vibepaws/api_token`. Core binds localhost only, and every route except `/health` requires that token.
 
-### 2. Start the pet
+If Core dies, the app restarts it (five tries, exponential backoff) and shows its state at the top of the tray menu. If Core is *already* running — you started `npm run core` yourself in another terminal — the app uses that one and leaves it alone when you quit.
 
-In a second terminal:
+> `npm run core` and `npm run desktop` still exist and still work separately. They're the dev workflow: `core:watch` reloads on edit, and running the two apart is how you read Core's log without the shell's on top of it.
 
-```bash
-npm run desktop  # transparent always-on-top window, bottom-right, with a tray icon
-```
+### 2. Start it at login
 
-> In dev mode Core and the pet are separate processes — start Core first. A packaged `.app` launches Core for you.
+**Settings → Startup → "Start Vibepaws when I log in"**, or the tray menu. One login item brings up the pet and Core together.
+
+This needs the packaged `.app` (see [Packaging](#packaging-a-app)) — a `npm start` run would register the Electron binary from `node_modules` instead, so the toggle is disabled and says so. Move the app into `/Applications` first: a login item pointing inside a mounted `.dmg` dies the moment you eject it.
 
 ### 3. Watch it work, without an agent
 
@@ -311,7 +311,7 @@ Amber is the important one: without it, a broken hook looks exactly like a quiet
 
 - **Drag** — grab empty space in the pet window. Position is remembered, and always clamped to the visible screen area.
 - **Clicks pass through** the empty area around the pet's body, straight to the app underneath. The flyout needs room above the pet, and that room is normally empty space.
-- **Tray menu** — click-through toggle · show on all desktops · show · settings · snap back to bottom-right · quit
+- **Tray menu** — Core status and restart · click-through toggle · show on all desktops · start at login · show · settings · snap back to bottom-right · quit
 - **Above fullscreen apps** — the pet stays visible over fullscreen iTerm2, fullscreen editors, and so on. This is not affected by the tray toggles. To make it possible the shell keeps no Dock icon, so **quit lives in the tray menu** — a macOS requirement: a process with a Dock icon cannot float over someone else's fullscreen Space.
 - **Browser preview** (optional) — `npm run ui`, then open http://127.0.0.1:5173. If 5173 is busy the desktop shell picks a free port automatically (it's Vite's default port, so a stray dev server is likely).
 
@@ -324,7 +324,7 @@ The UI follows your OS language: any Chinese variant → Simplified Chinese, eve
 To pick one explicitly, use **Settings → Language** — the tray menu, pet window, and settings window all switch on the spot, no restart. The environment variable still wins over that choice, for scripted runs:
 
 ```bash
-VIBEPAWS_LOCALE=en npm run desktop      # or zh-CN
+VIBEPAWS_LOCALE=en npm start      # or zh-CN
 ```
 
 ---
@@ -536,6 +536,8 @@ notarization ticket, and whether every Mach-O in the bundle got signed.
 | No token milestone bubbles | No budget is set — set one in Settings (tray → Settings…), globally or on that session. Milestones are relative to a budget; context warnings work without one. |
 | Pet disappears over a fullscreen terminal | Shouldn't happen — file it. Note that "show on all desktops" only controls whether it follows you between Spaces. |
 | Pet is off-screen after switching monitors | Use tray → snap back to bottom-right. |
+| "Vibepaws needs Node 22.6 or newer" on launch | The app looks in `PATH`, then Homebrew, `/usr/local`, `/usr/bin`, Volta, nvm, fnm, and `n`. If yours lives somewhere else, set `VIBEPAWS_NODE=/path/to/node` — a login-item launch has almost no `PATH`, so this is the case to expect there. |
+| Tray says **Core: not running** | Five restarts in a row failed. Tray → **Restart Core**; the reason is in the log (`~/Library/Application Support/Vibepaws/vibepaws.log` for the packaged app, stdout in dev). |
 
 ---
 
@@ -546,7 +548,7 @@ npm test          # registry state machine · notification engine · EXP engine 
                   # migrations · hook normalization · bridge · privacy · i18n · pet type seed ·
                   # motion recipes (including out-of-range and transition continuity)
 npm run typecheck
-npm run core:watch
+npm run core:watch    # Core alone, reloading on edit — pair it with `npm start`, which will adopt it
 ```
 
 Layout:
@@ -559,7 +561,8 @@ src/simulator/   scenario-driven event generator for QA
 src/i18n/        one shared message catalog (zh-CN / en)
 ui/              pet renderer: canvas, motion recipes, fx, pet registry, procedural fallback
                  + the settings page (settings.html / .js / .css)
-desktop/         Electron shell: transparent window, tray, click-through, positioning, settings window
+desktop/         Electron shell: transparent window, tray, click-through, positioning, settings window,
+                 Core supervision (find node → spawn → restart → reap) and the login item
 scripts/         Python asset pipeline (only needed when adding pets)
 docs/            PRD (en/zh) and technical architecture
 ```

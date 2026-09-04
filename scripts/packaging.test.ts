@@ -72,6 +72,13 @@ test("dmg 公证钩子挂着且能加载 —— 它是「用户双击 dmg 不被
   assert.ok(existsSync(p), `钩子文件不存在：${p}`);
 });
 
+test("壳的测试文件不进包 —— 它只在 npm test 里有意义", () => {
+  assert.ok(
+    pkg.build.files.includes("!desktop/*.test.js"),
+    "desktop/** 会把 launch.test.js 一起打进去：用户装的 app 里不该有测试",
+  );
+});
+
 test("asar 里排除了 better-sqlite3 —— 否则 26 MB 死重 + 签名面翻倍", () => {
   assert.ok(
     pkg.build.files.includes("!node_modules/better-sqlite3/**"),

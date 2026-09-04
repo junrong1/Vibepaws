@@ -69,25 +69,25 @@ npm install
 
 目前测试过的平台是 macOS。Windows 和 Linux 在设计上没有被排除，但也没有被验证过。
 
-### 1. 启动 Core
-
-Core 是守护进程：收事件、管 session、跑通知与 EXP 引擎、持有 SQLite 数据库。
+### 1. 启动
 
 ```bash
-npm run core     # 监听 127.0.0.1:17893
+npm start        # 透明 always-on-top 窗口，右下角，带托盘图标
 ```
+
+一条命令。其余的事都由这个托盘应用负责：找到机器上一个 ≥ 22.6 的 Node，在 `127.0.0.1:17893` 上拉起 **Core**（收事件、管 session、跑通知与 EXP 引擎、持有 SQLite 数据库的那个守护进程），拉起本机 UI server，退出时把两个都收掉。
 
 首次启动会初始化 `.vibepaws/vibepaws.db`，**随机分配一只 starter pet**，并把 API token 写入 `.vibepaws/api_token`。Core 只监听 localhost，除 `/health` 外所有路由都要带这个 token。
 
-### 2. 启动桌面宠物
+Core 崩了会自动重拉（5 次，指数退避），当前状态就写在托盘菜单第一行。如果 Core **本来就在跑**（你自己在另一个终端里 `npm run core`），应用会直接用那一个，退出时也不会去关它。
 
-在第二个终端里：
+> `npm run core` 和 `npm run desktop` 仍然在，也仍然分得开跑 —— 那是开发流程：`core:watch` 改完即重载，而分开跑是唯一能单独看 Core 日志、不被壳的日志盖住的方式。
 
-```bash
-npm run desktop  # 透明 always-on-top 窗口，右下角，带托盘图标
-```
+### 2. 开机自启
 
-> dev 模式下 Core 和宠物是两个独立进程 —— 先起 Core。打包后的 `.app` 会自己拉起 Core。
+**设置 → 启动 →「登录时启动 Vibepaws」**，或者托盘菜单里那一项。一条登录项同时拉起宠物和 Core。
+
+这一项需要打包后的 `.app`（见[打包](#打包-app)）—— `npm start` 跑起来的那个进程注册进去的会是 `node_modules` 里的 Electron，所以开关是禁用的，并且会就地说明原因。另外先把 app 拖进 `/应用程序`：指向已挂载 `.dmg` 里的登录项，映像一弹出就失效了。
 
 ### 3. 不接真实 agent 也能先看效果
 
@@ -311,7 +311,7 @@ Core 每 60 秒扫一轮，启动时先扫一次 —— 上一次 Core 退出时
 
 - **拖拽** —— 按住宠物窗口的空白处拖动。位置会记住，且始终夹在屏幕可见区域内。
 - **点击穿透** —— 宠物身体以外的空白区域点击会直接落到下面的应用上。浮层要占宠物上方的空间，那块空间平时是空的。
-- **托盘菜单** —— 点击穿透开关 · 所有桌面显示 · 显示 · 设置 · 放回右下角 · 退出
+- **托盘菜单** —— Core 状态与重启 · 点击穿透开关 · 所有桌面显示 · 开机自启 · 显示 · 设置 · 放回右下角 · 退出
 - **浮在全屏应用之上** —— 全屏 iTerm2、全屏编辑器之上宠物依然可见，这一条不受托盘开关影响。为此壳进程不占 Dock 图标，**出口在托盘菜单里** —— 这是 macOS 的硬性要求：占 Dock 的进程无法浮在别人的全屏 Space 上。「所有桌面显示」只管「你换桌面时它跟不跟过来」。
 - **浏览器预览**（可选）—— `npm run ui` 后打开 http://127.0.0.1:5173。5173 被占用时桌面壳会自动改用空闲端口（它是 Vite 默认端口，你手边随时可能有个前端 dev server 占着）。
 
@@ -324,7 +324,7 @@ Core 每 60 秒扫一轮，启动时先扫一次 —— 上一次 Core 退出时
 想显式指定，用**设置 → 语言**：托盘菜单、宠物窗口、设置窗口会当场一起换，不用重启。环境变量的优先级仍然高于这个选项，方便脚本化启动：
 
 ```bash
-VIBEPAWS_LOCALE=en npm run desktop      # 或 zh-CN
+VIBEPAWS_LOCALE=en npm start      # 或 zh-CN
 ```
 
 ---
@@ -536,6 +536,8 @@ npm run verify:release                  # 打包后：到底签上没有、公�
 | 没有 token 里程碑气泡 | 没设预算 —— 在设置里填一个（托盘 → 设置…），全局或只给那个 session。里程碑是相对预算算的；context 警告不需要预算。 |
 | 宠物在全屏终端上消失了 | 不该发生 —— 请提 issue。注意「所有桌面显示」只管换桌面时跟不跟过来。 |
 | 换了显示器后宠物跑到屏幕外 | 托盘 → 放回右下角。 |
+| 启动时弹「Vibepaws 需要 Node 22.6 或更高版本」 | 应用会依次找 `PATH`、Homebrew、`/usr/local`、`/usr/bin`、Volta、nvm、fnm、`n`。都不在的话设 `VIBEPAWS_NODE=/path/to/node` —— 从登录项启动时几乎没有 `PATH`，这个场景要特别留意。 |
+| 托盘里写着 **Core：未运行** | 连着 5 次重拉都失败了。托盘 → **重启 Core**；原因在日志里（打包版是 `~/Library/Application Support/Vibepaws/vibepaws.log`，dev 模式在 stdout）。 |
 
 ---
 
@@ -545,7 +547,7 @@ npm run verify:release                  # 打包后：到底签上没有、公�
 npm test          # registry 状态机 · 通知引擎 · EXP 引擎 · 聚合状态 · 迁移 · hook 归一化 ·
                   # bridge · 隐私 · i18n · 宠物类型种子 · 动作配方（含越界与切换连续性）
 npm run typecheck
-npm run core:watch
+npm run core:watch    # 只跑 Core，改完即重载 —— 配合 `npm start`，它会直接沿用这一个
 ```
 
 目录结构：
@@ -558,7 +560,8 @@ src/simulator/   场景驱动的事件生成器（QA 用）
 src/i18n/        一份共用文案目录（zh-CN / en）
 ui/              宠物渲染层：canvas、动作配方、fx、宠物注册表、程序生成兜底
                  以及设置页面（settings.html / .js / .css）
-desktop/         Electron 壳：透明窗口、托盘、点击穿透、定位、设置窗口
+desktop/         Electron 壳：透明窗口、托盘、点击穿透、定位、设置窗口，
+                 以及 Core 的监护（找 node → 拉起 → 重拉 → 收摊）和登录项
 scripts/         Python 素材 pipeline（只有加宠物时才需要）
 docs/            PRD（中/英）与技术架构
 ```

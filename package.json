@@ -9,6 +9,7 @@
     "node": ">=22.6"
   },
   "scripts": {
+    "start": "electron desktop/main.js",
     "core": "node --experimental-strip-types src/core/server.ts",
     "core:watch": "node --watch --experimental-strip-types src/core/server.ts",
     "sim": "node --experimental-strip-types src/simulator/index.ts",
@@ -23,7 +24,7 @@
     "desktop": "electron desktop/main.js",
     "dist:mac": "electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js scripts/*.test.ts",
+    "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js desktop/*.test.js scripts/*.test.ts",
     "verify:release": "node --experimental-strip-types scripts/verify_release.ts"
   },
   "dependencies": {
@@ -45,6 +46,7 @@
     "files": [
       "desktop/**",
       "package.json",
+      "!desktop/*.test.js",
       "!node_modules/better-sqlite3/**"
     ],
     "extraResources": [

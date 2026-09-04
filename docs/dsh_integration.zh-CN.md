@@ -111,8 +111,7 @@ npm run bridge -- --once  # 只补收一次就退出
 node --test --experimental-strip-types src/adapters/dsh_plugin.test.ts
 
 # 端到端：Core + 桌面宠物跑起来后，用 dsh 跑一个会话
-npm run core
-npm run desktop
+npm start        # 一条命令：托盘应用会自己拉起 Core 和 UI server
 # 另开终端：pnpm dsh web（持久化 patch 已生效时）
 # 宠物面板应出现 dsh 的 adapter_status / session_started，agent 干活时出现 working / 气泡
 ```
