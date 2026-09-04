@@ -23,7 +23,8 @@
     "desktop": "electron desktop/main.js",
     "dist:mac": "electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js"
+    "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js scripts/*.test.ts",
+    "verify:release": "node --experimental-strip-types scripts/verify_release.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
@@ -43,19 +44,43 @@
     },
     "files": [
       "desktop/**",
-      "package.json"
+      "package.json",
+      "!node_modules/better-sqlite3/**"
     ],
     "extraResources": [
-      { "from": "src", "to": "src" },
-      { "from": "ui", "to": "ui" },
-      { "from": "node_modules/better-sqlite3", "to": "node_modules/better-sqlite3" },
-      { "from": "node_modules/bindings", "to": "node_modules/bindings" },
-      { "from": "node_modules/file-uri-to-path", "to": "node_modules/file-uri-to-path" }
+      {
+        "from": "src",
+        "to": "src"
+      },
+      {
+        "from": "ui",
+        "to": "ui"
+      },
+      {
+        "from": "node_modules/better-sqlite3",
+        "to": "node_modules/better-sqlite3",
+        "filter": [
+          "**/*",
+          "!prebuilds/**"
+        ]
+      },
+      {
+        "from": "node_modules/better-sqlite3/prebuilds/darwin-${arch}.node",
+        "to": "node_modules/better-sqlite3/prebuilds/darwin-${arch}.node"
+      }
     ],
     "mac": {
-      "target": ["dmg", "zip"],
-      "category": "public.app-category.developer-tools"
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": true
     },
-    "npmRebuild": false
+    "npmRebuild": false,
+    "afterAllArtifactBuild": "./build/notarize-dmg.cjs"
   }
 }

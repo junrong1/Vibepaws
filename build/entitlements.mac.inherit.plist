@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!--
+      Electron 的子进程（Renderer / GPU / Network Helper）单独签名，用这份。
+      跟主进程同一套：渲染进程里跑的也是 V8，一样要 JIT。
+
+      注意没有 com.apple.security.inherit —— 那个键只有在开了 app-sandbox 时才有意义，
+      非沙箱的 Developer ID 构建里写上去反而会让 codesign 报无效授权。
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

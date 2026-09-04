@@ -401,7 +401,7 @@ Vibepaws 的宠物是设计师取的固定名字 —— Embercub、Lunafang、Sp
 ### 4.11 两个要绕开的信任陷阱
 
 - [clawd #102「为什么我的 Claude 说这个插件消耗了我很多 token」](https://github.com/rullerzhou-afk/clawd-on-desk/issues/102) —— agent **幻觉**出「宠物在消耗 token」，用户信了。维护者不得不解释：hook 是纯本地的、不往 stdout 写任何东西、从不碰 API。**任何基于 hook 的宠物都会碰到这个。** Vibepaws 应该提前拦：README 一行、应用内一行 —— *「宠物从不向模型发送任何东西，它不可能消耗 token」* —— 再加一个可见的 hook 字节数 / 延迟计数器。 **已完成（0.12，8/25）** —— 而这个计数器还有第二个用处：它把每次 hook 调用约 78 ms 的 Node 启动摆到了界面上，那是这套设计唯一真实存在的开销。
-- **杀软与 Gatekeeper。** 桌宠经常被误报；clawd [#872](https://github.com/rullerzhou-afk/clawd-on-desk/issues/872) 讲的是 macOS **每次更新**都要去「隐私与安全性」放行，openpets 则一路做到了 **SignPath 签名构建**。Vibepaws 的 README 已经记录了未签名构建的问题 —— 这证明只要发布范围超出朋友圈，签名就不是可选项。
+- **杀软与 Gatekeeper。** 桌宠经常被误报；clawd [#872](https://github.com/rullerzhou-afk/clawd-on-desk/issues/872) 讲的是 macOS **每次更新**都要去「隐私与安全性」放行，openpets 则一路做到了 **SignPath 签名构建**。Vibepaws 的 README 已经记录了未签名构建的问题 —— 这证明只要发布范围超出朋友圈，签名就不是可选项。**已完成（0.13，9/4）** —— 而且真正产生 #872 那个症状的是 dmg 这一半：electron-builder 只装订 `.app`，所以警告会一直在，直到磁盘映像自己也被公证。
 
 ### 4.12 每个竞品都踩过的 bug —— 送给 Vibepaws 的免费 QA
 
@@ -456,7 +456,7 @@ Vibepaws 的宠物是设计师取的固定名字 —— Embercub、Lunafang、Sp
 | 0.10 | ~~**僵尸会话回收**~~ ✅ | **8/25 已交付。** Core 每 60s 扫一轮，启动时先扫一次（上一次运行留下的 `is_active` 行，恰恰是最可能的僵尸）。两条路径：adapter 上报 agent 的 pid，`kill(pid,0)` 能在一个 sweep 周期内抓到崩溃（`outcome=orphaned`）；拿不到可用 pid 的通道退回可配的静默超时（`outcome=timeout`，默认 15 分钟，设置 → 闲置 session）。两者都不结算 EXP —— 崩溃不是胜利 —— 并且都会清掉该会话的 `needs-you` 标记、撤掉它还挂着的气泡。pid 只有在**同一个** pid 出现在两条事件上之后才被采信，这一条把真正的 agent 进程和一闪而过的包装 shell 分开；没有这道闸，这个功能会去杀正在干活的会话（**G10**） | ~~2~~ **已完成** | ★ |
 | **0.11** | **subagent 感知状态** | `SubagentStart`/`Stop` 已经在采集 —— 把 1 个和 2+ 个渲染成不同状态。subagent 现在很常规，而扁平的「working」把它们藏起来了。留意 clawd #214 和 #862 | 2 | ★★ |
 | **0.12** | ~~**「它不会吃你的 token」信任文案**~~ ✅ | **8/25 已交付。** README 里给的是一节而不是一行 —— 对一个被幻觉出来的指控，唯一有效的回答是机制：hook 通往模型的通道只有一条（stdout，Claude Code 会把 `UserPromptSubmit` 的那一份当上下文注入），而我们的 hook 一个字节都不写、永远以 0 退出，这两条现在由测试钉住 —— 一句调试完忘了删的 `console.log` 真的会开始花钱，而它在 review 里看起来完全无害。应用内：设置里一张 **Token 与开销** 卡，加上 EXP 明细下面的一行简版，数据来自 `GET /api/hookstats` —— 事件数、字节数、Core 的 p50/p95、hook 进程自报的墙上时间，JSON 里带着 `model_calls: 0` 与 `outbound_bytes: 0`，于是可以用 `curl` 去核对那扇窗口，而不是反过来。计数器暴露出来的东西本身就值这半天：每条事件约 310 字节、约 0.4 ms，但**每次 hook 调用有约 78 ms 的 Node 启动** —— 这是 hook 式设计真正的价码，现在它在界面上，而不是在脚注里 | ~~0.5~~ **已完成** | ★★ |
-| **0.13** | **代码签名 + 公证** | README 里已经记录为已知问题。openpets 做到了 SignPath；clawd 用户每次更新都要点「隐私与安全性」。**发布范围超出朋友圈之前，不可选** | 2 | ★ |
+| **0.13** | ~~**代码签名 + 公证**~~ ✅ | **9/4 已交付。** hardened runtime、压到最小的授权清单（每一条都注释了「不加会怎样」）、`.app` **和** `.dmg` 两份产物各自的公证，以及打 tag 触发的 CI 发版。有两件事是真做了才浮出来的。其一，**electron-builder 只公证 `.app`，不管 `.dmg`** —— 里面的 app 是装订过的，所以拖出来运行没问题，但双击 dmg 时 Gatekeeper 评估的是 dmg 自己那张（并不存在的）票。这个口子就是 clawd #872 说的「每次更新都要点隐私与安全性」，于是 `build/notarize-dmg.cjs` 单独去装订 dmg。其二，也是为什么最终交付物是一个验收脚本而不是一段配置 diff：**签名出问题在本地是看不见的** —— 自己构建的产物不带 quarantine 标记，Gatekeeper 根本不评估它，签名再离谱也能一直正常启动。`npm run verify:release` 直接去问 macOS，而它走查包内每一个 Mach-O，立刻就查出 `better-sqlite3` 被打进去**两份**（asar + extraResources）：26 MB 没有任何人 require 的死重，把签名面从 19 个二进制压到修完后的 16 个，下载体积也少了 12 MB | ~~2~~ **已完成** | ★ |
 
 ### Tier 1 —— 护城河：让质量成为产品
 

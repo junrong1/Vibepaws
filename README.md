@@ -48,7 +48,7 @@ It also can't spend your tokens: there is no API key and no model client in it, 
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
 | ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
@@ -500,14 +500,26 @@ State-to-motion mapping lives in the `MOTION` recipe table in `ui/pets/motion.js
 ## Packaging a `.app`
 
 ```bash
-npm run dist:mac     # output in dist/
+npm run dist:mac                      # output in dist/
+npm run verify:release -- --preflight  # before building: do you have a cert and credentials?
+npm run verify:release                 # after building: is it actually signed and notarized?
 ```
+
+The build is wired for signing and notarization — hardened runtime, entitlements, and a
+notarization step for both the `.app` and the `.dmg`. **Credentials are what's missing, not
+config.** Without them the build still succeeds and produces an unsigned `.app`, which is the
+normal local-development path.
 
 > **An unsigned build shows up as "damaged" on macOS** ([#1](https://github.com/junrong1/Vibepaws/issues/1)). The build isn't broken — Gatekeeper quarantines any app without an Apple Developer signature and notarization. Two options:
 >
 > - **For yourself** — clear the quarantine flag after installing:
 >   `xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
-> - **To distribute** — you need an Apple Developer certificate, plus `hardenedRuntime` and `entitlements` added to `build.mac` in `package.json`, plus notarization. Signing credentials are not bundled in this repo.
+> - **To distribute** — set the Apple credentials and the same `npm run dist:mac` signs, notarizes, and staples. Tagging `v*` does it in CI. Full runbook: [`docs/release_signing.md`](docs/release_signing.md).
+
+`npm run verify:release` is the honest check. Signing failures are invisible on your own machine —
+your build never gets a quarantine flag, so Gatekeeper never evaluates it — which means "it opens
+here" proves nothing. The verifier asks macOS directly: signature, hardened runtime, entitlements,
+notarization ticket, and whether every Mach-O in the bundle got signed.
 
 ---
 
@@ -573,6 +585,8 @@ Full reasoning, metrics, and release criteria: **[PRD (English)](docs/prd_mvp_en
 | [`docs/prd_mvp_en.md`](docs/prd_mvp_en.md) | Product requirements, scope decisions, metrics, roadmap, implementation status |
 | [`docs/prd_mvp_zh.md`](docs/prd_mvp_zh.md) | Same, in Chinese |
 | [`docs/mvp_architecture.md`](docs/mvp_architecture.md) | Technical architecture: decision log, module design, event schema, data model, degradation |
+| [`docs/release_signing.md`](docs/release_signing.md) | Signing and notarizing a release: credentials, one-time setup, CI, verification, troubleshooting |
+| [`docs/release_signing.zh-CN.md`](docs/release_signing.zh-CN.md) | Same, in Chinese |
 | [`references/event_collection.md`](references/event_collection.md) | Claude Code / Codex hook event research |
 | [`references/cc-session.md`](references/cc-session.md) | Session management research across pi / Claude Code / Codex |
 | [`references/desktop_pet_landscape.md`](references/desktop_pet_landscape.md) | Competitive research: 35 desktop pets, 1,300+ issues across 8 trackers, and a 39-item prioritized feature roadmap |

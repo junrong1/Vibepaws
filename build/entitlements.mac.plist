@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!--
+      Vibepaws 主进程的 hardened runtime 授权。清单是刻意压到最小的：
+      每加一条都是在削弱 hardened runtime，所以下面每一条都写清楚"不加会怎样"。
+
+      V8 要 JIT。不给这两条，签名后的 app 一启动就被内核杀掉（Code Signature Invalid），
+      不是慢、不是功能缺失，是根本起不来。Electron 官方公证前置条件里的原话。
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+      库校验关掉的理由：electron-builder 的默认模板就带这条（issue #3940）。
+      我们自己写 plist 就等于覆盖掉默认值 —— 少写一条不是"更严格"，是偏离默认，
+      出问题时没人能从 issue 里搜到。better-sqlite3 的 .node 目前只被外部系统 node
+      加载（见 desktop/main.js:198），跟主进程的库校验无关；但只要哪天有原生模块
+      进到 Electron 进程里，缺这条就是启动即崩。留着，代价是一点点 hardening。
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!--
+      刻意不加的：
+      · com.apple.security.cs.allow-dyld-environment-variables
+        只影响 DYLD_* 前缀的环境变量。我们唯一注入的是 ELECTRON_RUN_AS_NODE
+        (desktop/main.js:263)，不是 DYLD_ 开头，不受 hardened runtime 限制。加了纯粹是白送攻击面。
+      · com.apple.security.app-sandbox
+        沙箱化会切断 Core 写 userData/.vibepaws/、以及拉起 /opt/homebrew/bin/node 的能力。
+        Developer ID 分发不需要沙箱，只有 Mac App Store 才要。
+      · 任何 com.apple.security.network.* / files.*
+        那些是沙箱专用键，非沙箱构建里写了也不起作用。
+    -->
+  </dict>
+</plist>

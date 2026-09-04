@@ -48,7 +48,7 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 |
+| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 · 已签名 + 已公证的 macOS 发布流水线（Apple 凭据自备） |
 | ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
@@ -500,14 +500,26 @@ npm run db:init                             # 让 pet_types 表跟上
 ## 打包 .app
 
 ```bash
-npm run dist:mac     # 产物在 dist/
+npm run dist:mac                       # 产物在 dist/
+npm run verify:release -- --preflight   # 打包前：证书和公证凭据齐不齐
+npm run verify:release                  # 打包后：到底签上没有、公证过没有
 ```
+
+签名和公证这条链已经接好了 —— hardened runtime、授权清单，以及 `.app` 和 `.dmg`
+两份产物各自的公证。**缺的是凭据，不是配置。**
+没有凭据时构建照样成功，产出未签名的 `.app`，
+本地开发一直走的就是这条路。
 
 > **未签名产物在 macOS 上会被判定为「已损坏」**（[#1](https://github.com/junrong1/Vibepaws/issues/1)）。这不是产物坏了，而是 Gatekeeper 对没有 Apple 开发者签名 + 公证的 app 一律隔离。两条路：
 >
 > - **自己用** —— 装好后解除隔离标记：
 >   `xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
-> - **要分发给别人** —— 需要 Apple Developer 证书，给 `package.json` 的 `build.mac` 补上 `hardenedRuntime` + `entitlements` 并做 notarize。签名凭据本仓库未内置。
+> - **要分发给别人** —— 配好 Apple 凭据，同一句 `npm run dist:mac` 就会签名、公证、装订。打 `v*` tag 则由 CI 完成。完整手册：[`docs/release_signing.zh-CN.md`](docs/release_signing.zh-CN.md)。
+
+`npm run verify:release` 是唯一诚实的检查。签名出问题在自己机器上是看不见的 ——
+自己构建的产物没有 quarantine 标记，Gatekeeper 根本不评估它，所以「我这儿能打开」
+什么都证明不了。验收脚本直接去问 macOS：签名、hardened runtime、授权、公证票，
+以及包里每一个 Mach-O 是不是都签到了。
 
 ---
 
@@ -572,6 +584,8 @@ docs/            PRD（中/英）与技术架构
 | [`docs/prd_mvp_zh.md`](docs/prd_mvp_zh.md) | 产品需求、范围决策、指标、路线图、实现状态 |
 | [`docs/prd_mvp_en.md`](docs/prd_mvp_en.md) | 同上，英文 |
 | [`docs/mvp_architecture.md`](docs/mvp_architecture.md) | 技术架构：决策记录、模块设计、事件 schema、数据模型、降级策略 |
+| [`docs/release_signing.zh-CN.md`](docs/release_signing.zh-CN.md) | 发布签名与公证：凭据、一次性配置、CI、验收、排查 |
+| [`docs/release_signing.md`](docs/release_signing.md) | 同上，英文 |
 | [`references/event_collection.md`](references/event_collection.md) | Claude Code / Codex hook 事件体系调研 |
 | [`references/cc-session.md`](references/cc-session.md) | pi / Claude Code / Codex 的 session 管理机制对比 |
 | [`references/desktop_pet_landscape.zh-CN.md`](references/desktop_pet_landscape.zh-CN.md) | 竞品研究：35 个桌宠、跨 8 个 tracker 的 1,300+ 个 issue，以及一份 39 项的功能路线图 |
