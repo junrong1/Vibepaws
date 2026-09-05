@@ -72,6 +72,14 @@ brew install --cask vibepaws
 
 Homebrew does **not** skip the approval step — Homebrew 6 removed `--no-quarantine`, so cask downloads are always quarantined.
 
+To upgrade later, run `brew update` first:
+
+```bash
+brew update && brew upgrade --cask vibepaws
+```
+
+`brew upgrade` on its own auto-updates at most once every 24 hours (`HOMEBREW_AUTO_UPDATE_SECS`), so a tap you cloned earlier today still serves the version it had then — which is how you end up installing yesterday's build minutes after a new release went out.
+
 Either way: **no Node, no npm** — Core runs on the Node runtime already inside the app.
 
 A pet appears bottom-right with a tray icon in the menu bar. First launch initializes its database, rolls you a **random starter pet**, and writes an API token. Core binds localhost only, and every route except `/health` requires that token.

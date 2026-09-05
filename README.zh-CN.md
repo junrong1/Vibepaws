@@ -72,6 +72,14 @@ brew install --cask vibepaws
 
 Homebrew **不能**帮你省掉下面那次放行 —— Homebrew 6 已经把 `--no-quarantine` 删了，cask 下载一律打 quarantine 标记。
 
+以后升级请先 `brew update`：
+
+```bash
+brew update && brew upgrade --cask vibepaws
+```
+
+光跑 `brew upgrade` 是不够的：它自带的自动更新最快 24 小时才跑一次（`HOMEBREW_AUTO_UPDATE_SECS`）。也就是说，今天早些时候 clone 下来的 tap 依然停在当时那个版本 —— 新版发出去几分钟后装到的却是上一个包，就是这么来的。
+
 两条路都一样：**不需要 Node，不需要 npm** —— Core 跑在 app 自己带着的那个 Node 运行时上。
 
 右下角出现一只宠物，菜单栏里出现一个托盘图标。首次启动会初始化数据库、**随机分配一只 starter pet**、并写入 API token。Core 只监听 localhost，除 `/health` 外所有路由都要带这个 token。
