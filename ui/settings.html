@@ -2,7 +2,7 @@
 <!--
   Vibepaws 设置窗口（landscape 表格第 13 项）。
 
-  为什么它是一扇**独立**窗口，而不是宠物浮层里的一页：宠物窗口恒为 300×430、
+  为什么它是一扇**独立**窗口，而不是宠物浮层里的一页：宠物窗口只有三百来点宽、
   无边框、透明、还要靠命中测试来放过桌面的点击 —— 表单要的每一样东西
   （宽度、可聚焦的输入框、系统级复制粘贴）都在跟这些约束打架。
   文案全部走 i18n（issue #3 / #6）：本文件里不写死任何一句人类可读文本。
@@ -118,6 +118,24 @@
         <span data-i18n="settings.window.clickthrough"></span>
       </label>
       <p class="hint" data-i18n="settings.window.clickthrough.hint"></p>
+
+      <!-- 0.3：三档尺寸。整扇窗口一起缩放（主进程走 webContents.setZoomFactor），
+           所以这里只是在三个字符串之间选一个，没有任何几何计算。 -->
+      <div class="row">
+        <label for="pet-scale" data-i18n="settings.window.scale.label"></label>
+        <select id="pet-scale"></select>
+      </div>
+      <p class="hint" data-i18n="settings.window.scale.hint"></p>
+
+      <!-- 0.3：跟随 / 钉住。下面那两行 meta 由 settings.js 填 —— 一个不说出
+           「现在钉在哪块屏上」的开关，用户没法判断它到底生效了没有。 -->
+      <div class="row">
+        <label for="display-mode" data-i18n="settings.window.display.label"></label>
+        <select id="display-mode"></select>
+      </div>
+      <p class="hint" id="display-hint"></p>
+      <p class="meta" id="display-meta"></p>
+
       <div class="row">
         <label for="language" data-i18n="settings.language.label"></label>
         <select id="language"></select>

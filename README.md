@@ -48,7 +48,7 @@ It also can't spend your tokens: there is no API key and no model client in it, 
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
+| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · 3 pet sizes · per-display position memory with follow-or-pin · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
 | ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
@@ -231,7 +231,7 @@ Close it by clicking the pet again, clicking empty space, pressing `Esc`, or hit
 
 ### Settings
 
-Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal window, not a flyout page — the pet window is 300px wide and click-through, which is no place for a form.
+Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal window, not a flyout page — the pet window is a few hundred points wide and click-through, which is no place for a form.
 
 | Section | What's in it |
 | --- | --- |
@@ -240,7 +240,7 @@ Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal wi
 | **Tokens & overhead** | What the pet costs: model API calls (`0`), bytes off this machine (`0`), and the live byte/latency counter for the hook path — see [Can it spend my tokens?](#can-it-spend-my-tokens) |
 | **Idle sessions** | How long a session may go silent before Vibepaws closes it out (default 15 minutes) — see [When an agent dies](#when-an-agent-dies-without-saying-so) |
 | **Running sessions** | Per-session **goal** and **budget** for every agent session that's currently live |
-| **Window** | Show on all Spaces · click-through · language · snap the pet back to the bottom-right |
+| **Window** | Show on all Spaces · click-through · **pet size (3 sizes)** · **multi-display behaviour** · language · snap the pet back to the bottom-right |
 | **Reset & uninstall** | Start over with a new pet · delete all local data · remove the adapter hooks from your agent's config |
 
 Two things there are worth calling out:
@@ -311,7 +311,13 @@ Amber is the important one: without it, a broken hook looks exactly like a quiet
 
 - **Drag** — grab empty space in the pet window. Position is remembered, and always clamped to the visible screen area.
 - **Clicks pass through** the empty area around the pet's body, straight to the app underneath. The flyout needs room above the pet, and that room is normally empty space.
-- **Tray menu** — Core status and restart · click-through toggle · show on all desktops · start at login · show · settings · snap back to bottom-right · quit
+- **Pet size** — small, medium, large. The pet, its bubbles, and the flyout scale together, and the pet keeps its footing where it stands, so resizing never moves it.
+- **Multiple displays** — each display remembers where you last put the pet, keyed by the monitor itself rather than by an OS display id, so it survives unplugging and replugging. Then pick one of:
+  - **Follow the active display** (default) — the pet moves over once your cursor has settled on another screen for about a second. A quick sweep across doesn't drag it along.
+  - **Stay on one display** — the pet never moves on its own; drag it to another screen and it stays there instead.
+
+  Positions are stored as a fraction of each display's work area, so changing resolution or scaling keeps the pet in the same corner instead of off-screen. Unplug the display it was living on and it moves to one that still exists.
+- **Tray menu** — Core status and restart · click-through toggle · show on all desktops · pet size · display behaviour · start at login · show · settings · snap back to bottom-right · quit
 - **Above fullscreen apps** — the pet stays visible over fullscreen iTerm2, fullscreen editors, and so on. This is not affected by the tray toggles. To make it possible the shell keeps no Dock icon, so **quit lives in the tray menu** — a macOS requirement: a process with a Dock icon cannot float over someone else's fullscreen Space.
 - **Browser preview** (optional) — `npm run ui`, then open http://127.0.0.1:5173. If 5173 is busy the desktop shell picks a free port automatically (it's Vite's default port, so a stray dev server is likely).
 
@@ -535,7 +541,9 @@ notarization ticket, and whether every Mach-O in the bundle got signed.
 | Token count stays 0 | On Claude Code, tokens come from `statusLine` — reinstall the adapter so it gets configured. On Codex, tokens only arrive at SessionEnd. |
 | No token milestone bubbles | No budget is set — set one in Settings (tray → Settings…), globally or on that session. Milestones are relative to a budget; context warnings work without one. |
 | Pet disappears over a fullscreen terminal | Shouldn't happen — file it. Note that "show on all desktops" only controls whether it follows you between Spaces. |
-| Pet is off-screen after switching monitors | Use tray → snap back to bottom-right. |
+| Pet is off-screen after switching monitors | It should come back on its own — unplugging a display moves the pet to a display that still exists. If it doesn't, tray → **Reset pet position**. |
+| Pet keeps hopping to whichever screen I'm working on | That's **Displays → Follow the active display**. Switch it to **Stay on one display** (tray or Settings → Window) and it stays put; drag it somewhere else and it stays there instead. |
+| Pet won't follow me to my other screen | Follow waits about a second for your cursor to settle, so a quick sweep across won't drag it along. If it never follows, check you're not in **Stay on one display**. |
 | "Vibepaws needs Node 22.6 or newer" on launch | The app looks in `PATH`, then Homebrew, `/usr/local`, `/usr/bin`, Volta, nvm, fnm, and `n`. If yours lives somewhere else, set `VIBEPAWS_NODE=/path/to/node` — a login-item launch has almost no `PATH`, so this is the case to expect there. |
 | Tray says **Core: not running** | Five restarts in a row failed. Tray → **Restart Core**; the reason is in the log (`~/Library/Application Support/Vibepaws/vibepaws.log` for the packaged app, stdout in dev). |
 
@@ -561,8 +569,9 @@ src/simulator/   scenario-driven event generator for QA
 src/i18n/        one shared message catalog (zh-CN / en)
 ui/              pet renderer: canvas, motion recipes, fx, pet registry, procedural fallback
                  + the settings page (settings.html / .js / .css)
-desktop/         Electron shell: transparent window, tray, click-through, positioning, settings window,
-                 Core supervision (find node → spawn → restart → reap) and the login item
+desktop/         Electron shell: transparent window, tray, click-through, settings window,
+                 pet scale + multi-display placement, Core supervision (find node → spawn →
+                 restart → reap) and the login item
 scripts/         Python asset pipeline (only needed when adding pets)
 docs/            PRD (en/zh) and technical architecture
 ```

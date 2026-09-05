@@ -47,6 +47,9 @@ const LANGUAGES = [
   { id: "zh-CN", key: "settings.language.zh" },
 ];
 
+/** 0.3：多显示器的两种模式。为什么是两种而不是一个默认，见 desktop/main.js 那一段。 */
+const DISPLAY_MODES = ["follow", "pin"];
+
 /** 最近一次从 Core 拿到的视图（limits / defaults 都在里面） */
 let view = null;
 let lastSessionsSignature = null;
@@ -483,21 +486,110 @@ function applyAutostart(prefs) {
     : t(`settings.startup.na.${prefs.openAtLoginReason ?? "platform"}`);
 }
 
+/** 下拉项统一由 JS 填：选项文案要跟着语言走，写死在 HTML 里就换不掉了。 */
+function fillSelect(el, items, selected) {
+  el.replaceChildren();
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label;
+    el.appendChild(option);
+  }
+  el.value = items.some((i) => i.id === selected) ? selected : items[0]?.id;
+}
+
+/**
+ * 三档尺寸。档位清单由主进程给（prefs.scales），不在这边写死 ——
+ * 少一档多一档时，界面和主进程不该有两份需要同时改的名单。
+ */
+function renderScale(prefs) {
+  const ids = Array.isArray(prefs.scales) && prefs.scales.length ? prefs.scales : ["small", "medium", "large"];
+  fillSelect(
+    $("pet-scale"),
+    ids.map((id) => ({ id, label: t(`settings.window.scale.${id}`) })),
+    prefs.scale,
+  );
+}
+
+/**
+ * 多显示器那一段。三行字各有各的活：
+ *   · 下拉本身 —— 选模式；
+ *   · hint —— 这个模式**会做什么**（两种模式的行为差别不是自明的）；
+ *   · meta —— 此刻的事实：宠物在哪块屏上、钉住的是哪块、以及那块屏还接没接着。
+ * 最后一条尤其要说：钉住的显示器被拔掉之后，一个只写着「固定在 LG HDR 4K」的
+ * 界面会让用户以为设置坏了，而实际上宠物只是暂时回了主屏。
+ */
+function renderDisplay(prefs) {
+  fillSelect(
+    $("display-mode"),
+    DISPLAY_MODES.map((id) => ({ id, label: t(`settings.window.display.${id}`) })),
+    prefs.displayMode,
+  );
+  renderDisplayFacts(prefs);
+}
+
+/**
+ * 「此刻的事实」那一行，和上面的下拉分开重画。
+ *
+ * 分开是因为它要跟着轮询刷新（宠物跟着光标换了屏、显示器被拔了，这一行就该变），
+ * 而下拉不能：每 5 秒重建一次 <option> 会把用户刚拉开的原生下拉菜单直接关掉。
+ */
+function renderDisplayFacts(prefs) {
+  const mode = DISPLAY_MODES.includes(prefs.displayMode) ? prefs.displayMode : "follow";
+  $("display-hint").textContent = t(`settings.window.display.hint.${mode}`);
+
+  const here = prefs.displayName ?? "";
+  const lines = [];
+  if (mode === "pin" && prefs.pinnedName) {
+    lines.push(
+      prefs.pinnedAttached
+        ? t("settings.window.display.pinned", { name: prefs.pinnedName })
+        : t("settings.window.display.pinned.gone", { name: prefs.pinnedName, here }),
+    );
+  } else if (here) {
+    lines.push(t("settings.window.display.here", { name: here }));
+  }
+  // 单屏时说一句「插上第二块才有用」，好过让用户对着一个看不出效果的开关反复点
+  if (Number(prefs.displayCount) <= 1) lines.push(t("settings.window.display.single"));
+  $("display-meta").textContent = lines.join(" · ");
+}
+
+/** 轮询里的壳侧刷新：只更新事实，不碰任何控件的值。浏览器预览里是空操作。 */
+async function refreshShellFacts() {
+  if (!shell?.getPrefs) return;
+  const prefs = await shell.getPrefs();
+  if (prefs) renderDisplayFacts(prefs);
+}
+
 function applyPrefs(prefs) {
   if (!prefs) return;
   $("allspaces").checked = Boolean(prefs.allSpaces);
   $("clickthrough").checked = Boolean(prefs.clickThrough);
   applyAutostart(prefs);
+  renderScale(prefs);
+  renderDisplay(prefs);
   renderLanguageOptions(prefs);
 }
 
 async function initShell() {
-  const controls = [$("allspaces"), $("clickthrough"), $("autostart"), $("language"), $("reset-pos")];
+  const controls = [
+    $("allspaces"),
+    $("clickthrough"),
+    $("autostart"),
+    $("pet-scale"),
+    $("display-mode"),
+    $("language"),
+    $("reset-pos"),
+  ];
   if (!shell?.getPrefs) {
     // 浏览器里打开：把这一段禁掉并说明原因，而不是留一排点了没反应的开关
     for (const el of document.querySelectorAll(".shell-only")) el.hidden = false;
     for (const el of controls) el.disabled = true;
     $("autostart-note").textContent = "";
+    // 选项照样填出来（灰着也得看得出这里能选什么），事实那两行留空 —— 浏览器里没有「哪块屏」
+    renderScale({ scale: "medium" });
+    renderDisplay({ displayMode: "follow", displayCount: 0 });
+    $("display-meta").textContent = "";
     renderLanguageOptions({ locale: "auto", osLocale: LOCALE });
     return;
   }
@@ -516,10 +608,19 @@ async function initShell() {
     applyPrefs(await shell.setPrefs({ clickThrough: $("clickthrough").checked }));
     status(t("settings.status.saved"), "ok");
   });
+  $("pet-scale").addEventListener("change", async () => {
+    applyPrefs(await shell.setPrefs({ scale: $("pet-scale").value }));
+    status(t("settings.status.saved"), "ok");
+  });
+  $("display-mode").addEventListener("change", async () => {
+    // 回填很要紧：切到 pin 的那一刻主进程才决定钉住哪块屏，界面得把那块屏的名字说出来
+    applyPrefs(await shell.setPrefs({ displayMode: $("display-mode").value }));
+    status(t("settings.status.saved"), "ok");
+  });
   // 语言改完由主进程重载本窗口（连托盘菜单一起换语言），所以这里不用自己重绘
   $("language").addEventListener("change", () => shell.setPrefs({ locale: $("language").value }));
   $("reset-pos").addEventListener("click", async () => {
-    await shell.resetPosition();
+    applyPrefs(await shell.resetPosition());
     status(t("settings.window.reset.done"), "ok");
   });
 }
@@ -714,4 +815,8 @@ disarm(); // 顺带给三个危险按钮写上初始标签（它们的文案由�
 initShell();
 load();
 loadDanger();
-setInterval(load, POLL_MS);
+setInterval(() => {
+  load();
+  // 宠物换了屏、显示器被拔了 —— 这扇窗口开着的时候那一行不能一直说着旧事
+  void refreshShellFacts();
+}, POLL_MS);

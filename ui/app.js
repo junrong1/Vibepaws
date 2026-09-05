@@ -248,7 +248,10 @@ function drawPetFrame(now) {
   const petTypeId = state.pet?.pet_type_id;
   if (petTypeId == null) {
     const c = $("pet");
-    c.getContext("2d").clearRect(0, 0, c.width, c.height);
+    const ctx = c.getContext("2d");
+    // 先复位：drawPet 留下的是一个 dpr 变换，照着它按设备像素清会算错范围
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
     return;
   }
 

@@ -23,6 +23,23 @@ import {
   parseNodeVersion,
   restartDelay,
 } from "./launch.js";
+import {
+  DISPLAY_DEFAULTS,
+  FOLLOW_POLL_MS,
+  PET_SCALES,
+  anchorToFraction,
+  boundsForAnchor,
+  defaultAnchor,
+  displayKeys,
+  displayName,
+  displayNameFromKey,
+  followStep,
+  fractionToAnchor,
+  normalizeDisplayPrefs,
+  pickHomeKey,
+  scaleFactor,
+  scaledSizes,
+} from "./display.js";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
 function writeLog(prefix, line) {
@@ -48,13 +65,23 @@ const PREFERRED_UI_PORT = 5173;
 /** UI server 的身份标记路由（见 src/ui/server.ts）：确认端口上的服务是我们自己 */
 const UI_MARKER_PATH = "/__vibepaws";
 
-/** 宠物本体占的那一块，贴在窗口底部（= 从前的「收起态窗口」）。CSS 里 #stage 的高度必须与之一致。 */
-const PET_BOX = { width: 210, height: 250 };
 /**
- * 窗口尺寸**恒定**：浮层那份高度永远留着，开关浮层只改 CSS，不动窗口。
- * 为什么不能跟着浮层缩放，见下面 PANEL_GEOMETRY_NOTE。
+ * 窗口与宠物盒子的尺寸都由「档位」乘出来（display.js 的 PET_SCALES）。
+ *
+ * 缩放的实现是 webContents.setZoomFactor：CSS 里一个数字都不用改，
+ * ui/style.css 那套 300×430 / 210×250 的布局照旧，只是每个 CSS 像素在屏幕上
+ * 占的物理像素跟着档位走。三处必须用同一个倍率，否则命中测试会和看到的宠物错位：
+ *   · 窗口的宽高（这里）
+ *   · 渲染层的 zoomFactor（applyZoom）
+ *   · 兜底命中测试用的宠物盒子（startHitRescue）
+ *
+ * 窗口尺寸在**同一档位内恒定**：浮层那份高度永远留着，开关浮层只改 CSS，不动窗口
+ * （为什么，见下面 PANEL_GEOMETRY_NOTE）。换档是用户主动做的一次性动作，
+ * 那一下改窗口几何是可以的。
  */
-const WINDOW_SIZE = { width: 300, height: 430 };
+function sizes() {
+  return scaledSizes(prefs.scale);
+}
 /** 设置窗口：普通有边框窗口，够放下一个表单又不至于铺满屏幕 */
 const SETTINGS_SIZE = { width: 480, height: 660 };
 
@@ -81,31 +108,66 @@ let levelKeepAlive = null;
  * 无条件保证，不受这个开关影响 —— 这两件事曾经是同一个布尔值，于是把开关关掉
  * 等于让宠物在全屏终端里彻底消失，而 coding agent 基本都活在全屏终端里。
  *
- * anchor 存的是窗口**底部中心**（= 宠物脚下那一点）的屏幕坐标，而不是左上角：
- * 位置的语义是「宠物站在哪」，而不是「窗口的左上角在哪」—— 窗口的宽高里有一大半
- * 是留给浮层的透明空间，拿左上角当位置，换个尺寸就对不上了。
+ * 「锚点」一律指窗口**底部中心**（= 宠物脚下那一点），而不是左上角：位置的语义是
+ * 「宠物站在哪」，而不是「窗口的左上角在哪」—— 窗口的宽高里有一大半是留给浮层的
+ * 透明空间，拿左上角当位置，一换尺寸档位就全对不上了。
+ *
+ * anchors 是 **每块屏一个** 位置（displayKey → 工作区里的比例，见 display.js）。
+ * 从前这里只有一个全局 anchor，于是「在笔记本上把宠物放左下、在外接屏上放右下」
+ * 这件最普通的事根本记不住 —— 两块屏共用一个坐标，换一块屏就得重新摆一次。
+ *
+ * scale / displayMode / pinnedDisplay 同理必须在壳这一层：它们决定第一扇窗口
+ * **建多大、建在哪**，而那一刻 Core 还没起来。
  *
  * locale 也存在这里（"auto" | "en" | "zh-CN"）而不是 Core 的 settings 表：
  * 主进程在建托盘菜单时就要知道用哪种语言，那一刻 Core 可能还没起来。 */
-const DEFAULT_PREFS = { allSpaces: true, anchor: null, locale: "auto" };
-let prefs = { ...DEFAULT_PREFS };
+const DEFAULT_PREFS = { allSpaces: true, locale: "auto", ...DISPLAY_DEFAULTS };
+let prefs = { ...DEFAULT_PREFS, anchors: {} };
 
 function prefsFile() {
   return join(app.getPath("userData"), "window-prefs.json");
 }
 
 function loadPrefs() {
+  let raw = {};
   try {
-    prefs = { ...DEFAULT_PREFS, ...JSON.parse(readFileSync(prefsFile(), "utf8")) };
+    raw = JSON.parse(readFileSync(prefsFile(), "utf8"));
   } catch {
-    prefs = { ...DEFAULT_PREFS };
+    raw = {};
   }
+  prefs = { ...DEFAULT_PREFS, ...raw, ...normalizeDisplayPrefs(raw) };
+  migrateLegacyAnchor(raw);
+}
+
+/**
+ * 0.3 之前只有一个全局 `anchor`（屏幕绝对坐标）。升级上来的用户在这一步把它
+ * 认领到「它当时所在的那块屏」名下，而不是直接扔掉 —— 一次升级就把宠物弹回
+ * 右下角，用户只会当成 bug。
+ *
+ * 只在 anchors 还是空的时候做：之后 anchors 才是唯一真相，遗留字段不再回写。
+ */
+function migrateLegacyAnchor(raw) {
+  const legacy = raw?.anchor;
+  if (!legacy || Object.keys(prefs.anchors).length) return;
+  const x = Number(legacy.x);
+  const y = Number(legacy.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  const display = screen.getDisplayNearestPoint({ x: Math.round(x), y: Math.round(y) });
+  const key = keyOf(display);
+  if (!key) return;
+  prefs.anchors[key] = anchorToFraction({ x, y }, display.workArea);
+  prefs.lastDisplay = key;
+  savePrefs();
+  log(`[vibepaws] 旧版位置已认领到 ${key}`);
 }
 
 function savePrefs() {
   try {
     mkdirSync(app.getPath("userData"), { recursive: true });
-    writeFileSync(prefsFile(), JSON.stringify(prefs, null, 2));
+    // anchor 是 0.3 之前的全局位置，已经被 migrateLegacyAnchor 认领掉了；
+    // 留在文件里只会让下次排查时对着两个位置字段猜哪个是真的
+    const { anchor: _legacy, ...keep } = prefs;
+    writeFileSync(prefsFile(), JSON.stringify(keep, null, 2));
   } catch (e) {
     err(`[vibepaws] 偏好写入失败: ${e}`);
   }
@@ -487,39 +549,81 @@ function waitForUiServer(port, child) {
   });
 }
 
-/* ---------------- 窗口 ---------------- */
-function clamp(v, lo, hi) {
-  return Math.round(Math.max(lo, Math.min(v, hi)));
+/* ---------------- 显示器（0.3） ----------------
+ * 这一段只做三件事：认出每块屏、在每块屏上各记一个位置、决定宠物此刻该在哪块屏上。
+ * 全部判断逻辑在 desktop/display.js（纯函数、可测），这里只负责问 Electron 要事实。 */
+
+/** displayKey → Display。每次现算：显示器随时可能被拔插，缓存住必然会撒谎。 */
+function displayMap() {
+  const all = screen.getAllDisplays();
+  const keys = displayKeys(all);
+  const out = new Map();
+  for (const d of all) {
+    const key = keys.get(d.id);
+    if (key) out.set(key, d);
+  }
+  return out;
 }
 
-function areaForPoint(point) {
-  return screen.getDisplayNearestPoint(point).workArea;
+/** 一块屏的键。拿不到（显示器刚被拔掉）时返回 null，调用方一律回落到主屏。 */
+function keyOf(display) {
+  if (!display) return null;
+  return displayKeys(screen.getAllDisplays()).get(display.id) ?? null;
+}
+
+function primaryKey(map = displayMap()) {
+  const primary = screen.getPrimaryDisplay();
+  const key = displayKeys(screen.getAllDisplays()).get(primary.id);
+  // 主屏总在列表里；万一不在（拔插的竞态），拿第一块顶上 —— 宠物必须落在某块**存在**的屏上
+  return key ?? [...map.keys()][0] ?? null;
+}
+
+/** 宠物窗口此刻实际所在的那块屏（按脚下那一点算，不是窗口左上角）。 */
+function windowDisplay() {
+  const anchor = currentAnchor();
+  return anchor ? screen.getDisplayNearestPoint({ x: Math.round(anchor.x), y: Math.round(anchor.y) }) : null;
+}
+
+function cursorDisplay() {
+  try {
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  } catch {
+    return null;
+  }
+}
+
+/** 按当前模式，宠物**应该**待在哪块屏上。启动时、拔插显示器后各算一次。 */
+function homeDisplay() {
+  const map = displayMap();
+  const key = pickHomeKey({
+    available: map.keys(),
+    mode: prefs.displayMode,
+    pinnedKey: prefs.pinnedDisplay,
+    lastKey: prefs.lastDisplay,
+    primaryKey: primaryKey(map),
+  });
+  return map.get(key) ?? screen.getPrimaryDisplay();
+}
+
+/* ---------------- 窗口 ---------------- */
+
+/** 某块屏上宠物该站的位置：记过就用记的，没记过用那块屏自己的右下角。 */
+function anchorForDisplay(display) {
+  const { petBox } = sizes();
+  const key = keyOf(display);
+  const saved = key ? prefs.anchors[key] : null;
+  return saved ? fractionToAnchor(saved, display.workArea) : defaultAnchor(display.workArea, petBox);
 }
 
 /**
- * 由「宠物脚下的锚点」算出窗口左上角。
- *
- * 横向按**宠物盒子**夹、纵向按**窗口**夹，两条边界故意不一样：
- * 窗口比宠物宽 90px，多出来的是全透明且点击穿透的空白，按窗口夹的话宠物就贴不到
- * 屏幕左右边缘了（每边少 45px）。纵向多出来的 180px 是浮层要用的，探出屏幕会被裁掉，
- * 所以纵向必须按整个窗口夹。
+ * 由「宠物脚下的锚点」算出窗口矩形。夹取规则见 display.js 的 boundsForAnchor。
+ * 这里只负责挑出锚点落在哪块屏上 —— 拖到屏幕之间时以**离得最近**的那块为准。
  */
-function boundsFromAnchor(anchor, size = WINDOW_SIZE) {
+function boundsFromAnchor(anchor, display) {
   const point = { x: Math.round(anchor.x), y: Math.round(anchor.y) };
-  const area = areaForPoint(point);
-  const cx = clamp(point.x, area.x + PET_BOX.width / 2, area.x + area.width - PET_BOX.width / 2);
-  const y = clamp(point.y - size.height, area.y, area.y + area.height - size.height);
-  return { x: Math.round(cx - size.width / 2), y, width: size.width, height: size.height };
-}
-
-function defaultAnchor() {
-  const { workArea } = screen.getPrimaryDisplay();
-  return {
-    // 用 PET_BOX 而不是 WINDOW_SIZE：默认位置说的是「宠物离右下角多远」，
-    // 拿窗口宽度算会把宠物往左推 45px（那 45px 是透明的，用户只看得见宠物）。
-    x: workArea.x + workArea.width - 24 - PET_BOX.width / 2,
-    y: workArea.y + workArea.height - 40,
-  };
+  const target = display ?? screen.getDisplayNearestPoint(point);
+  const { window: winSize, petBox } = sizes();
+  return boundsForAnchor({ anchor: point, workArea: target.workArea, window: winSize, petBox });
 }
 
 function currentAnchor() {
@@ -534,11 +638,27 @@ function scheduleAnchorSave() {
   if (anchorSaveTimer) clearTimeout(anchorSaveTimer);
   anchorSaveTimer = setTimeout(() => {
     anchorSaveTimer = null;
-    const anchor = currentAnchor();
-    if (!anchor) return;
-    prefs.anchor = anchor;
-    savePrefs();
+    saveAnchorNow();
   }, 500);
+}
+
+/**
+ * 把当前位置记到**它所在的那块屏**名下。
+ *
+ * pin 模式下顺带改钉住的目标：用户刚把宠物拖到另一块屏上，这就是他对「宠物住哪」
+ * 最明确的一次表态。不跟着改的话，下一次拔插显示器会把宠物弹回旧的那块屏 ——
+ * 一个跟用户刚做过的动作对着干的「记住位置」，比不记还糟。
+ */
+function saveAnchorNow() {
+  const anchor = currentAnchor();
+  if (!anchor) return;
+  const display = screen.getDisplayNearestPoint({ x: Math.round(anchor.x), y: Math.round(anchor.y) });
+  const key = keyOf(display);
+  if (!key) return;
+  prefs.anchors[key] = anchorToFraction(anchor, display.workArea);
+  prefs.lastDisplay = key;
+  if (prefs.displayMode === "pin") prefs.pinnedDisplay = key;
+  savePrefs();
 }
 
 /**
@@ -554,9 +674,9 @@ function ensureWindow() {
 }
 
 function createWindow() {
-  // 上次放在哪就还在哪（换过显示器 / 分辨率变了会被 clamp 回可见区域）
-  const anchor = prefs.anchor ?? defaultAnchor();
-  const bounds = boundsFromAnchor(anchor);
+  // 上次待的那块屏、那块屏上记住的位置（屏没了会回主屏，分辨率变了会被夹回可见区域）
+  const display = homeDisplay();
+  const bounds = boundsFromAnchor(anchorForDisplay(display), display);
   win = new BrowserWindow({
     ...bounds,
     transparent: true,
@@ -575,12 +695,17 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 首帧就按档位缩放：先按 1.0 画一帧再放大，看起来是宠物「跳」了一下
+      zoomFactor: scaleFactor(prefs.scale),
     },
   });
   applyWindowLevel();
   applyMouseIgnore();
   // 「宠物不见了」最难查的一点是壳层状态完全不可见 —— 把它打出来
-  log(`[vibepaws] window level=screen-saver allSpaces=${prefs.allSpaces} fullScreen=always`);
+  log(
+    `[vibepaws] window level=screen-saver allSpaces=${prefs.allSpaces} fullScreen=always ` +
+      `scale=${prefs.scale} display=${prefs.displayMode}:${keyOf(display)}`,
+  );
   // 把主进程裁决的 locale 交给渲染层，避免 navigator.language 与 app.getLocale() 打架
   win.loadURL(petUrl());
   // 渲染进程 console → 主进程日志（调试用）。Electron 28+ 传的是单个 details 对象，
@@ -595,6 +720,8 @@ function createWindow() {
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     err(`[renderer] load failed ${code} ${desc} ${url}`);
   });
+  // 换语言会重载这扇窗口，而缩放是从 session 里按 host 读的 —— 每次加载后重申一次
+  win.webContents.on("did-finish-load", applyZoom);
   win.on("closed", () => {
     stopDrag();
     stopHitRescue();
@@ -678,6 +805,188 @@ function toggleAllSpaces() {
   setAllSpaces(!prefs.allSpaces);
 }
 
+/* ---------------- 尺寸档位（0.3） ----------------
+ *
+ * 缩放走 webContents.setZoomFactor，而不是给 CSS 加一层 transform 或者一套
+ * `--scale` 变量。理由是那两条路都要求布局里每一个数字都记得乘上倍率，而 ui/style.css
+ * 里写死的像素有几十处（#stage 的 210×250、气泡的 bottom:250、浮层的 bottom:186…）——
+ * 漏掉任何一个，宠物和它的气泡就会在某一档上错位，而且只在那一档上错。
+ * zoomFactor 是浏览器层面的整体缩放：CSS 一个字不用改，三处几何（窗口宽高、
+ * zoomFactor、命中测试的宠物盒子）共用同一个倍率，就不可能各自漂移。 */
+
+/**
+ * zoomFactor 必须在**每次页面加载后**重新施加：换语言会 loadURL 重载宠物窗口，
+ * 而重载后的 webContents 是从 session 里读缩放的。少了这一下，改完语言宠物会
+ * 悄悄弹回 medium 档，而窗口还是大的 —— 表现为宠物缩在一扇过大的透明窗口角落里。
+ */
+function applyZoom() {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.setZoomFactor(scaleFactor(prefs.scale));
+}
+
+/**
+ * 换尺寸档位：窗口跟着变大变小，但宠物**脚下那一点不动**。
+ *
+ * 锚点在这里必须先读后写：窗口一改高度，currentAnchor() 读到的就是新几何了。
+ * setResizable 那两下是给 Windows 的 —— 那边 resizable:false 会让 setBounds
+ * 改不动尺寸，而这扇窗口本来就常年 resizable:false（不想给用户一个能拖大的边框）。
+ */
+function setScale(scale) {
+  const next = Object.hasOwn(PET_SCALES, scale) ? scale : "medium";
+  if (next === prefs.scale) return;
+  prefs.scale = next;
+  savePrefs();
+  updateTrayMenu();
+  if (!win || win.isDestroyed()) return;
+  const anchor = currentAnchor();
+  applyZoom();
+  const display = anchor
+    ? screen.getDisplayNearestPoint({ x: Math.round(anchor.x), y: Math.round(anchor.y) })
+    : homeDisplay();
+  win.setResizable(true);
+  win.setBounds(boundsFromAnchor(anchor ?? anchorForDisplay(display), display));
+  win.setResizable(false);
+  /* 这里**不**回存位置，尽管夹取可能刚把宠物往里挪过（large 档的盒子更宽，
+   * 贴着屏幕右缘的宠物会被推进来一截）。存了的话尺寸档位就变成一个单向棘轮：
+   * 调到大再调回小，宠物再也回不到原来贴边的位置，每来回一次就往屏幕中间走一点。
+   * 记住的应该是用户**放**它的地方，而夹取是显示这一侧的事 —— 反正
+   * boundsForAnchor 每次用都会重新夹一遍，存着的比例永远不会把窗口带到屏幕外。 */
+  log(`[vibepaws] 尺寸档位 → ${next} (×${scaleFactor(next)})`);
+}
+
+/* ---------------- 跟随 / 钉住（0.3） ----------------
+ *
+ * 「宠物在哪块屏上」是这个品类里复现率最高的一类抱怨，而它其实是两个诉求，
+ * 而且互相矛盾：一半人要「我在哪块屏干活，它就该在哪块屏上」，另一半人要
+ * 「我把它放在副屏角落了，别再动它」。所以这里不挑一个默认然后把另一半人劝退，
+ * 而是给出两种模式：
+ *   · follow —— 光标在另一块屏上**停住**够久（1.2s）就搬过去。默认。
+ *   · pin    —— 永远不自动移动；用户自己把它拖到哪块屏，就改钉哪块屏。
+ *
+ * 判据只能是光标：Electron 拿不到别的应用的窗口焦点，而「哪块屏是活跃的」在
+ * 系统层面也没有可用的信号。光标是唯一既准确又不需要额外权限的近似。 */
+
+let followTimer = null;
+let followState = { pendingKey: null, pendingSince: 0 };
+
+/**
+ * 只在**确实有多块屏而且是跟随模式**时才轮询。单屏用户占绝大多数，
+ * 让他们的机器为一个永远返回同一个答案的问题每 400ms 醒一次是说不过去的。
+ */
+function syncFollowWatch() {
+  const want = prefs.displayMode === "follow" && screen.getAllDisplays().length > 1;
+  if (want === Boolean(followTimer)) return;
+  if (!want) {
+    clearInterval(followTimer);
+    followTimer = null;
+    followState = { pendingKey: null, pendingSince: 0 };
+    return;
+  }
+  followTimer = setInterval(followTick, FOLLOW_POLL_MS);
+}
+
+function followTick() {
+  if (!win || win.isDestroyed() || dragOffset) return; // 拖拽期间宠物归用户管
+  // 这是 2.5Hz 的常驻 tick，键只算一遍：绝大多数 tick 的结论是「什么都不用做」
+  const all = screen.getAllDisplays();
+  const keys = displayKeys(all);
+  const cursor = cursorDisplay();
+  const here = windowDisplay();
+  const { state, move } = followStep(followState, {
+    cursorKey: cursor ? (keys.get(cursor.id) ?? null) : null,
+    windowKey: here ? (keys.get(here.id) ?? null) : null,
+    now: Date.now(),
+  });
+  followState = state;
+  if (!move) return;
+  moveToDisplay(all.find((d) => keys.get(d.id) === move));
+}
+
+/**
+ * 把宠物搬到另一块屏上，落在**那块屏自己记着的位置**（没记过就是那块屏的右下角）。
+ * 搬家前先把当前这块屏的位置存下来 —— 否则「跟着我换屏」会顺手抹掉「每块屏各记
+ * 一个位置」，两个功能互相拆台。
+ */
+function moveToDisplay(display) {
+  if (!display || !win || win.isDestroyed()) return;
+  const key = keyOf(display);
+  // 比的是窗口**真正**在哪块屏上，不是 prefs.lastDisplay 记着的那块：那个字段是
+  // 记账，而记账和事实分家（上一次搬家被夹取挡住了、窗口刚被重建）恰恰是这里最需要
+  // 纠正的情形 —— 信记账就等于「宠物明明在另一块屏上，代码却认为不用动」。
+  if (!key || key === keyOf(windowDisplay())) {
+    if (key) prefs.lastDisplay = key;
+    return;
+  }
+  saveAnchorNow(); // 先落袋：离开的这块屏上的位置得留下
+  const { x, y } = boundsFromAnchor(anchorForDisplay(display), display);
+  win.setPosition(x, y, false);
+  prefs.lastDisplay = key;
+  savePrefs();
+  log(`[vibepaws] 跟随 → ${key}`);
+}
+
+function setDisplayMode(mode) {
+  const next = mode === "pin" ? "pin" : "follow";
+  prefs.displayMode = next;
+  // 刚切到 pin：钉住宠物**此刻所在**的那块屏，而不是要求用户再去选一次。
+  // 「钉在这儿」的自然含义就是「钉在它现在待的地方」。
+  if (next === "pin") prefs.pinnedDisplay = keyOf(windowDisplay() ?? homeDisplay());
+  savePrefs();
+  syncFollowWatch();
+  updateTrayMenu();
+  log(`[vibepaws] 显示器模式 → ${next}${next === "pin" ? ` (${prefs.pinnedDisplay})` : ""}`);
+}
+
+/**
+ * 显示器被拔插 / 分辨率变了之后重新落位。
+ *
+ * 这是「拔掉扩展屏之后宠物就消失了」唯一的解药：窗口的坐标还停在那块已经不存在的
+ * 屏上，Electron 不会替你把它拉回来 —— 它就那样待在一片没有像素的地方，托盘还
+ * 一切正常，用户完全无从判断发生了什么。
+ *
+ * 合盖 / 换分辨率会连着发好几个事件，所以攒一下再动：中间那几个状态里
+ * workArea 常常还是旧的，照着它算会把宠物摆到一个下一秒就失效的位置。
+ */
+let reconcileTimer = null;
+function scheduleReconcile(reason) {
+  if (reconcileTimer) clearTimeout(reconcileTimer);
+  reconcileTimer = setTimeout(() => {
+    reconcileTimer = null;
+    reconcileDisplays(reason);
+  }, 350);
+}
+
+function reconcileDisplays(reason) {
+  syncFollowWatch();
+  if (!win || win.isDestroyed()) return;
+  const map = displayMap();
+  const here = keyOf(windowDisplay());
+  const home = keyOf(homeDisplay());
+  // 还在一块**存在**的屏上、而且模式也不要求它搬走：只重新夹一次边界
+  // （分辨率变小 / 菜单栏高度变了都会让老坐标探出工作区）
+  const stay = here && map.has(here) && (prefs.displayMode === "follow" || here === prefs.pinnedDisplay);
+  const display = stay ? map.get(here) : map.get(home);
+  if (!display) return;
+  const anchor = stay ? (currentAnchor() ?? anchorForDisplay(display)) : anchorForDisplay(display);
+  const { x, y } = boundsFromAnchor(anchor, display);
+  win.setPosition(x, y, false);
+  prefs.lastDisplay = keyOf(display) ?? prefs.lastDisplay;
+  /* 钉住的那块屏只是**暂时不在**时不改钉：拔下来再插回去，宠物应该回到它原来那块屏，
+   * 而不是从此改嫁给主屏 —— 后者会让「固定在一块屏上」在每次合盖之后悄悄换个含义。
+   * 这段时间里宠物待在主屏，设置窗口把这件事说出来（settings.window.display.pinned.gone）。
+   * 只有从来没钉过的时候才就地认一块。 */
+  if (prefs.displayMode === "pin" && !prefs.pinnedDisplay) prefs.pinnedDisplay = prefs.lastDisplay;
+  savePrefs();
+  updateTrayMenu();
+  log(`[vibepaws] 显示器变化(${reason}) → ${prefs.lastDisplay} 共 ${map.size} 块`);
+}
+
+function watchDisplays() {
+  screen.on("display-added", () => scheduleReconcile("added"));
+  screen.on("display-removed", () => scheduleReconcile("removed"));
+  screen.on("display-metrics-changed", () => scheduleReconcile("metrics"));
+}
+
 /* ---------------- PANEL_GEOMETRY_NOTE：窗口为什么不跟着浮层缩放 ----------------
  * 浮层要占宠物**上方**的空间，而宠物脚下那一点必须钉死不动 —— 这两条加起来，
  * 意味着窗口一变高，左上角就得同时往上挪同样的距离。
@@ -734,11 +1043,13 @@ function startHitRescue() {
   hitRescueTimer = setInterval(() => {
     if (!win || win.isDestroyed()) return stopHitRescue();
     const b = win.getBounds();
-    // 宠物盒子贴在窗口底部中央（与 CSS 里的 #stage 一致）
-    const x = b.x + (b.width - PET_BOX.width) / 2;
-    const y = b.y + b.height - PET_BOX.height;
+    // 宠物盒子贴在窗口底部中央（与 CSS 里的 #stage 一致），大小跟着尺寸档位走 ——
+    // 用 medium 档的常数会让 small 档多抢一圈桌面、large 档在宠物边上留一条死区
+    const { petBox } = sizes();
+    const x = b.x + (b.width - petBox.width) / 2;
+    const y = b.y + b.height - petBox.height;
     const p = screen.getCursorScreenPoint();
-    if (p.x < x || p.x >= x + PET_BOX.width || p.y < y || p.y >= y + PET_BOX.height) return;
+    if (p.x < x || p.x >= x + petBox.width || p.y < y || p.y >= y + petBox.height) return;
     cursorOverHit = true;
     applyMouseIgnore(); // 里面会把这个 timer 停掉
   }, HIT_RESCUE_MS);
@@ -749,13 +1060,26 @@ function stopHitRescue() {
   hitRescueTimer = null;
 }
 
+/**
+ * 「把宠物放回右下角」—— 也是「我把它拖丢了 / 它在一块我看不见的屏上」唯一的出口。
+ *
+ * 放回的是**它此刻该待的那块屏**（follow 模式下是主屏或上次那块，pin 模式下是钉住
+ * 的那块）的右下角，而不是主屏的右下角：如果它正卡在一块已经拔掉的屏的坐标里，
+ * 回主屏才是解法；而它好端端在外接屏上时，把它弹到笔记本屏上就是又制造了一个问题。
+ */
 function resetWindowPosition() {
-  prefs.anchor = defaultAnchor();
+  const display = homeDisplay();
+  const key = keyOf(display);
+  if (key) {
+    delete prefs.anchors[key]; // 删掉而不是写死角落的比例：这样换尺寸档位时角落还是角落
+    prefs.lastDisplay = key;
+    if (prefs.displayMode === "pin") prefs.pinnedDisplay = key;
+  }
   savePrefs();
   const target = ensureWindow();
   if (!target || target.isDestroyed()) return;
   // 只挪位置、不改尺寸：纯粹的移动是原子的，不会出现 PANEL_GEOMETRY_NOTE 里那一帧错位
-  const { x, y } = boundsFromAnchor(prefs.anchor);
+  const { x, y } = boundsFromAnchor(anchorForDisplay(display), display);
   target.setPosition(x, y, false);
   target.show();
 }
@@ -900,6 +1224,21 @@ function openSettings() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      zoomFactor: 1,
+      /* 缩放在 Chromium 里是**按 host 存的**，而这两扇窗口是同一个 127.0.0.1:port，
+       * 于是宠物窗口设成 large 档之后，设置窗口一打开也是 1.3 倍：表单被撑到装不下，
+       * 而这跟用户刚才调的那个「宠物大小」看起来毫无关系。
+       *
+       * 只在这边 setZoomFactor(1) 是治不好的 —— 那张 host 表是**共享**的，把设置窗口
+       * 按回 1.0 的同一下会把宠物也按回 1.0（实测：宠物窗口还是 390×559，里面的宠物
+       * 却缩回了 medium 的画法，缩在一扇过大的透明窗口角落里）。两扇窗口不可能在
+       * 同一张表上各持一个值。
+       *
+       * 所以给它一个**自己的 session**：host 缩放表是按 session 存的，分了 session
+       * 两边就互不相干。不带 persist: 前缀 = 只在内存里，不给 userData 添新目录；
+       * 这个页面本来就不依赖任何 session 状态（同源 fetch，Core 的 token 由 UI server
+       * 在服务端注入，见 src/ui/server.ts）。 */
+      partition: "vibepaws-settings",
     },
   });
   settingsWin.loadURL(settingsUrl());
@@ -965,10 +1304,24 @@ function setOpenAtLogin(value) {
 
 function prefsPayload() {
   const login = loginItemState();
+  const map = displayMap();
+  const here = keyOf(windowDisplay() ?? homeDisplay());
   return {
     allSpaces: prefs.allSpaces,
     clickThrough,
     locale: prefs.locale ?? "auto",
+    scale: prefs.scale,
+    scales: Object.keys(PET_SCALES),
+    displayMode: prefs.displayMode,
+    /** 设置窗口要说得出「钉在哪块屏上」—— 一个不说明钉住了什么的开关等于没说 */
+    displayCount: map.size,
+    displayName: displayName(map.get(here)),
+    // 钉住的那块屏不在时，名字从键里还原 —— 一句「Pinned to ?」等于没说
+    pinnedName: prefs.pinnedDisplay
+      ? (map.has(prefs.pinnedDisplay) ? displayName(map.get(prefs.pinnedDisplay)) : displayNameFromKey(prefs.pinnedDisplay))
+      : null,
+    /** 钉住的那块屏此刻在不在（拔了线的话界面要说出来，而不是继续显示一个死名字） */
+    pinnedAttached: Boolean(prefs.pinnedDisplay && map.has(prefs.pinnedDisplay)),
     /** 「跟随系统」那一项要说出来跟随的是什么 */
     osLocale: normalizeLocale(app.getLocale()),
     platform: process.platform,
@@ -997,6 +1350,8 @@ ipcMain.handle("vibepaws:prefs-set", (e, patch) => {
   if (typeof patch.allSpaces === "boolean") setAllSpaces(patch.allSpaces);
   if (typeof patch.clickThrough === "boolean") setClickThrough(patch.clickThrough);
   if (typeof patch.openAtLogin === "boolean") setOpenAtLogin(patch.openAtLogin);
+  if (typeof patch.scale === "string") setScale(patch.scale);
+  if (typeof patch.displayMode === "string") setDisplayMode(patch.displayMode);
   const payload = prefsPayload();
   if (typeof patch.locale === "string") {
     payload.locale = patch.locale === "en" || patch.locale === "zh-CN" ? patch.locale : "auto";
@@ -1029,6 +1384,34 @@ function updateTrayMenu() {
     {
       label: t("tray.allspaces", { state: t(prefs.allSpaces ? "tray.state.on" : "tray.state.off") }),
       click: toggleAllSpaces,
+    },
+    // 尺寸和显示器进子菜单：托盘第一屏要留给 Core 的状态和那两个开关，
+    // 而这两项是「调一次就不再碰」的设定，不该跟每天要用的东西抢位置
+    {
+      label: t("tray.scale", { state: t(`tray.scale.${prefs.scale}`) }),
+      submenu: Object.keys(PET_SCALES).map((id) => ({
+        label: t(`tray.scale.${id}`),
+        type: "radio",
+        checked: prefs.scale === id,
+        click: () => setScale(id),
+      })),
+    },
+    {
+      label: t("tray.display", { state: t(`tray.display.${prefs.displayMode}`) }),
+      submenu: [
+        {
+          label: t("tray.display.follow"),
+          type: "radio",
+          checked: prefs.displayMode === "follow",
+          click: () => setDisplayMode("follow"),
+        },
+        {
+          label: t("tray.display.pin"),
+          type: "radio",
+          checked: prefs.displayMode === "pin",
+          click: () => setDisplayMode("pin"),
+        },
+      ],
     },
   ];
   // 装不上时不列这一项：托盘菜单没有地方解释「为什么这条是灰的」，
@@ -1096,6 +1479,9 @@ async function boot() {
   uiPort = await startUiServer();
   uiReady = true;
   ensureWindow();
+  // 建完窗口才开始盯显示器：reconcileDisplays 要挪的就是这扇窗口
+  watchDisplays();
+  syncFollowWatch();
 }
 
 app.whenReady().then(boot).catch((e) => {
@@ -1123,13 +1509,11 @@ app.on("before-quit", () => {
   stopDrag();
   stopHitRescue(); // stopDrag 末尾会重算穿透状态，可能又把兜底 timer 拉起来
   if (levelKeepAlive) clearInterval(levelKeepAlive);
+  if (followTimer) clearInterval(followTimer);
+  if (reconcileTimer) clearTimeout(reconcileTimer);
   if (anchorSaveTimer) {
     clearTimeout(anchorSaveTimer);
-    const anchor = currentAnchor();
-    if (anchor) {
-      prefs.anchor = anchor;
-      savePrefs();
-    }
+    saveAnchorNow();
   }
   uiServer?.kill();
   // adopted 的 Core 在这里是 null —— 别去关一个用户自己在别的终端里跑着的进程

@@ -48,6 +48,10 @@ html, body {
 }
 body.dragging #stage, body.dragging #pet { cursor: grabbing; }
 #pet {
+  /* CSS 尺寸写死，后备缓冲区由 render.js 按 devicePixelRatio 放大 —— 少了这两行，
+   * canvas 的显示尺寸会跟着 width/height 属性走，宠物在 Retina 上直接大一倍。 */
+  width: 208px;
+  height: 208px;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   cursor: grab;
