@@ -13,3 +13,6 @@ review/
 ui/pets/denia/
 ui/pets/index.local.json
 src/adapters/dsh_plugin.cjs
+.idea/
+mvp_architecture.html
+references/desktop_pet_landscape.html
