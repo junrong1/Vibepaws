@@ -60,15 +60,32 @@ Full requirement-by-requirement status: [PRD §15](docs/prd_mvp_en.md#15-impleme
 
 ### 1. Install it
 
-Download **`Vibepaws-<version>-arm64.dmg`** from [Releases](https://github.com/junrong1/Vibepaws/releases), drag it to **Applications**, and open it.
+**With Homebrew** — one command, no prompts:
 
-That's the whole install. **No Node, no npm, no terminal** — Core runs on the Node runtime already inside the app.
+```bash
+brew tap junrong1/vibepaws https://github.com/junrong1/Vibepaws
+brew install --cask --no-quarantine vibepaws
+```
+
+**Or download it** — grab `Vibepaws-<version>-arm64.dmg` from [Releases](https://github.com/junrong1/Vibepaws/releases), drag it to **Applications**, open it, and approve it once (see below).
+
+Either way: **no Node, no npm** — Core runs on the Node runtime already inside the app.
 
 A pet appears bottom-right with a tray icon in the menu bar. First launch initializes its database, rolls you a **random starter pet**, and writes an API token. Core binds localhost only, and every route except `/health` requires that token.
 
-> **"Vibepaws is damaged and can't be opened"** means you built it yourself without Apple credentials — Gatekeeper quarantines any unsigned app. Released builds are signed and notarized. For a local build: `xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
-
 macOS on Apple Silicon is the tested platform. Intel, Windows and Linux aren't blocked by design, but haven't been exercised.
+
+#### Approving the download
+
+Releases are **ad-hoc signed but not notarized** — notarization needs a paid Apple Developer account, which this project doesn't have. macOS says *"Apple could not verify Vibepaws is free of malware."* To open it:
+
+1. Double-click **Vibepaws** in Applications. macOS blocks it.
+2. Open **System Settings → Privacy & Security**, scroll to **Security**.
+3. Click **Open Anyway**, then confirm. First launch only.
+
+On macOS Sequoia and later, Control-clicking the app no longer works as a shortcut — System Settings is the only route. That's why the Homebrew path exists: `--no-quarantine` skips Gatekeeper entirely.
+
+What "not notarized" does *not* mean is unsigned or tampered with. The signature is complete and verifiable — `codesign --verify --deep --strict` passes — which is exactly why you get an approval prompt instead of *"Vibepaws is damaged."* A build with a broken signature offers no approval path at all, so [CI refuses to publish one](.github/workflows/release.yml).
 
 ### 2. Start it at login
 
@@ -517,8 +534,19 @@ npm run verify:release                 # after building: is it actually signed a
 
 The build is wired for signing and notarization — hardened runtime, entitlements, and a
 notarization step for both the `.app` and the `.dmg`. **Credentials are what's missing, not
-config.** Without them the build still succeeds and produces an unsigned `.app`, which is the
-normal local-development path.
+config.** Without them the build still succeeds and `build/adhoc-sign.cjs` ad-hoc signs the
+bundle instead.
+
+That hook matters more than it sounds. Left alone, electron-builder skips signing entirely and
+the `.app` ends up with *no* `Contents/_CodeSignature` while its inner binaries still carry
+linker ad-hoc signatures — a **malformed** state. Gatekeeper's verdict for malformed is
+*"Vibepaws is damaged"*, which offers the user no way forward at all. A complete ad-hoc signature
+gets *"Apple could not verify…"* instead, which can be approved in System Settings. Same lack of
+trust, completely different outcome.
+
+`npm run verify:release -- --allow-unsigned` checks that unsigned releases are in the good state:
+every structural check still has to pass (valid signature, hardened runtime, entitlements, every
+Mach-O signed) — only "is it Developer ID" and "is it notarized" drop to warnings.
 
 > **An unsigned build shows up as "damaged" on macOS** ([#1](https://github.com/junrong1/Vibepaws/issues/1)). The build isn't broken — Gatekeeper quarantines any app without an Apple Developer signature and notarization. Two options:
 >

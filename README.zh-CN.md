@@ -60,15 +60,32 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 ### 1. 安装
 
-到 [Releases](https://github.com/junrong1/Vibepaws/releases) 下载 **`Vibepaws-<version>-arm64.dmg`**，拖进**应用程序**，双击打开。
+**用 Homebrew** —— 一条命令，没有任何弹窗：
 
-装完了。**不需要 Node、不需要 npm、不需要终端** —— Core 跑在 app 自己带着的那个 Node 运行时上。
+```bash
+brew tap junrong1/vibepaws https://github.com/junrong1/Vibepaws
+brew install --cask --no-quarantine vibepaws
+```
+
+**或者下载** —— 到 [Releases](https://github.com/junrong1/Vibepaws/releases) 拿 `Vibepaws-<version>-arm64.dmg`，拖进**应用程序**，双击，然后放行一次（见下）。
+
+两条路都一样：**不需要 Node，不需要 npm** —— Core 跑在 app 自己带着的那个 Node 运行时上。
 
 右下角出现一只宠物，菜单栏里出现一个托盘图标。首次启动会初始化数据库、**随机分配一只 starter pet**、并写入 API token。Core 只监听 localhost，除 `/health` 外所有路由都要带这个 token。
 
-> **「Vibepaws 已损坏，无法打开」** 说明这是你自己构建的、没有 Apple 凭据的版本 —— Gatekeeper 会隔离任何未签名的 app。发布版是签过名并公证过的。本地构建的话：`xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
-
 目前测试过的平台是 Apple Silicon 的 macOS。Intel、Windows 和 Linux 在设计上没有被排除，但也没有被验证过。
+
+#### 下载版怎么放行
+
+发布版是 **ad-hoc 签名、未公证** —— 公证需要付费的 Apple Developer 账号，这个项目没有。macOS 会说「Apple 无法验证此 App 是否包含恶意软件」。放行方法：
+
+1. 在「应用程序」里双击 **Vibepaws**，macOS 会拦下它。
+2. 打开**系统设置 → 隐私与安全性**，往下翻到**安全性**。
+3. 点**仍要打开**，再确认一次。只有第一次需要。
+
+macOS Sequoia 之后，Control-click 打开那条老路已经不管用了 —— 系统设置是唯一的入口。这也正是上面那条 Homebrew 路存在的理由：`--no-quarantine` 根本不会让 Gatekeeper 评估它。
+
+「未公证」不等于「没签名」或「被人动过」。签名是完整且可校验的（`codesign --verify --deep --strict` 通过），这恰恰是你看到「可以放行」而不是「已损坏」的原因 —— 签名损坏的包连放行入口都没有，所以 [CI 拒绝发布那种包](.github/workflows/release.yml)。
 
 ### 2. 开机自启
 

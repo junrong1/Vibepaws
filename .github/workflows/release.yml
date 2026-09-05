@@ -1,4 +1,9 @@
-# 打 tag 就出一份已签名 + 已公证的 macOS 产物。
+# 打 tag 就出一份 macOS 产物。有 Apple 凭据就是「已签名 + 已公证」，没有就是
+# 「ad-hoc 签名、未公证」—— 后者仍然可以发布，用户在系统设置 → 隐私与安全性里放行即可
+# （见 build/adhoc-sign.cjs：关键在于签名**有效**，否则用户看到的是「已损坏」，连放行入口都没有）。
+#
+# 没有凭据时整条流水线不会红：证书导入、公证都会跳过，验收改用 --allow-unsigned 的那套标准。
+# 这条路是刻意留的 —— 一个必须先掏 99 美元/年才能发出第一个版本的项目，等于没有发布流程。
 #
 # 为什么必须在 CI 里做而不是在谁的笔记本上做：签名凭据一旦躺在某台机器的钥匙串里，
 # "谁能发版"就等于"谁的电脑还在"。证书进 secrets，发版就是 git tag 一下的事。
@@ -43,7 +48,20 @@ jobs:
 
       - run: npm ci
 
+      - name: Detect signing credentials
+        id: creds
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+        run: |
+          if [ -n "${APPLE_CERTIFICATE_P12:-}" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::没有 APPLE_CERTIFICATE_P12 —— 走 ad-hoc 未公证发布"
+          fi
+
       - name: Import signing certificate
+        if: steps.creds.outputs.signed == 'true'
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -74,6 +92,7 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Write App Store Connect API key
+        if: steps.creds.outputs.signed == 'true'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -105,10 +124,18 @@ jobs:
       - name: Verify signature and notarization
         # 这一步是整条流水线的验收：签名、hardened runtime、授权、公证票、
         # 以及包内每个 Mach-O 是否都签到了。任何一项不过就红，不会发出坏包。
-        run: npm run verify:release
+        #
+        # 没有凭据时换一套标准（--allow-unsigned）而不是跳过验收：那时最要命的一项恰恰
+        # 还在 —— 签名必须**有效**，否则用户拿到的是「已损坏」，在系统设置里都放行不了。
+        run: |
+          if [ "${{ steps.creds.outputs.signed }}" = "true" ]; then
+            npm run verify:release
+          else
+            npm run verify:release -- --allow-unsigned
+          fi
 
       - name: Destroy signing keychain
-        if: always()
+        if: always() && steps.creds.outputs.signed == 'true' 
         run: security delete-keychain "$RUNNER_TEMP/vibepaws-signing.keychain-db" || true
 
       - uses: actions/upload-artifact@v4
@@ -123,4 +150,39 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/*.dmg dist/*.zip --generate-notes
+          SIGNED: ${{ steps.creds.outputs.signed }}
+        # 未签名的包必须把「怎么打开它」写在 release notes 第一屏：用户看到的第一样东西是
+        # 「Apple 无法验证」，那一刻手边没有说明的话，绝大多数人就到此为止了。
+        # 说明单独成文件（build/release-notes-unsigned.md）而不是内嵌 heredoc —— YAML 的块标量
+        # 会把顶格的行当成新的 key，内嵌一次就要在缩进上踩一次坑。
+        run: |
+          set -euo pipefail
+          if [ "$SIGNED" = "true" ]; then
+            gh release create "${GITHUB_REF_NAME}" dist/*.dmg dist/*.zip --generate-notes
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/*.dmg dist/*.zip \
+              --generate-notes --notes-file build/release-notes-unsigned.md
+          fi
+
+      # cask 里的 sha256 必须来自**真正上传的那个 dmg**：dmg 不是可复现构建（时间戳、
+      # 压缩顺序都会变），拿本地任意一次构建的 sha 写进去，用户 brew install 时会在下载完
+      # 之后才撞上 "SHA256 mismatch" —— 看起来像产物被人动过手脚。
+      # 推不上去不算发布失败：包已经发出去了，cask 落后一版顶多是 brew 那条路暂时装不了。
+      - name: Refresh Homebrew cask
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          npm run cask:update -- --dmg "$(ls dist/*.dmg | head -1)"
+          if git diff --quiet Casks/vibepaws.rb; then
+            echo "cask 已经是最新的"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/vibepaws.rb
+          git commit -m "chore(cask): ${GITHUB_REF_NAME}"
+          # tag 构建的 HEAD 是游离的，得显式推到默认分支
+          git push origin HEAD:main

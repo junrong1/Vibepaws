@@ -20,6 +20,7 @@
  * ## 用法
  *   npm run verify:release -- --preflight
  *   npm run verify:release
+ *   npm run verify:release -- --allow-unsigned   # 没有 Apple 会员时的发布验收
  *   npm run verify:release -- --app dist/mac-arm64/Vibepaws.app --dmg dist/Vibepaws-0.1.0-arm64.dmg
  */
 
@@ -36,6 +37,19 @@ function has(name: string): boolean {
 }
 
 const PREFLIGHT = has("preflight");
+/**
+ * 未签名发布模式（没有 Apple Developer 会员时的现实选择）。
+ *
+ * 它**不是**「少检查几项」，而是换一套验收标准。没有 Developer ID 时，决定用户遭遇的
+ * 不再是「受不受信任」（那已经确定：不受信任），而是签名**有没有效**：
+ *   · 签名无效  → 「Vibepaws 已损坏，无法打开」→ 没有任何放行入口，只能扔废纸篓
+ *   · 签名有效但不受信任 → 「Apple 无法验证…」→ 系统设置 → 隐私与安全性 →「仍要打开」
+ * macOS Sequoia 拿掉 Control-click 那条老路之后，后者是唯一的放行入口。
+ *
+ * 所以这个模式下，结构性检查（--verify 通过、hardened runtime、授权、包内每个 Mach-O
+ * 都签到了）**一项都不能少**，只有「是不是 Developer ID / 有没有公证票」降级成提示。
+ */
+const ALLOW_UNSIGNED = has("allow-unsigned");
 const DIST = arg("dist") ?? "dist";
 
 /** 主进程授权清单里必须出现的键。缺了 JIT 那两条，签名后的 app 启动即被内核杀掉。 */
@@ -54,6 +68,12 @@ function warn(msg: string): void {
   warnings++;
   console.log(`⚠ ${msg}`);
 }
+/** 只有「受信任」这一类结论才随模式变；结构性问题在哪种模式下都是 fail。 */
+function trust(msg: string): void {
+  if (ALLOW_UNSIGNED) warn(msg);
+  else fail(msg);
+}
+
 function fail(msg: string): void {
   failures++;
   console.log(`✗ ${msg}`);
@@ -187,16 +207,19 @@ function verifyApp(appPath: string): void {
   }
 
   const info = sh("codesign", ["-dv", "--verbose=4", appPath]);
-  if (/Signature=adhoc/.test(info)) {
+  const adhoc = /Signature=adhoc/.test(info);
+  if (adhoc && ALLOW_UNSIGNED) {
+    ok("ad-hoc 签名且完整 —— 用户会看到「Apple 无法验证」而不是「已损坏」，可在系统设置里放行");
+  } else if (adhoc) {
     fail("这是 ad-hoc 签名（codesign -s -），不是 Developer ID —— 能过 --verify，但分发出去照样打不开");
   }
   const authority = info.split("\n").find((l) => l.startsWith("Authority="));
   if (authority?.includes("Developer ID Application")) ok(`签名主体：${authority.replace("Authority=", "").trim()}`);
-  else fail(`签名主体不是 Developer ID Application：${authority ?? "（没读到 Authority）"}`);
+  else trust(`签名主体不是 Developer ID Application：${authority ?? "（没读到 Authority）"}`);
 
   const team = info.split("\n").find((l) => l.startsWith("TeamIdentifier="));
   if (team && !team.includes("not set")) ok(team.trim());
-  else fail("TeamIdentifier 缺失 —— 不是有效的分发签名");
+  else trust("TeamIdentifier 缺失 —— 不是有效的分发签名");
 
   if (/flags=.*runtime/.test(info)) ok("hardened runtime 已开启");
   else fail("hardened runtime 没开 —— 公证一定会被拒（codesign flags 里没有 runtime）");
@@ -209,12 +232,19 @@ function verifyApp(appPath: string): void {
 
   const staple = run("xcrun", ["stapler", "validate", appPath]);
   if (staple.ok) ok("公证票已装订到 .app");
-  else fail(`.app 没有公证票：${staple.out.trim().split("\n")[0] ?? ""}`);
+  else trust(`.app 没有公证票：${staple.out.trim().split("\n")[0] ?? ""}`);
 
   const assess = sh("spctl", ["-a", "-vvv", "-t", "exec", appPath]);
   if (assess.includes("accepted")) {
     ok(`Gatekeeper 评估：${assess.split("\n").filter(Boolean).join(" / ").trim()}`);
     if (!assess.includes("Notarized")) warn("Gatekeeper 接受了，但来源不是 Notarized Developer ID");
+  } else if (ALLOW_UNSIGNED) {
+    // 未签名模式下 Gatekeeper 必然拒绝 —— 要紧的是**拒绝的理由**。
+    // "code has no resources…" / "invalid" 这类措辞代表签名损坏，那就是「已损坏」弹窗，
+    // 用户连放行入口都没有；而干干净净的一句 rejected 才是可放行的那一种。
+    const broken = /no resources|invalid|not signed|obsolete/i.test(assess);
+    if (broken) fail(`Gatekeeper 判定签名损坏（用户会看到「已损坏」，无法放行）：${assess.trim().split("\n").join(" / ")}`);
+    else warn("Gatekeeper 拒绝（未公证，符合预期）—— 用户需在系统设置 → 隐私与安全性里放行");
   } else {
     fail(`Gatekeeper 拒绝：${assess.trim().split("\n").join(" / ")}`);
   }
@@ -238,13 +268,13 @@ function verifyDmg(dmgPath: string): void {
 
   const verify = run("codesign", ["--verify", "--strict", "--verbose=2", dmgPath]);
   if (verify.ok) ok("dmg 已签名");
-  else fail(`dmg 未签名或签名无效：${verify.out.split("\n")[0] ?? ""}`);
+  else trust(`dmg 未签名或签名无效：${verify.out.split("\n")[0] ?? ""}`);
 
   const staple = run("xcrun", ["stapler", "validate", dmgPath]);
   if (staple.ok) {
     ok("公证票已装订到 dmg（用户双击 dmg 不会再看到「无法验证开发者」）");
   } else {
-    fail("dmg 没有公证票 —— 用户双击 dmg 时仍会被拦；见 build/notarize-dmg.cjs");
+    trust("dmg 没有公证票 —— 用户双击 dmg 时仍会被拦；见 build/notarize-dmg.cjs");
   }
 }
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Vibepaws — AI coding pet for your coding agents (MVP)",
+  "description": "Vibepaws \u2014 AI coding pet for your coding agents (MVP)",
   "main": "desktop/main.js",
   "engines": {
     "node": ">=22.6"
@@ -25,7 +25,8 @@
     "dist:mac": "electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js desktop/*.test.js scripts/*.test.ts",
-    "verify:release": "node --experimental-strip-types scripts/verify_release.ts"
+    "verify:release": "node --experimental-strip-types scripts/verify_release.ts",
+    "cask:update": "node --experimental-strip-types scripts/update_cask.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
@@ -83,6 +84,7 @@
       "notarize": true
     },
     "npmRebuild": false,
-    "afterAllArtifactBuild": "./build/notarize-dmg.cjs"
+    "afterAllArtifactBuild": "./build/notarize-dmg.cjs",
+    "afterPack": "./build/adhoc-sign.cjs"
   }
 }
