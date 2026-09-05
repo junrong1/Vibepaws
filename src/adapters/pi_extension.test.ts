@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { mapEvent, sessionIdOf, deliverToCore, PI_CAPABILITIES } from "./pi_extension.ts";
 import type { CoreEvent } from "./pi_extension.ts";
 
@@ -122,7 +123,10 @@ test("sessionIdOf：UUID 优先，回退文件名，再回退临时 id", () => {
 });
 
 test("deliverToCore：Core 离线时写 JSONL 兜底（默认 ~/.vibepaws/events，可注入 fallbackDir）", async () => {
-  const dir = mkdtempSync(join(process.cwd(), ".vibepaws", "pi-ext-test-"));
+  // 用 tmpdir() 而不是 <repo>/.vibepaws：那个目录是 gitignore 的运行期产物，
+  // 干净 checkout 上根本不存在 —— 测试会以 ENOENT 挂掉，而在任何跑过一次 app 的
+  // 机器上都是绿的。CI 第一次真跑起来时，四个用例就是这么红的。
+  const dir = mkdtempSync(join(tmpdir(), "vibepaws-pi-ext-test-"));
   try {
     const ev: CoreEvent = {
       event_id: "pi-x", seq: 1, agent: "pi", session_id: "s", project_id: dir,

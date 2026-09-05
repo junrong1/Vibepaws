@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import {
   mapSessionEvent,
@@ -197,7 +198,10 @@ test("sessionIdOf / cwdOf：取 session.id 与 header.cwd，异常回退", () =>
 });
 
 test("deliverToCore：Core 离线时写 JSONL 兜底（可注入 fallbackDir）", async () => {
-  const dir = mkdtempSync(join(process.cwd(), ".vibepaws", "dsh-test-"));
+  // 用 tmpdir() 而不是 <repo>/.vibepaws：那个目录是 gitignore 的运行期产物，
+  // 干净 checkout 上根本不存在 —— 测试会以 ENOENT 挂掉，而在任何跑过一次 app 的
+  // 机器上都是绿的。CI 第一次真跑起来时，四个用例就是这么红的。
+  const dir = mkdtempSync(join(tmpdir(), "vibepaws-dsh-test-"));
   try {
     const ev: CoreEvent = {
       event_id: "dsh-x", seq: 1, agent: "dsh", session_id: SID, project_id: dir,
@@ -219,7 +223,10 @@ test("deliverToCore：Core 离线时写 JSONL 兜底（可注入 fallbackDir）"
 test("transpileDshPlugin：ESM .ts → 可 require() 的 CJS（dsh 侧绕开 require(esm) 环）", () => {
   const source = readFileSync(new URL("./dsh_plugin.ts", import.meta.url), "utf-8");
   const cjs = transpileDshPlugin(source);
-  const dir = mkdtempSync(join(process.cwd(), ".vibepaws", "dsh-cjs-"));
+  // 用 tmpdir() 而不是 <repo>/.vibepaws：那个目录是 gitignore 的运行期产物，
+  // 干净 checkout 上根本不存在 —— 测试会以 ENOENT 挂掉，而在任何跑过一次 app 的
+  // 机器上都是绿的。CI 第一次真跑起来时，四个用例就是这么红的。
+  const dir = mkdtempSync(join(tmpdir(), "vibepaws-dsh-cjs-"));
   try {
     const file = join(dir, "vibepaws.cjs");
     writeFileSync(file, cjs);

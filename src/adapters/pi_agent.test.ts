@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   parseArgs,
   normalizePiArgs,
@@ -150,7 +151,10 @@ test("parseArgs：全参数解析", () => {
 });
 
 test("session 状态文件：save → load → clear 往返", () => {
-  const dir = mkdtempSync(join(process.cwd(), ".vibepaws", "pi-state-test-"));
+  // 用 tmpdir() 而不是 <repo>/.vibepaws：那个目录是 gitignore 的运行期产物，
+  // 干净 checkout 上根本不存在 —— 测试会以 ENOENT 挂掉，而在任何跑过一次 app 的
+  // 机器上都是绿的。CI 第一次真跑起来时，四个用例就是这么红的。
+  const dir = mkdtempSync(join(tmpdir(), "vibepaws-pi-state-test-"));
   try {
     assert.equal(loadState(dir), null);
     saveState(dir, { session_id: "pi-fs-1", project_id: dir });
