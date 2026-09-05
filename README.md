@@ -78,13 +78,17 @@ Move the app to `/Applications` first — a login item pointing inside a mounted
 
 ### 3. Connect your agent
 
-Connecting an agent still needs one terminal command, because it edits your agent's own config:
+**Settings → Connect your agent.** It lists Claude Code, Codex, pi and DeepSeek Harness, marks which ones it found on this Mac, and connects one in two clicks (the second click confirms, because this writes to *your agent's* config). It shows exactly which file it touched, and backs the original up next to it.
+
+Restart the agent afterwards — hooks are read once at session start.
+
+Prefer the terminal, or want to install into a single project instead of globally?
 
 ```bash
-npm run adapter:install -- --global
+npm run adapter:install -- --global      # or drop --global for this project only
 ```
 
-**This step needs Node ≥ 22.6** — it's the one remaining place that does, because the collector runs inside *your agent's* process, not ours. The installer writes the absolute path of a qualifying Node into your agent config, so it doesn't matter what your agent's `PATH` looks like later.
+The command line is also the only way to do a **project-scoped** install: the in-app button installs globally, because a click in a settings window can't say *which* project you meant.
 
 Details and per-agent notes: [Connect your coding agent](#connect-your-coding-agent).
 
@@ -235,6 +239,7 @@ Tray menu → **Settings…**, or the ⚙ button in the flyout. It's a normal wi
 | Section | What's in it |
 | --- | --- |
 | **Pet** | Name it. Empty falls back to the species name. |
+| **Connect your agent** | Which agents are on this Mac, which are connected, and a two-click connect for each — no terminal |
 | **Budget & warnings** | Default token budget (in k tokens; `0` turns milestones off) · context warning thresholds (off / early / default / late) · daily EXP cap |
 | **Tokens & overhead** | What the pet costs: model API calls (`0`), bytes off this machine (`0`), and the live byte/latency counter for the hook path — see [Can it spend my tokens?](#can-it-spend-my-tokens) |
 | **Idle sessions** | How long a session may go silent before Vibepaws closes it out (default 15 minutes) — see [When an agent dies](#when-an-agent-dies-without-saying-so) |

@@ -85,6 +85,16 @@
       <p class="hint" data-i18n="settings.zombie.hint"></p>
     </section>
 
+    <!-- 接 agent（0.5）。位置在「运行中的 session」**之前**是刻意的：没接上 agent 就
+         永远不会有 session，这张卡回答的是用户此刻真正的问题。
+         列表由 settings.js 从 Core 的 /api/adapters 拉，每个 agent 一行 + 一个两段式按钮。 -->
+    <section class="card" id="connect-card">
+      <h2 data-i18n="settings.section.connect"></h2>
+      <p class="hint" data-i18n="settings.connect.hint"></p>
+      <div id="agents"></div>
+      <p class="hint" data-i18n="settings.connect.scope"></p>
+    </section>
+
     <section class="card">
       <h2 data-i18n="settings.section.sessions"></h2>
       <!-- G17 的录入口：session 在终端里诞生，goal / budget 只能在这里补上 -->

@@ -199,6 +199,27 @@ export const MESSAGES = {
     "settings.zombie.hint":
       "A crashed agent never says goodbye, so a session that goes quiet this long is closed out — no EXP, no celebration. If the agent's process is gone, that's detected in seconds and this wait doesn't apply.",
 
+    // ---- 接 agent（app 里那张卡；从前只有 CLI 一条路）----
+    "settings.section.connect": "Connect your agent",
+    "settings.connect.hint":
+      "Installs Vibepaws into your agent's config so it can report what it's doing. Nothing else in your config is touched, and the original is backed up next to it.",
+    "settings.connect.scope": "Installs for every project (global). To install into one project only, use the command line.",
+    "settings.connect.detected": "found on this Mac",
+    "settings.connect.undetected": "not found",
+    "settings.connect.installed": "connected",
+    "settings.connect.install": "Connect",
+    "settings.connect.reinstall": "Reinstall",
+    "settings.connect.confirm": "Press again to write",
+    "settings.connect.working": "Writing…",
+    "settings.connect.done": "{agent} connected — restart it so the hooks load",
+    "settings.connect.failed": "Couldn't connect {agent}",
+    "settings.connect.selfcheck.ok": "Core received the test event",
+    "settings.connect.selfcheck.fail": "Written, but Core didn't get the test event — restart Core and try the agent again",
+    "settings.connect.agent.claude_code": "Claude Code",
+    "settings.connect.agent.codex": "Codex",
+    "settings.connect.agent.pi": "pi-coding-agent",
+    "settings.connect.agent.dsh": "DeepSeek Harness",
+
     "settings.section.sessions": "Active sessions",
     "settings.sessions.hint":
       "A goal pays 1.1× EXP and gives drift detection something to compare against. A budget here overrides the default above.",
@@ -506,6 +527,27 @@ export const MESSAGES = {
     "settings.zombie.unit": "分钟",
     "settings.zombie.hint":
       "崩掉的 agent 不会跟你道别，所以静默超过这个时长的 session 会被收掉 —— 不发 EXP，也不庆祝。如果 agent 进程已经没了，秒级就能发现，不用等这个时长。",
+
+    // ---- 接 agent ----
+    "settings.section.connect": "接上你的 agent",
+    "settings.connect.hint":
+      "把 Vibepaws 装进你的 agent 配置里，它才报得出自己在干什么。配置里其他东西一样不动，原文件会在旁边留一份备份。",
+    "settings.connect.scope": "装的是全局（所有项目生效）。只想装进某一个项目，用命令行。",
+    "settings.connect.detected": "这台机器上有",
+    "settings.connect.undetected": "没找到",
+    "settings.connect.installed": "已连接",
+    "settings.connect.install": "连接",
+    "settings.connect.reinstall": "重新连接",
+    "settings.connect.confirm": "再按一次写入",
+    "settings.connect.working": "写入中…",
+    "settings.connect.done": "{agent} 已连接 —— 重启它，hook 才会被读到",
+    "settings.connect.failed": "{agent} 连接失败",
+    "settings.connect.selfcheck.ok": "Core 收到了测试事件",
+    "settings.connect.selfcheck.fail": "写好了，但 Core 没收到测试事件 —— 重启 Core 再开一次那个 agent",
+    "settings.connect.agent.claude_code": "Claude Code",
+    "settings.connect.agent.codex": "Codex",
+    "settings.connect.agent.pi": "pi-coding-agent",
+    "settings.connect.agent.dsh": "DeepSeek Harness",
 
     "settings.section.sessions": "活跃的 session",
     "settings.sessions.hint": "填了目标能拿 1.1× EXP，漂移判定也才有基准。这里的预算会覆盖上面的默认值。",

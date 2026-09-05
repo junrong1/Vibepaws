@@ -61,6 +61,8 @@ h2 {
 #status { font-size: 10px; color: var(--dim); text-align: right; min-height: 1.5em; }
 #status.ok { color: var(--ok); }
 #status.err { color: var(--danger); }
+/* 「写好了但 Core 没收到」既不是成功也不是失败 —— 它得留在屏幕上（只有 ok 会自己走） */
+#status.warn { color: var(--warn); }
 
 .card {
   background: var(--card);
@@ -187,6 +189,33 @@ button:hover:enabled { border-color: var(--accent); color: var(--accent); }
   font-weight: 700;
 }
 #footprint { display: block; margin-bottom: 10px; }
+
+/* ---- 接 agent（0.5） ----
+ * 一行一个 agent：名字、状态、按钮，外加装在哪个文件里（第二行，占满整宽）。
+ * grid 而不是 flex：四行的名字和状态要竖着对齐，不然长短名字会让按钮参差不齐。 */
+.agent-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.agent-row:last-child { border-bottom: none; }
+.a-name { font-size: 11px; }
+.a-state { font-size: 10px; color: var(--dim); }
+.a-state.ok { color: var(--ok); }
+/* 「这台机器上有，但还没连」是最该被点的那一行 —— 给它一点存在感 */
+.a-state.detected { color: var(--accent); }
+.a-btn { margin-top: 0; white-space: nowrap; }
+.a-btn.armed { border-color: var(--warn); color: var(--warn); font-weight: 700; }
+/* 文件路径换行，别把窗口撑宽 */
+.a-files {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
 /* 卸载目标与善后提示：文件路径要能换行，不然长路径把窗口撑宽 */
 .target, .note {
   font-size: 10px;

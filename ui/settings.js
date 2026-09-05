@@ -456,6 +456,125 @@ async function patchSession(s, patch, el) {
   lastSessionsSignature = null; // 让下一次轮询重算这一段
 }
 
+/* ---------------- 接 agent（0.5） ----------------
+ *
+ * 从前这一步只有一条路：在终端里 `npm run adapter:install`。对一个「下载、拖进应用程序、
+ * 双击」就能用的桌宠来说，那一条命令就是绝大多数用户的终点 —— 装完宠物却永远不动，
+ * 因为没人告诉他还差一步，而那一步长得像开发流程。
+ *
+ * 写操作照抄危险区的两段式（按一下武装、再按一下执行）：这个按钮会改**用户另一个工具的
+ * 配置文件**，和「移除 adapter hooks」是同一类动作，不该点一下就发生。
+ */
+const AGENT_ORDER = ["claude_code", "codex", "pi", "dsh"];
+
+/** 每个 agent 一行：名字 + 状态 + 一个按钮。按钮的状态机在 connectState 里。 */
+let agentsView = null;
+/** 正在武装的那个 agent（同一时刻只有一个），以及它的解除计时器 */
+let armedAgent = null;
+let agentArmTimer = null;
+
+function agentLabel(id) {
+  return t(`settings.connect.agent.${id}`);
+}
+
+function disarmAgents() {
+  if (agentArmTimer) clearTimeout(agentArmTimer);
+  agentArmTimer = null;
+  armedAgent = null;
+  renderAgents(agentsView);
+}
+
+function renderAgents(view) {
+  agentsView = view;
+  const host = $("agents");
+  if (!host) return;
+  if (!view) {
+    host.textContent = "";
+    return;
+  }
+  const byId = new Map((view.agents ?? []).map((a) => [a.agent, a]));
+  host.replaceChildren();
+  for (const id of AGENT_ORDER) {
+    const info = byId.get(id);
+    if (!info) continue;
+    const row = document.createElement("div");
+    row.className = "agent-row";
+
+    const name = document.createElement("span");
+    name.className = "a-name";
+    name.textContent = agentLabel(id);
+    row.appendChild(name);
+
+    // 三种状态说三句不同的话：已连接 / 机器上有但没连 / 没找到。
+    // 「没找到」不等于不能装 —— 按钮照样能按，只是不主动推荐。
+    const state = document.createElement("span");
+    state.className = `a-state ${info.installed ? "ok" : info.detected ? "detected" : "absent"}`;
+    state.textContent = info.installed
+      ? t("settings.connect.installed")
+      : info.detected
+        ? t("settings.connect.detected")
+        : t("settings.connect.undetected");
+    row.appendChild(state);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "a-btn";
+    btn.dataset.agent = id;
+    if (armedAgent === id) {
+      btn.textContent = t("settings.connect.confirm");
+      btn.classList.add("armed");
+    } else {
+      btn.textContent = t(info.installed ? "settings.connect.reinstall" : "settings.connect.install");
+    }
+    btn.addEventListener("click", () => onAgentClick(id, btn));
+    row.appendChild(btn);
+
+    // 装在哪个文件里 —— 这是唯一会改用户其他工具配置的地方，得说出来动的是谁
+    if (info.files?.length) {
+      const where = document.createElement("div");
+      where.className = "a-files";
+      where.textContent = info.files.join(" · ");
+      row.appendChild(where);
+    }
+    host.appendChild(row);
+  }
+}
+
+function onAgentClick(id, btn) {
+  if (armedAgent !== id) {
+    disarmAgents();
+    armedAgent = id;
+    renderAgents(agentsView);
+    agentArmTimer = setTimeout(disarmAgents, ARM_MS);
+    return;
+  }
+  disarmAgents();
+  void connectAgent(id, btn);
+}
+
+async function connectAgent(id, btn) {
+  btn.disabled = true;
+  btn.textContent = t("settings.connect.working");
+  const res = await postJson("/api/adapters", { agent: id, confirm: true });
+  if (!res.ok || !res.data?.ok) {
+    status(t("settings.connect.failed", { agent: agentLabel(id) }), "err");
+    renderAgents(agentsView);
+    return;
+  }
+  // 自检的结果要单独说：文件写对了但 Core 没收到，是一种「装好了却不工作」的状态，
+  // 只报一句「已连接」会让用户以为一切正常，然后对着不动的宠物发呆。
+  const checked = res.data.selfCheck;
+  if (checked === false) status(t("settings.connect.selfcheck.fail"), "warn");
+  else status(t("settings.connect.done", { agent: agentLabel(id) }), "ok");
+  renderAgents(res.data);
+}
+
+async function loadAgents() {
+  const view = await getJson("/api/adapters");
+  // 武装到一半时别重画：会把用户刚点亮的确认按钮抹回去
+  if (view && !armedAgent) renderAgents(view);
+}
+
 /* ---------------- 壳设定（窗口 / 语言） ---------------- */
 function renderLanguageOptions(prefs) {
   const el = $("language");
@@ -814,9 +933,12 @@ applyStaticI18n();
 disarm(); // 顺带给三个危险按钮写上初始标签（它们的文案由武装状态决定，不能走 data-i18n）
 initShell();
 load();
+loadAgents();
 loadDanger();
 setInterval(() => {
   load();
   // 宠物换了屏、显示器被拔了 —— 这扇窗口开着的时候那一行不能一直说着旧事
   void refreshShellFacts();
+  // agent 可能是刚在别处装上/卸掉的（CLI、另一扇设置窗口）
+  void loadAgents();
 }, POLL_MS);

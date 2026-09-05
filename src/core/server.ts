@@ -47,6 +47,7 @@ import {
   type UninstallAgent,
   type HookTarget,
 } from "../adapters/uninstall.ts";
+import { INSTALL_AGENTS, detectAgents, installAdapter, type InstallAgent } from "../adapters/install.ts";
 import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
@@ -244,6 +245,13 @@ export class VibepawsServer {
           if (url === "/api/uninstall") {
             if (req.method === "POST") this.handleUninstall(req, res);
             else sendJson(res, 200, this.uninstallSnapshot());
+            return;
+          }
+          // 接 agent。GET 是「这台机器上有哪些 agent、装没装」，POST 才动配置。
+          // 和 /api/uninstall 并列不是巧合：这两个是仅有的会改**用户其他工具配置**的端点。
+          if (url === "/api/adapters") {
+            if (req.method === "POST") this.handleInstall(req, res);
+            else sendJson(res, 200, this.adaptersSnapshot());
             return;
           }
           res.writeHead(404, { "content-type": "application/json" });
@@ -478,6 +486,48 @@ export class VibepawsServer {
       }
       const report = uninstallAdapters({ repoRoot: this.repoRoot, home: this.home, agents: list, dryRun });
       sendJson(res, 200, { ok: true, ...report, ...this.uninstallSnapshot() });
+    });
+  }
+
+  /** 「接上你的 agent」那张卡的数据：每个 agent 在不在这台机器上、Vibepaws 装没装。 */
+  adaptersSnapshot(): { agents: ReturnType<typeof detectAgents>; installable: InstallAgent[] } {
+    return {
+      agents: detectAgents({ projectRoot: this.repoRoot, home: this.home }),
+      installable: INSTALL_AGENTS,
+    };
+  }
+
+  /**
+   * 装一个 agent 的 adapter。
+   *
+   * 和卸载一样要显式 confirm：这个端口上任何本机网页都 fetch 得到，而这个端点会改用户
+   * **另一个工具**的配置文件 —— 那不该是一次拼错的 URL 就能触发的事。
+   *
+   * 只做全局安装，不给 scope 参数：项目级要回答「哪个项目」，而设置窗口里那一下点击
+   * 根本没有这个信息（Core 的 cwd 是数据目录，不是你正在写的那个仓库）。想装项目级的
+   * 仍然走 CLI —— 那里 cwd 就是答案。
+   */
+  private handleInstall(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const { agent, confirm, dry_run } = (body ?? {}) as { agent?: unknown; confirm?: unknown; dry_run?: unknown };
+      const dryRun = dry_run === true;
+      if (!dryRun && confirm !== true) {
+        sendJson(res, 400, { error: "confirmation required" });
+        return;
+      }
+      if (typeof agent !== "string" || !INSTALL_AGENTS.includes(agent as InstallAgent)) {
+        sendJson(res, 400, { error: "unknown agent" });
+        return;
+      }
+      void installAdapter({
+        agent: agent as InstallAgent,
+        global: true,
+        dryRun,
+        home: this.home,
+        projectRoot: this.repoRoot,
+      })
+        .then((report) => sendJson(res, 200, { ...report, ...this.adaptersSnapshot() }))
+        .catch((err: unknown) => sendJson(res, 500, { error: String(err) }));
     });
   }
 
