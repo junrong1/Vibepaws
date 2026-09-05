@@ -60,14 +60,17 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 ### 1. 安装
 
-**用 Homebrew** —— 一条命令，没有任何弹窗：
+**下载** —— 到 [Releases](https://github.com/junrong1/Vibepaws/releases) 拿 `Vibepaws-<version>-arm64.dmg`，拖进**应用程序**，双击，然后放行一次（见下）。
+
+**或者用 Homebrew**，好处是以后可以 `brew upgrade`：
 
 ```bash
 brew tap junrong1/vibepaws https://github.com/junrong1/Vibepaws
-brew install --cask --no-quarantine vibepaws
+brew trust junrong1/vibepaws        # Homebrew 6 对第三方 tap 强制要求这一步
+brew install --cask vibepaws
 ```
 
-**或者下载** —— 到 [Releases](https://github.com/junrong1/Vibepaws/releases) 拿 `Vibepaws-<version>-arm64.dmg`，拖进**应用程序**，双击，然后放行一次（见下）。
+Homebrew **不能**帮你省掉下面那次放行 —— Homebrew 6 已经把 `--no-quarantine` 删了，cask 下载一律打 quarantine 标记。
 
 两条路都一样：**不需要 Node，不需要 npm** —— Core 跑在 app 自己带着的那个 Node 运行时上。
 
@@ -83,7 +86,11 @@ brew install --cask --no-quarantine vibepaws
 2. 打开**系统设置 → 隐私与安全性**，往下翻到**安全性**。
 3. 点**仍要打开**，再确认一次。只有第一次需要。
 
-macOS Sequoia 之后，Control-click 打开那条老路已经不管用了 —— 系统设置是唯一的入口。这也正是上面那条 Homebrew 路存在的理由：`--no-quarantine` 根本不会让 Gatekeeper 评估它。
+macOS Sequoia 之后，Control-click 打开那条老路已经不管用了 —— 点击操作只剩系统设置这一条。想一条命令了事的话，自己把标记清掉也行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Vibepaws.app
+```
 
 「未公证」不等于「没签名」或「被人动过」。签名是完整且可校验的（`codesign --verify --deep --strict` 通过），这恰恰是你看到「可以放行」而不是「已损坏」的原因 —— 签名损坏的包连放行入口都没有，所以 [CI 拒绝发布那种包](.github/workflows/release.yml)。
 

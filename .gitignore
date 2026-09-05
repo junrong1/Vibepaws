@@ -12,3 +12,4 @@ __pycache__/
 review/
 ui/pets/denia/
 ui/pets/index.local.json
+src/adapters/dsh_plugin.cjs

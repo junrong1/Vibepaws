@@ -13,14 +13,21 @@ and here is how to open it:
 > On macOS Sequoia and later, Control-clicking the app no longer works as a shortcut for this.
 > System Settings is the only route.
 
-### One command instead
+### Or install with Homebrew
 
 ```bash
 brew tap junrong1/vibepaws https://github.com/junrong1/Vibepaws
-brew install --cask --no-quarantine vibepaws
+brew trust junrong1/vibepaws        # Homebrew 6 requires this for third-party taps
+brew install --cask vibepaws
 ```
 
-`--no-quarantine` skips the Gatekeeper prompt entirely, so there is nothing to approve.
+This gives you `brew upgrade` for future versions. It does **not** skip the approval above —
+Homebrew 6 removed `--no-quarantine`, so cask downloads are always quarantined. To skip the
+System Settings trip, clear the flag yourself:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Vibepaws.app
+```
 
 ### What "not notarized" does and doesn't mean
 

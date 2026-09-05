@@ -349,6 +349,8 @@ export const MESSAGES = {
       "  in this repo (or run /reload) to pick it up.\n" +
       "  💡 Global install: re-run with --global → ~/.pi/agent/extensions/vibepaws.ts (all projects)",
     "cli.dsh.dryrun": "[dry-run] would write {file} — DeepSeek Harness plugin (vibepaws adapter)",
+    "cli.dsh.transpiling": "  transpiling the dsh plugin (no prebuilt copy found)…",
+    "cli.dsh.transpile.failed": "Could not transpile the dsh plugin, and no prebuilt copy shipped: {error}",
     "cli.dsh.written": "✓ DeepSeek Harness plugin written to {file}",
     "cli.dsh.note":
       "  Load the plugin by starting dsh with the patch overlay:\n" +
@@ -670,6 +672,8 @@ export const MESSAGES = {
       "  项目级插件在项目被信任后加载 —— 请在本仓库新开一个 `pi` 会话（或运行 /reload）生效。\n" +
       "  💡 全局安装：加 --global 重装 → ~/.pi/agent/extensions/vibepaws.ts（所有项目生效）",
     "cli.dsh.dryrun": "[dry-run] 将写入 {file} — DeepSeek Harness 插件（vibepaws adapter）",
+    "cli.dsh.transpiling": "  正在转译 dsh 插件（没找到预编译的那份）…",
+    "cli.dsh.transpile.failed": "转译 dsh 插件失败，而包里也没有预编译的那一份：{error}",
     "cli.dsh.written": "✓ DeepSeek Harness 插件已写入 {file}",
     "cli.dsh.note":
       "  用 patch overlay 启动 dsh 加载插件：\n" +

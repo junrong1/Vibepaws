@@ -25,7 +25,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 function arg(name: string): string | undefined {
@@ -263,6 +263,59 @@ function verifyApp(appPath: string): void {
   }
 }
 
+/**
+ * 走查打进包里的 src/：有没有 import 一个**不会跟着一起进包**的 npm 包。
+ *
+ * 这一条是拿一次线上事故换来的。Core 为了 /api/adapters import 了 install.ts，而后者
+ * 顶层 import 了 dsh_compile.ts（它 import typescript）。typescript 是 devDependency，
+ * 不在 .app 里，于是打包后的 Core 一启动就崩：
+ *     Cannot find package 'typescript' imported from
+ *     .../Vibepaws.app/Contents/Resources/src/adapters/dsh_compile.ts
+ *
+ * 最阴的地方是**它在 dist/ 里测不出来**：那份 .app 躺在仓库里，Node 一路往上就找到了
+ * 仓库自己的 node_modules/typescript。只有装到仓库之外才现原形 —— 也就是说，只有用户
+ * 会先发现。所以这里改成静态走查：不依赖跑起来，也就不依赖「从哪儿跑」。
+ */
+function verifyBundledImports(appPath: string): void {
+  const srcDir = join(appPath, "Contents", "Resources", "src");
+  if (!existsSync(srcDir)) {
+    fail(`包里没有 Resources/src —— extraResources 配置变了？`);
+    return;
+  }
+  const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf-8")) as {
+    dependencies?: Record<string, string>;
+  };
+  const shipped = new Set(Object.keys(pkg.dependencies ?? {}));
+
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(ts|js|mjs|cjs)$/.test(e.name) && !e.name.endsWith(".test.ts")) files.push(full);
+    }
+  };
+  walk(srcDir);
+
+  const offenders: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(f, "utf-8");
+    // 静态 import / export-from。动态 import() 不算 —— 那是刻意的懒加载，只有真用到才解析。
+    for (const m of text.matchAll(/^\s*(?:import|export)[^;]*?from\s+["']([^"']+)["']/gm)) {
+      const spec = m[1];
+      if (!spec || spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) continue;
+      const pkgName = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0]!;
+      if (!shipped.has(pkgName)) offenders.push(`${f.replace(srcDir, "src")} → ${pkgName}`);
+    }
+  }
+  if (offenders.length === 0) {
+    ok(`包内 ${files.length} 个源文件只 import 了随包发布的依赖`);
+  } else {
+    fail(`${offenders.length} 处 import 了没打进包的依赖 —— 装到仓库外就会 ERR_MODULE_NOT_FOUND：`);
+    for (const o of offenders.slice(0, 10)) console.log(`    ${o}`);
+  }
+}
+
 function verifyDmg(dmgPath: string): void {
   console.log(`\n[vibepaws] 验收 dmg：${dmgPath}`);
 
@@ -295,6 +348,7 @@ if (PREFLIGHT) {
     process.exit(1);
   }
   verifyApp(app);
+  verifyBundledImports(app);
 
   const dmgs = findDmgs();
   if (dmgs.length === 0) warn(`在 ${DIST}/ 里没找到 .dmg`);

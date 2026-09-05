@@ -25,7 +25,6 @@ import { homedir } from "node:os";
 import { claudeHooksConfig, claudeStatusLineConfig, codexHooksConfig, capabilities, adapterStatusEvent } from "./hooks.ts";
 import { isVibepawsEntry, scan } from "./uninstall.ts";
 import { deliver } from "./hook_agent.ts";
-import { transpileDshPlugin } from "./dsh_compile.ts";
 import { t as translate, detectNodeLocale } from "../i18n/messages.js";
 
 /** 安装向导是 onboarding 的第一屏，跟着系统语言走（issue #3）；VIBEPAWS_LOCALE 可覆盖。 */
@@ -288,13 +287,42 @@ function installPi(ctx: Ctx): string {
   return file;
 }
 
+/**
+ * 拿到 dsh 插件的 CommonJS 源码。
+ *
+ * **优先用打包时预转译好的 .cjs**，转译只是回退路径。这不是性能优化，是因为转译要
+ * `import typescript`，而 typescript 是 devDependency —— 它不在 .app 里。
+ *
+ * 这条坑真的踩过：Core 为了 /api/adapters 而 import 了本模块，本模块顶层又 import 了
+ * dsh_compile.ts（它 import typescript），于是**打包后的 Core 一启动就崩**：
+ *     Cannot find package 'typescript' imported from
+ *     /Applications/Vibepaws.app/Contents/Resources/src/adapters/dsh_compile.ts
+ * 而且从 dist/ 里跑测不出来 —— 那份 .app 躺在仓库里，Node 会一路往上找到仓库自己的
+ * node_modules/typescript。只有装到 /Applications（仓库外）才现原形。
+ * 所以这里改成动态 import：不装 dsh 就永远不会碰到 typescript。
+ */
+async function dshPluginCjs(ctx: Ctx, tsSource: string): Promise<string> {
+  // 打包时由 scripts/build_dsh_plugin.ts 生成，和 .ts 并排放在 Resources/src/adapters/ 下
+  const prebuilt = tsSource.replace(/\.ts$/, ".cjs");
+  if (existsSync(prebuilt)) return readFileSync(prebuilt, "utf-8");
+  // 回退：仓库里跑（dev / CLI）时现场转译。打包后走不到这里 —— .cjs 一定在，
+  // 而 dsh_compile.ts 连同 typescript 都被刻意排除在包外（见 package.json 的 extraResources filter）。
+  say(ctx, t("cli.dsh.transpiling"));
+  try {
+    const { transpileDshPlugin } = await import("./dsh_compile.ts");
+    return transpileDshPlugin(readFileSync(tsSource, "utf-8"));
+  } catch (err) {
+    throw new Error(t("cli.dsh.transpile.failed", { error: String(err) }));
+  }
+}
+
 /** dsh 安装：把 src/adapters/dsh_plugin.ts 转译成 CommonJS 写到 dsh 插件目录，并写一份 cordis patch。
  * dsh 用 require()/internal.import 加载扩展，ESM 的 .ts 会触发 require(esm) 环
  * （ERR_REQUIRE_CYCLE_MODULE）；转译成 .cjs 后 require() 即普通 CJS 加载，绕开该环。
  * 项目级：<repo>/.dsh/extensions/vibepaws.cjs + <repo>/.dsh/vibepaws.cordis.yml
  * 全局：  ~/.dsh/extensions/vibepaws.cjs + ~/.dsh/vibepaws.cordis.yml（所有项目生效）
  * patch 里是绝对路径（dsh 要求绝对路径），用户用 `dsh web --patch <patch>` 加载。 */
-function installDsh(ctx: Ctx): string {
+async function installDsh(ctx: Ctx): Promise<string> {
   const dir = ctx.global ? join(ctx.home, ".dsh", "extensions") : join(ctx.projectRoot, ".dsh", "extensions");
   const file = join(dir, "vibepaws.cjs");
   const legacyFile = join(dir, "vibepaws.ts");
@@ -308,8 +336,7 @@ function installDsh(ctx: Ctx): string {
   }
   mkdirSync(dir, { recursive: true });
   backup(ctx, file);
-  const cjs = transpileDshPlugin(readFileSync(source, "utf-8"));
-  writeFileSync(file, cjs);
+  writeFileSync(file, await dshPluginCjs(ctx, source));
   // 迁移清理：旧版装的是 ESM 的 vibepaws.ts，会触发 require(esm) 环，删掉避免混淆。
   if (existsSync(legacyFile)) rmSync(legacyFile, { force: true });
   const patch = `- insert:\n  - id: vibepaws\n    name: '${file.replace(/'/g, "''")}'\n`;
@@ -371,7 +398,7 @@ export async function installAdapter(opts: InstallOptions): Promise<InstallRepor
     if (ctx.agent === "claude_code") file = installClaude(ctx);
     else if (ctx.agent === "codex") file = installCodex(ctx);
     else if (ctx.agent === "pi") file = installPi(ctx);
-    else file = installDsh(ctx);
+    else file = await installDsh(ctx);
     say(ctx, t("cli.capabilities", { list: capabilities(ctx.agent).join(", ") }));
   } catch (err) {
     ok = false;

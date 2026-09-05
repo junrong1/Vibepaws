@@ -1,6 +1,6 @@
 {
   "name": "vibepaws",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Vibepaws \u2014 AI coding pet for your coding agents (MVP)",
@@ -22,11 +22,12 @@
     "assets": "python3 scripts/build_assets.py",
     "states": "python3 scripts/gen_states.py",
     "desktop": "electron desktop/main.js",
-    "dist:mac": "electron-builder --mac --arm64",
+    "dist:mac": "npm run build:dsh && electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js desktop/*.test.js scripts/*.test.ts",
     "verify:release": "node --experimental-strip-types scripts/verify_release.ts",
-    "cask:update": "node --experimental-strip-types scripts/update_cask.ts"
+    "cask:update": "node --experimental-strip-types scripts/update_cask.ts",
+    "build:dsh": "node --experimental-strip-types scripts/build_dsh_plugin.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
@@ -53,7 +54,12 @@
     "extraResources": [
       {
         "from": "src",
-        "to": "src"
+        "to": "src",
+        "filter": [
+          "**/*",
+          "!**/*.test.ts",
+          "!adapters/dsh_compile.ts"
+        ]
       },
       {
         "from": "ui",

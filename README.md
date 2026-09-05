@@ -60,14 +60,17 @@ Full requirement-by-requirement status: [PRD §15](docs/prd_mvp_en.md#15-impleme
 
 ### 1. Install it
 
-**With Homebrew** — one command, no prompts:
+**Download it** — grab `Vibepaws-<version>-arm64.dmg` from [Releases](https://github.com/junrong1/Vibepaws/releases), drag it to **Applications**, open it, and approve it once (see below).
+
+**Or with Homebrew**, which also gives you `brew upgrade` later:
 
 ```bash
 brew tap junrong1/vibepaws https://github.com/junrong1/Vibepaws
-brew install --cask --no-quarantine vibepaws
+brew trust junrong1/vibepaws        # Homebrew 6 requires this for third-party taps
+brew install --cask vibepaws
 ```
 
-**Or download it** — grab `Vibepaws-<version>-arm64.dmg` from [Releases](https://github.com/junrong1/Vibepaws/releases), drag it to **Applications**, open it, and approve it once (see below).
+Homebrew does **not** skip the approval step — Homebrew 6 removed `--no-quarantine`, so cask downloads are always quarantined.
 
 Either way: **no Node, no npm** — Core runs on the Node runtime already inside the app.
 
@@ -83,7 +86,11 @@ Releases are **ad-hoc signed but not notarized** — notarization needs a paid A
 2. Open **System Settings → Privacy & Security**, scroll to **Security**.
 3. Click **Open Anyway**, then confirm. First launch only.
 
-On macOS Sequoia and later, Control-clicking the app no longer works as a shortcut — System Settings is the only route. That's why the Homebrew path exists: `--no-quarantine` skips Gatekeeper entirely.
+On macOS Sequoia and later, Control-clicking the app no longer works as a shortcut, so System Settings is the only click-through route. If you'd rather do it in one command, clear the flag yourself:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Vibepaws.app
+```
 
 What "not notarized" does *not* mean is unsigned or tampered with. The signature is complete and verifiable — `codesign --verify --deep --strict` passes — which is exactly why you get an approval prompt instead of *"Vibepaws is damaged."* A build with a broken signature offers no approval path at all, so [CI refuses to publish one](.github/workflows/release.yml).
 
