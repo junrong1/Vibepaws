@@ -144,3 +144,43 @@ export function loginItemSupport({ platform = "darwin", isPackaged = false, appP
   if (platform === "darwin" && appPath.startsWith("/Volumes/")) return { supported: false, reason: "volume" };
   return { supported: true, reason: null };
 }
+
+/* ---------------- Core 跑在哪个解释器上（纯策略） ----------------
+ *
+ * 从前这里只有一个答案：去系统里找一个 node ≥ 22.6。那个前提已经过期了 ——
+ * better-sqlite3 v13 发的是 N-API 预编译产物（prebuilds/darwin-arm64.node，文件名里没有
+ * ABI 版本号），跨 Node 版本和 Electron 都能加载，而 Electron 43 自己内建 Node 24.18.1。
+ * 也就是说这个 app 一直**随身带着**一个够格的 Node，却还在要求用户另外装一个。
+ *
+ * 这条要求的代价不是一个进程，是绝大多数用户：「下载 .dmg、拖进应用程序、双击」后面
+ * 跟一句「另外请先装 Node 22.6+」，普通人到此为止。
+ *
+ * 优先级刻意是这个顺序：
+ *   1. explicitNode（VIBEPAWS_NODE）—— 显式永远赢，这也是这个函数的测试后门。
+ *   2. electron —— 默认。用户机器上有没有 node 与我们无关。
+ *   3. systemNode —— 只在 ② 连崩 fallbackAfter 次之后兜底。纯属保险：万一哪天某个依赖
+ *      换回 ABI 绑定的预编译产物，用户看到的是宠物照常工作，而不是一只永远「Core 未连接」
+ *      的宠物 —— 而那种故障从界面上完全看不出成因。
+ */
+export const CORE_FALLBACK_AFTER = 2;
+
+/**
+ * @param {{explicitNode?: string|null, restarts?: number, electronPath: string,
+ *          systemNode?: () => (string|null), fallbackAfter?: number}} opts
+ * @returns {{cmd: string, env: Record<string,string>, label: string, kind: string}|null}
+ */
+export function coreInterpreter({
+  explicitNode,
+  restarts = 0,
+  electronPath,
+  systemNode = () => null,
+  fallbackAfter = CORE_FALLBACK_AFTER,
+} = {}) {
+  if (explicitNode) return { cmd: explicitNode, env: {}, label: `VIBEPAWS_NODE ${explicitNode}`, kind: "explicit" };
+  if (restarts < fallbackAfter) {
+    // ELECTRON_RUN_AS_NODE 让 Electron 这个二进制表现得就是一个 node
+    return { cmd: electronPath, env: { ELECTRON_RUN_AS_NODE: "1" }, label: "electron", kind: "electron" };
+  }
+  const node = systemNode();
+  return node ? { cmd: node, env: {}, label: `系统 node ${node}`, kind: "system" } : null;
+}

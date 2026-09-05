@@ -17,6 +17,8 @@ import {
   findNodeBinary,
   restartDelay,
   loginItemSupport,
+  coreInterpreter,
+  CORE_FALLBACK_AFTER,
 } from "./launch.js";
 
 test("版本解析吃得下 `node --version` 的输出和版本管理器的目录名", () => {
@@ -151,4 +153,38 @@ test("`npm start` 存在，且 npm test 覆盖 desktop/ —— 单命令启动�
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   assert.ok(pkg.scripts.start, "0.4 的交付物就是一条命令：npm start");
   assert.match(pkg.scripts.test, /desktop\/\*\.test\.js/, "壳层现在有测试了，别让它掉出 test glob");
+});
+
+/* ---------------- Core 解释器 ---------------- */
+
+test("默认用 Electron 自己跑 Core —— 用户机器上有没有装 node 与我们无关", () => {
+  const pick = coreInterpreter({ electronPath: "/Apps/Vibepaws.app/Contents/MacOS/Vibepaws" });
+  assert.equal(pick.kind, "electron");
+  assert.equal(pick.cmd, "/Apps/Vibepaws.app/Contents/MacOS/Vibepaws");
+  assert.equal(pick.env.ELECTRON_RUN_AS_NODE, "1", "少了这个环境变量，Electron 会去开一扇窗口而不是当 node 用");
+});
+
+test("一台没装 node 的机器照样起得来 —— 这就是这次改动的全部意义", () => {
+  const cleanMac = { electronPath: "/Apps/Vibepaws.app/Contents/MacOS/Vibepaws", systemNode: () => null };
+  assert.equal(coreInterpreter(cleanMac).kind, "electron");
+  // 连崩到兜底那一步，仍然没有 node 可用：这时才是真的没辙
+  assert.equal(coreInterpreter({ ...cleanMac, restarts: CORE_FALLBACK_AFTER }), null);
+});
+
+test("VIBEPAWS_NODE 永远赢，连崩多少次都不改", () => {
+  for (const restarts of [0, CORE_FALLBACK_AFTER, 99]) {
+    const pick = coreInterpreter({ explicitNode: "/pick/me", restarts, electronPath: "/e", systemNode: () => "/sys/node" });
+    assert.equal(pick.cmd, "/pick/me");
+    assert.equal(pick.kind, "explicit");
+    assert.deepEqual(pick.env, {}, "显式指定的是一个真 node，不该再带 ELECTRON_RUN_AS_NODE");
+  }
+});
+
+test("Electron 那条路连崩两次之后回落到系统 node —— 依赖哪天换回 ABI 绑定的产物时的保险", () => {
+  const opts = { electronPath: "/e", systemNode: () => "/sys/node" };
+  assert.equal(coreInterpreter({ ...opts, restarts: CORE_FALLBACK_AFTER - 1 }).kind, "electron");
+  const fell = coreInterpreter({ ...opts, restarts: CORE_FALLBACK_AFTER });
+  assert.equal(fell.kind, "system");
+  assert.equal(fell.cmd, "/sys/node");
+  assert.deepEqual(fell.env, {}, "真 node 不需要 ELECTRON_RUN_AS_NODE");
 });

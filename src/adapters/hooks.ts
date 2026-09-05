@@ -2,7 +2,7 @@
  * hooks 配置片段生成（架构 §2.1）— Claude Code 与 Codex 差异仅配置格式与事件名。
  * hook_agent.ts 通过 stdin 接收 hook 输入，用固定命令调用。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CoreEvent, AgentId } from "../core/events.ts";
@@ -10,10 +10,80 @@ import type { CoreEvent, AgentId } from "../core/events.ts";
 /** 仓库根（由本文件位置反推）：读 package.json 拿 adapter 版本，任意 cwd 下都成立 */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/**
+ * hook / statusline 用哪个解释器 —— 写进用户 agent 配置里的那一段前缀。
+ *
+ * 从前是裸的 `node`，两个问题：
+ *   · 它由**agent 自己的 PATH** 解析，而那个 PATH 不一定是你装 Vibepaws 时的那个。
+ *     解析到一个 v20 上，hook 会**静默失败** —— 宠物永远停在 idle，界面上没有任何线索。
+ *   · 它假定用户机器上有 node。Core 已经不需要了（跑在 app 自带的 Node 上，见
+ *     desktop/launch.js 的 coreInterpreter），如果 hook 还需要，那个前提就没真正去掉。
+ *
+ * 规则是「就用**正在跑我**的这个解释器」，它必然合格 —— 它此刻正在执行这些 .ts：
+ *   · 装在普通 node 下（`npm run adapter:install`，今天的路径）→ 写它的绝对路径。
+ *     快（实测 151ms / 次，Electron 那条是 215ms），而且绕开了 PATH 解析。
+ *   · 装在 Electron 下（将来做成 app 内的一键安装）→ 写 app 自己的二进制 +
+ *     ELECTRON_RUN_AS_NODE。用户一个 node 都不用装。
+ *
+ * 代价：绝对路径会跟着那一个 node 安装一起消失（nvm 卸掉某个版本时）。换成裸 `node` 只是
+ * 把这个故障换成另一个更难查的故障（解析到别的版本、静默失败），所以这里选前者 ——
+ * 重装 adapter 就修好了，而且 install.ts 的自检当场就会说话。
+ */
+export function hookInterpreter(
+  opts: { execPath?: string; electron?: boolean; realpath?: (p: string) => string } = {},
+): string {
+  const execPath = opts.execPath ?? process.execPath;
+  // process.versions.electron 只在 Electron 里存在 —— 比拿路径去猜可靠
+  const electron = opts.electron ?? Boolean((process as { versions?: { electron?: string } }).versions?.electron);
+  if (electron) return `ELECTRON_RUN_AS_NODE=1 ${shellQuote(execPath)} --experimental-strip-types`;
+  return `${shellQuote(stablePath(execPath, opts.realpath))} --experimental-strip-types`;
+}
+
+/**
+ * 版本管理器给的 execPath 常常是**带版本号**的真实路径，而不是那条稳定的符号链接：
+ * Homebrew 的 node 解析出来是 /opt/homebrew/Cellar/node/25.9.0_2/bin/node，
+ * 一次 `brew upgrade node` 就把它删了 —— 于是 hook 静默失效，宠物永远停在 idle，
+ * 而这正是这次改动想要根除的那一类故障（nvm / fnm / volta 同理）。
+ *
+ * 所以：如果某条常见的稳定路径**指向同一个二进制**，就写那条。指向别的（用户的 PATH 里
+ * 另有一个 node）就老老实实写 execPath —— 宁可将来随版本失效，也不能现在就写错一个。
+ */
+const STABLE_NODE_PATHS = [
+  "/opt/homebrew/bin/node", // Apple Silicon Homebrew
+  "/usr/local/bin/node", // Intel Homebrew / 官方 pkg
+  "/usr/bin/node", // 系统自带（少见）
+];
+
+function stablePath(execPath: string, realpath: (p: string) => string = defaultRealpath): string {
+  let target: string;
+  try {
+    target = realpath(execPath);
+  } catch {
+    return execPath;
+  }
+  for (const candidate of STABLE_NODE_PATHS) {
+    try {
+      if (realpath(candidate) === target) return candidate;
+    } catch {
+      /* 这条路径不存在，很正常 */
+    }
+  }
+  return execPath;
+}
+
+function defaultRealpath(p: string): string {
+  return realpathSync(p);
+}
+
+/** agent 的 hook 命令是交给 shell 跑的，而路径里可能有空格（"/Volumes/My Disk/…"） */
+function shellQuote(p: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\''`)}'`;
+}
+
 /** hook_agent 的调用命令（相对仓库根，运行时由 install.ts 解析为绝对路径） */
 export function agentCmd(agent: "claude_code" | "codex", repoRoot: string): string {
   const entry = `${repoRoot}/src/adapters/hook_agent.ts`;
-  return `node --experimental-strip-types ${entry} --agent=${agent}`;
+  return `${hookInterpreter()} ${shellQuote(entry)} --agent=${agent}`;
 }
 
 /** Claude Code hooks 片段（并入 .claude/settings.json 的 hooks 字段） */
@@ -57,7 +127,7 @@ export function claudeStatusLineConfig(repoRoot: string): Record<string, unknown
   return {
     statusLine: {
       type: "command",
-      command: `node --experimental-strip-types ${entry}`,
+      command: `${hookInterpreter()} ${shellQuote(entry)}`,
       padding: 0,
     },
   };

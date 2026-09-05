@@ -22,6 +22,7 @@ import {
   nodeCandidates,
   parseNodeVersion,
   restartDelay,
+  coreInterpreter,
 } from "./launch.js";
 import {
   DISPLAY_DEFAULTS,
@@ -173,14 +174,26 @@ function savePrefs() {
   }
 }
 
+/**
+ * dev 模式下的仓库根，从**本文件自己的位置**推出来（desktop/ 的上一层）。
+ *
+ * 不能用 process.cwd()：从 Finder / `open` 启动时 cwd 是 `/`，于是 Core 会被丢到根目录去建
+ * .vibepaws/ —— 建不出来，连崩五次，托盘写着「Core 未运行」，而日志里只字未提 cwd。
+ * 也不能用 app.getAppPath()：把一个**文件路径**交给 Electron（`electron desktop/main.js`，
+ * 也就是 npm start 的形式）时，它认的 appPath 是那个文件所在的目录，即 desktop/ 而不是仓库根 ——
+ * 于是所有 src/ ui/ 都会被去 desktop/src、desktop/ui 下找，一个都找不到。
+ * import.meta.url 没有这两种歧义：它永远指向这个文件本身。
+ */
+const DEV_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
 function resourcesDir() {
-  // packaged：app.asar 旁边的 resources/（src/、ui/ 以真实文件存在，node 可执行）
-  return app.isPackaged ? process.resourcesPath : process.cwd();
+  // packaged：app.asar 旁边的 resources/（src/、ui/ 以真实文件存在，可以直接读）
+  return app.isPackaged ? process.resourcesPath : DEV_ROOT;
 }
 
 function workDir() {
-  // packaged：数据目录用 userData（.vibepaws 建在这里），cwd 不可靠
-  return app.isPackaged ? app.getPath("userData") : process.cwd();
+  // packaged：数据目录用 userData（.vibepaws 建在这里）
+  return app.isPackaged ? app.getPath("userData") : DEV_ROOT;
 }
 
 /* ---------------- i18n（issue #3 / #6） ----------------
@@ -333,16 +346,26 @@ function setCoreState(next) {
   updateTrayMenu();
 }
 
+/* Core 解释器的选择策略（含「为什么不再需要系统 Node」）在 launch.js 的 coreInterpreter，
+ * 那边是纯函数，能把「装了 node / 没装 node / 连崩两次」这几种机器一个个摆出来测。 */
 function spawnCore() {
-  const node = resolveNode();
-  if (!node) {
+  const interp = coreInterpreter({
+    explicitNode: process.env.VIBEPAWS_NODE,
+    restarts: coreRestarts,
+    electronPath: process.execPath,
+    systemNode: resolveNode,
+  });
+  if (!interp) {
     setCoreState("failed");
     return false;
   }
   const entry = join(resourcesDir(), "src", "core", "server.ts");
-  const child = spawn(node, ["--experimental-strip-types", entry, "--port", String(CORE_PORT)], {
+  log(`[vibepaws] Core 解释器：${interp.label}`);
+  const child = spawn(interp.cmd, ["--experimental-strip-types", entry, "--port", String(CORE_PORT)], {
     cwd: workDir(),
     stdio: ["ignore", "pipe", "pipe"],
+    // ELECTRON_RUN_AS_NODE 只能加不能减：子进程要继承 PATH 之类的一切
+    env: { ...process.env, ...interp.env },
   });
   coreProc = child;
   coreStartedAt = Date.now();

@@ -12,7 +12,7 @@
 
 本地运行 · always-on-top · 永远不读你的代码
 
-[快速开始](#快速开始3-分钟) · [接入你的 agent](#接入你的-coding-agent) · [宠物怎么成长](#宠物怎么成长) · [隐私](#隐私什么会离开你的机器) · [English](README.md)
+[快速开始](#快速开始2-分钟) · [接入你的 agent](#接入你的-coding-agent) · [宠物怎么成长](#宠物怎么成长) · [隐私](#隐私什么会离开你的机器) · [English](README.md)
 
 </div>
 
@@ -56,40 +56,39 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 ---
 
-## 快速开始（3 分钟）
+## 快速开始（2 分钟）
 
-### 环境要求
+### 1. 安装
 
-**Node ≥ 22.6。** 这是硬性下限，不是建议值。Core、UI server 和写进 agent hook 配置里的采集命令全都跑 `node --experimental-strip-types`，这个 flag 在 22.6 之前不存在。Node 20 上什么都起不来 —— 而且 hook 那条路径是**静默失败**的：宠物只是一直闲着，不会告诉你有任何问题。
+到 [Releases](https://github.com/junrong1/Vibepaws/releases) 下载 **`Vibepaws-<version>-arm64.dmg`**，拖进**应用程序**，双击打开。
 
-```bash
-node --version   # 必须 ≥ v22.6.0
-npm install
-```
+装完了。**不需要 Node、不需要 npm、不需要终端** —— Core 跑在 app 自己带着的那个 Node 运行时上。
 
-目前测试过的平台是 macOS。Windows 和 Linux 在设计上没有被排除，但也没有被验证过。
+右下角出现一只宠物，菜单栏里出现一个托盘图标。首次启动会初始化数据库、**随机分配一只 starter pet**、并写入 API token。Core 只监听 localhost，除 `/health` 外所有路由都要带这个 token。
 
-### 1. 启动
+> **「Vibepaws 已损坏，无法打开」** 说明这是你自己构建的、没有 Apple 凭据的版本 —— Gatekeeper 会隔离任何未签名的 app。发布版是签过名并公证过的。本地构建的话：`xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
 
-```bash
-npm start        # 透明 always-on-top 窗口，右下角，带托盘图标
-```
-
-一条命令。其余的事都由这个托盘应用负责：找到机器上一个 ≥ 22.6 的 Node，在 `127.0.0.1:17893` 上拉起 **Core**（收事件、管 session、跑通知与 EXP 引擎、持有 SQLite 数据库的那个守护进程），拉起本机 UI server，退出时把两个都收掉。
-
-首次启动会初始化 `.vibepaws/vibepaws.db`，**随机分配一只 starter pet**，并把 API token 写入 `.vibepaws/api_token`。Core 只监听 localhost，除 `/health` 外所有路由都要带这个 token。
-
-Core 崩了会自动重拉（5 次，指数退避），当前状态就写在托盘菜单第一行。如果 Core **本来就在跑**（你自己在另一个终端里 `npm run core`），应用会直接用那一个，退出时也不会去关它。
-
-> `npm run core` 和 `npm run desktop` 仍然在，也仍然分得开跑 —— 那是开发流程：`core:watch` 改完即重载，而分开跑是唯一能单独看 Core 日志、不被壳的日志盖住的方式。
+目前测试过的平台是 Apple Silicon 的 macOS。Intel、Windows 和 Linux 在设计上没有被排除，但也没有被验证过。
 
 ### 2. 开机自启
 
-**设置 → 启动 →「登录时启动 Vibepaws」**，或者托盘菜单里那一项。一条登录项同时拉起宠物和 Core。
+**设置 → 启动 →「登录时启动 Vibepaws」**，或者托盘菜单里那一项。一条登录项同时拉起宠物和 Core，从此不用再想「怎么启动它」。
 
-这一项需要打包后的 `.app`（见[打包](#打包-app)）—— `npm start` 跑起来的那个进程注册进去的会是 `node_modules` 里的 Electron，所以开关是禁用的，并且会就地说明原因。另外先把 app 拖进 `/应用程序`：指向已挂载 `.dmg` 里的登录项，映像一弹出就失效了。
+先把 app 拖进 `/应用程序`：指向已挂载 `.dmg` 里的登录项，映像一弹出就失效了。
 
-### 3. 不接真实 agent 也能先看效果
+### 3. 接上你的 agent
+
+接 agent 仍然需要一条终端命令，因为它要改的是**你的 agent 自己的配置**：
+
+```bash
+npm run adapter:install -- --global
+```
+
+**这一步需要 Node ≥ 22.6** —— 这是唯一还需要它的地方：采集器跑在**你的 agent** 进程里，不是跑在我们这边。安装器会把一个合格 Node 的绝对路径写进 agent 配置，所以之后你的 agent 的 `PATH` 长什么样都不影响。
+
+各 agent 的细节见[连接你的 coding agent](#连接你的-coding-agent)。
+
+### 4. 不接真实 agent 也能先看效果（可选）
 
 模拟器往 Core 里发的是真实事件，所以你可以在接任何东西之前，先把全部行为看一遍：
 
@@ -533,7 +532,8 @@ npm run verify:release                  # 打包后：到底签上没有、公�
 
 | 现象 | 原因与解法 |
 | --- | --- |
-| agent 明显在干活，宠物却一直 `idle` | 几乎总是 Node < 22.6 —— hook 那条路径静默失败。先看 `node --version`。 |
+| agent 明显在干活，宠物却一直 `idle` | hook 没在跑。它需要 Node ≥ 22.6（app 本身不需要，只有跑在你 agent 里的采集器需要）。先看 `node --version`，然后重跑 `npm run adapter:install -- --global`。 |
+| 升级完 Node 之后 hook 不工作了 | 安装器写的是绝对解释器路径。它会优先挑稳定的那条（`/opt/homebrew/bin/node`），但版本管理器的路径仍然可能在你脚下消失。重跑 `npm run adapter:install -- --global`。 |
 | 连接指示灯是橙色 | 轮询还活着但事件流断了，所以气泡来不了。重启 Core，然后重跑 adapter 安装器让它重发自检事件。 |
 | 装完 pi adapter 什么都没发生 | 要**新开**一个 `pi` 会话或 `/reload`。项目级插件还要求项目被 pi 信任。 |
 | Codex 什么都不发 | 在 codex 里运行一次 `/hooks` 授权。 |
@@ -545,16 +545,42 @@ npm run verify:release                  # 打包后：到底签上没有、公�
 | 宠物老是跟着我在几块屏之间跳 | 那是**显示器 → 跟随当前显示器**。改成**固定在一块屏上**（托盘或设置 → 窗口）它就不动了；想换位置直接拖过去，它会留在那儿。 |
 | 宠物不跟我换到另一块屏 | 跟随要等光标停住约一秒，一次划过去不会把它拽走。如果始终不跟，确认没有选在**固定在一块屏上**。 |
 | 换了显示器后宠物跑到屏幕外 | 托盘 → 放回右下角。 |
-| 启动时弹「Vibepaws 需要 Node 22.6 或更高版本」 | 应用会依次找 `PATH`、Homebrew、`/usr/local`、`/usr/bin`、Volta、nvm、fnm、`n`。都不在的话设 `VIBEPAWS_NODE=/path/to/node` —— 从登录项启动时几乎没有 `PATH`，这个场景要特别留意。 |
+| 启动时弹「Vibepaws 起不来 Core」 | Core 平常跑在 app 内部，所以弹这个意味着那条路失败了，**而且**也没有 Node ≥ 22.6 可以兜底。装一个 Node 能给它多一条路。想指定某一个就设 `VIBEPAWS_NODE=/path/to/node`。原因在日志里。 |
 | 托盘里写着 **Core：未运行** | 连着 5 次重拉都失败了。托盘 → **重启 Core**；原因在日志里（打包版是 `~/Library/Application Support/Vibepaws/vibepaws.log`，dev 模式在 stdout）。 |
 
 ---
 
 ## 开发
 
+### 从源码跑
+
+`.dmg` 是给用户的路径，这一条是给贡献者的。它需要 **Node ≥ 22.6** —— 不是因为 app 需要，而是因为 `npm` 和测试运行器需要。
+
+```bash
+node --version   # 必须 ≥ v22.6.0
+npm install
+npm start        # 透明 always-on-top 窗口，右下角，带托盘图标
+```
+
+一条命令。其余的事都由这个托盘应用负责：在 `127.0.0.1:17893` 上拉起 **Core**（收事件、管 session、跑通知与 EXP 引擎、持有 SQLite 数据库的那个守护进程），拉起本机 UI server，退出时把两个都收掉。Core 跑在 Electron 自带的 Node 上，和打包版完全一致 —— 你在这里跑的就是用户拿到的那一个。
+
+Core 崩了会自动重拉（5 次，指数退避），当前状态就写在托盘菜单第一行。如果 Core **本来就在跑**（你自己在另一个终端里 `npm run core`），应用会直接用那一个，退出时也不会去关它。
+
+`npm start` 会占着终端。想让它脱离终端：
+
+```bash
+nohup npm start > /tmp/vibepaws.log 2>&1 &!   # zsh；其他 shell 用 `& disown`
+pkill -f "electron desktop/main.js"           # 停掉
+```
+
+那个重定向别省：源码跑的时候日志只有 stdout，而打包版会写到 `~/Library/Application Support/Vibepaws/vibepaws.log`。
+
+### 测试
+
 ```bash
 npm test          # registry 状态机 · 通知引擎 · EXP 引擎 · 聚合状态 · 迁移 · hook 归一化 ·
-                  # bridge · 隐私 · i18n · 宠物类型种子 · 动作配方（含越界与切换连续性）
+                  # bridge · 隐私 · i18n · 宠物类型种子 · 动作配方（含越界与切换连续性）·
+                  # 多显示器落位与宠物尺寸档位
 npm run typecheck
 npm run core:watch    # 只跑 Core，改完即重载 —— 配合 `npm start`，它会直接沿用这一个
 ```

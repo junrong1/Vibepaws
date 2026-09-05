@@ -12,7 +12,7 @@
 
 Local-first · always-on-top · never reads your code
 
-[Quick start](#quick-start-3-minutes) · [Connect your agent](#connect-your-coding-agent) · [How growth works](#how-your-pet-grows) · [Privacy](#privacy-what-leaves-your-machine) · [中文文档](README.zh-CN.md)
+[Quick start](#quick-start-2-minutes) · [Connect your agent](#connect-your-coding-agent) · [How growth works](#how-your-pet-grows) · [Privacy](#privacy-what-leaves-your-machine) · [中文文档](README.zh-CN.md)
 
 </div>
 
@@ -56,40 +56,39 @@ Full requirement-by-requirement status: [PRD §15](docs/prd_mvp_en.md#15-impleme
 
 ---
 
-## Quick start (3 minutes)
+## Quick start (2 minutes)
 
-### Requirements
+### 1. Install it
 
-**Node ≥ 22.6.** This is a hard floor, not a suggestion. Core, the UI server, and the collector command written into your agent's hook config all run under `node --experimental-strip-types`, and that flag doesn't exist before 22.6. On Node 20 nothing starts — and the hook path fails *silently*, so the pet just sits there idle instead of telling you anything is wrong.
+Download **`Vibepaws-<version>-arm64.dmg`** from [Releases](https://github.com/junrong1/Vibepaws/releases), drag it to **Applications**, and open it.
 
-```bash
-node --version   # must be v22.6.0 or higher
-npm install
-```
+That's the whole install. **No Node, no npm, no terminal** — Core runs on the Node runtime already inside the app.
 
-macOS is the tested platform today. Windows and Linux aren't blocked by design, but haven't been exercised.
+A pet appears bottom-right with a tray icon in the menu bar. First launch initializes its database, rolls you a **random starter pet**, and writes an API token. Core binds localhost only, and every route except `/health` requires that token.
 
-### 1. Start it
+> **"Vibepaws is damaged and can't be opened"** means you built it yourself without Apple credentials — Gatekeeper quarantines any unsigned app. Released builds are signed and notarized. For a local build: `xattr -dr com.apple.quarantine /Applications/Vibepaws.app`
 
-```bash
-npm start        # transparent always-on-top window, bottom-right, with a tray icon
-```
-
-One command. The tray app owns everything else: it finds a Node ≥ 22.6 on your machine, starts **Core** (the daemon that ingests events, tracks sessions, runs the notification and EXP engines, and owns the SQLite database) on `127.0.0.1:17893`, starts the local UI server, and stops both when you quit.
-
-First run initializes `.vibepaws/vibepaws.db`, rolls you a **random starter pet**, and writes an API token to `.vibepaws/api_token`. Core binds localhost only, and every route except `/health` requires that token.
-
-If Core dies, the app restarts it (five tries, exponential backoff) and shows its state at the top of the tray menu. If Core is *already* running — you started `npm run core` yourself in another terminal — the app uses that one and leaves it alone when you quit.
-
-> `npm run core` and `npm run desktop` still exist and still work separately. They're the dev workflow: `core:watch` reloads on edit, and running the two apart is how you read Core's log without the shell's on top of it.
+macOS on Apple Silicon is the tested platform. Intel, Windows and Linux aren't blocked by design, but haven't been exercised.
 
 ### 2. Start it at login
 
-**Settings → Startup → "Start Vibepaws when I log in"**, or the tray menu. One login item brings up the pet and Core together.
+**Settings → Startup → "Start Vibepaws when I log in"**, or the tray menu. One login item brings up the pet and Core together, so you never think about launching it again.
 
-This needs the packaged `.app` (see [Packaging](#packaging-a-app)) — a `npm start` run would register the Electron binary from `node_modules` instead, so the toggle is disabled and says so. Move the app into `/Applications` first: a login item pointing inside a mounted `.dmg` dies the moment you eject it.
+Move the app to `/Applications` first — a login item pointing inside a mounted `.dmg` dies the moment you eject it.
 
-### 3. Watch it work, without an agent
+### 3. Connect your agent
+
+Connecting an agent still needs one terminal command, because it edits your agent's own config:
+
+```bash
+npm run adapter:install -- --global
+```
+
+**This step needs Node ≥ 22.6** — it's the one remaining place that does, because the collector runs inside *your agent's* process, not ours. The installer writes the absolute path of a qualifying Node into your agent config, so it doesn't matter what your agent's `PATH` looks like later.
+
+Details and per-agent notes: [Connect your coding agent](#connect-your-coding-agent).
+
+### 4. Watch it work, without an agent (optional)
 
 The simulator emits real events into Core, so you can see every behavior before wiring up anything:
 
@@ -533,7 +532,8 @@ notarization ticket, and whether every Mach-O in the bundle got signed.
 
 | Symptom | Cause and fix |
 | --- | --- |
-| Pet never leaves `idle` while an agent is clearly working | Almost always Node < 22.6 — the hook path fails silently. Check `node --version`. |
+| Pet never leaves `idle` while an agent is clearly working | The hook isn't running. It needs Node ≥ 22.6 (the app itself doesn't — only the collector inside your agent does). Check `node --version`, then re-run `npm run adapter:install -- --global`. |
+| Hooks stopped working after a Node upgrade | The installer writes an absolute interpreter path. It prefers a stable one (`/opt/homebrew/bin/node`), but a version-manager path can still disappear under you. Re-run `npm run adapter:install -- --global`. |
 | Connection light is amber | Event stream is dead while polling still works, so bubbles can't arrive. Restart Core, then re-run the adapter installer to re-fire its self-test. |
 | Nothing happened after installing the pi adapter | Open a **new** `pi` session or `/reload`. Project-level plugins also need the project trusted by pi. |
 | Codex sends nothing | Run `/hooks` inside Codex once to authorize. |
@@ -544,17 +544,43 @@ notarization ticket, and whether every Mach-O in the bundle got signed.
 | Pet is off-screen after switching monitors | It should come back on its own — unplugging a display moves the pet to a display that still exists. If it doesn't, tray → **Reset pet position**. |
 | Pet keeps hopping to whichever screen I'm working on | That's **Displays → Follow the active display**. Switch it to **Stay on one display** (tray or Settings → Window) and it stays put; drag it somewhere else and it stays there instead. |
 | Pet won't follow me to my other screen | Follow waits about a second for your cursor to settle, so a quick sweep across won't drag it along. If it never follows, check you're not in **Stay on one display**. |
-| "Vibepaws needs Node 22.6 or newer" on launch | The app looks in `PATH`, then Homebrew, `/usr/local`, `/usr/bin`, Volta, nvm, fnm, and `n`. If yours lives somewhere else, set `VIBEPAWS_NODE=/path/to/node` — a login-item launch has almost no `PATH`, so this is the case to expect there. |
+| "Vibepaws couldn't start Core" on launch | Core normally runs inside the app, so this means that failed *and* there's no Node ≥ 22.6 to fall back on. Installing Node gives it a second path. To force a specific one, set `VIBEPAWS_NODE=/path/to/node`. The reason is in the log. |
 | Tray says **Core: not running** | Five restarts in a row failed. Tray → **Restart Core**; the reason is in the log (`~/Library/Application Support/Vibepaws/vibepaws.log` for the packaged app, stdout in dev). |
 
 ---
 
 ## Development
 
+### Running from source
+
+The `.dmg` is the user path; this is the contributor one. It needs **Node ≥ 22.6** — not because the app does, but because `npm` and the test runner do.
+
+```bash
+node --version   # v22.6.0 or higher
+npm install
+npm start        # transparent always-on-top window, bottom-right, with a tray icon
+```
+
+One command. The tray app owns everything else: it starts **Core** (the daemon that ingests events, tracks sessions, runs the notification and EXP engines, and owns the SQLite database) on `127.0.0.1:17893`, starts the local UI server, and stops both when you quit. Core runs on Electron's own bundled Node, the same as in the packaged app — so what you run here is what users get.
+
+If Core dies, the app restarts it (five tries, exponential backoff) and shows its state at the top of the tray menu. If Core is *already* running — you started `npm run core` yourself in another terminal — the app uses that one and leaves it alone when you quit.
+
+`npm start` holds the terminal open. To detach it:
+
+```bash
+nohup npm start > /tmp/vibepaws.log 2>&1 &!   # zsh; use `& disown` elsewhere
+pkill -f "electron desktop/main.js"           # stop it
+```
+
+Keep the redirect — a source run logs only to stdout, while the packaged app writes to `~/Library/Application Support/Vibepaws/vibepaws.log`.
+
+### Tests
+
 ```bash
 npm test          # registry state machine · notification engine · EXP engine · aggregated state ·
                   # migrations · hook normalization · bridge · privacy · i18n · pet type seed ·
-                  # motion recipes (including out-of-range and transition continuity)
+                  # motion recipes (including out-of-range and transition continuity) ·
+                  # window placement across displays and pet sizes
 npm run typecheck
 npm run core:watch    # Core alone, reloading on edit — pair it with `npm start`, which will adopt it
 ```

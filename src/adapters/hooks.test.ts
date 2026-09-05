@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claudeHooksConfig, codexHooksConfig, adapterStatusEvent, adapterVersion, capabilities, piCapabilities } from "./hooks.ts";
+import { claudeHooksConfig, claudeStatusLineConfig, codexHooksConfig, adapterStatusEvent, adapterVersion, capabilities, hookInterpreter, piCapabilities } from "./hooks.ts";
 import { normalizeHook } from "./hook_agent.ts";
 import { PI_CAPABILITIES } from "./pi_extension.ts";
 
@@ -82,4 +82,63 @@ test("pi 能力声明与插件真实事件集一致（hooks 与 pi_extension 不
 
 test("adapterVersion 跟 package.json 走（写死常量会和发布版本漂移）", () => {
   assert.match(adapterVersion(), /^\d+\.\d+\.\d+/);
+});
+
+/* ---------------- 解释器（写进用户 agent 配置的那一段） ---------------- */
+
+test("写的是绝对路径而不是裸 node —— 裸 node 由 agent 自己的 PATH 解析，解析到 v20 会静默失败", () => {
+  const cmd = hookInterpreter({ execPath: "/opt/homebrew/bin/node", electron: false });
+  assert.equal(cmd, "/opt/homebrew/bin/node --experimental-strip-types");
+  assert.ok(!/(^|\s)node\s/.test(cmd.replace("/opt/homebrew/bin/node", "")), "命令里不该再出现一个裸 node");
+});
+
+test("Homebrew 的 execPath 带版本号，写进去的却该是那条稳定符号链接", () => {
+  // brew 装的 node：execPath 是 Cellar 里的真实路径，一次 brew upgrade 就没了
+  const cellar = "/opt/homebrew/Cellar/node/25.9.0_2/bin/node";
+  const realpath = (p: string) => {
+    if (p === "/opt/homebrew/bin/node" || p === cellar) return cellar;
+    throw new Error("ENOENT");
+  };
+  assert.equal(
+    hookInterpreter({ execPath: cellar, electron: false, realpath }),
+    "/opt/homebrew/bin/node --experimental-strip-types",
+    "写 Cellar 路径的话，brew upgrade node 之后 hook 会静默失效",
+  );
+});
+
+test("稳定路径指向的是**别的** node 时，老实写 execPath —— 宁可将来失效，也不能现在就写错", () => {
+  const nvm = "/Users/x/.nvm/versions/node/v22.14.0/bin/node";
+  const realpath = (p: string) => {
+    if (p === nvm) return nvm;
+    if (p === "/opt/homebrew/bin/node") return "/opt/homebrew/Cellar/node/25.9.0_2/bin/node"; // 另一个 node
+    throw new Error("ENOENT");
+  };
+  assert.equal(hookInterpreter({ execPath: nvm, electron: false, realpath }), `${nvm} --experimental-strip-types`);
+});
+
+test("realpath 抛错时不炸 —— 装的是 hook，不是解谜游戏", () => {
+  const boom = () => {
+    throw new Error("EACCES");
+  };
+  assert.equal(hookInterpreter({ execPath: "/some/node", electron: false, realpath: boom }), "/some/node --experimental-strip-types");
+});
+
+test("装在 Electron 下时写 app 自己的二进制 —— 用户一个 node 都不用装", () => {
+  const cmd = hookInterpreter({ execPath: "/Applications/Vibepaws.app/Contents/MacOS/Vibepaws", electron: true });
+  assert.ok(cmd.startsWith("ELECTRON_RUN_AS_NODE=1 "), "少了它，Electron 会去开一扇窗口而不是当 node 用");
+  assert.ok(cmd.includes("/Applications/Vibepaws.app/Contents/MacOS/Vibepaws"));
+  assert.ok(cmd.endsWith("--experimental-strip-types"));
+});
+
+test("带空格的路径要引起来 —— 这一段是交给 shell 跑的", () => {
+  assert.equal(hookInterpreter({ execPath: "/Volumes/My Disk/node", electron: false }), "'/Volumes/My Disk/node' --experimental-strip-types");
+  // 单引号自己也得转义，否则一个恶作剧路径就能把命令拆开
+  assert.ok(hookInterpreter({ execPath: "/tmp/it's/node", electron: false }).startsWith("'/tmp/it'"));
+});
+
+test("卸载认的是路径特征，不是解释器前缀 —— 换了前缀，已经装好的 hook 仍然认得出", () => {
+  const hooks = claudeHooksConfig("/repo").hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+  assert.ok(hooks.SessionStart?.[0]?.hooks?.[0]?.command.includes("src/adapters/hook_agent.ts"));
+  const sl = (claudeStatusLineConfig("/repo").statusLine as { command: string }).command;
+  assert.ok(sl.includes("src/adapters/statusline.ts"), "uninstall.ts 靠这个子串独占识别 statusLine");
 });

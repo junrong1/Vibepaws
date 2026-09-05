@@ -139,10 +139,15 @@ export const MESSAGES = {
     "tray.core.state.adopted": "running (started outside the app)",
     "tray.core.state.failed": "not running",
     "tray.core.restart": "Restart Core",
-    "core.node.missing.title": "Vibepaws needs Node 22.6 or newer",
+    // Core 现在默认跑在 app 自带的 Node 上，所以走到这个弹窗意味着**那条路也失败了**。
+    // 文案因此不能再说「你必须装 Node」—— 那是错的诊断，而且会让用户以为这个 app 一直
+    // 都需要 Node。它现在说的是：本该在 app 内部跑的东西没跑起来，装个 Node 能给它一条后路。
+    "core.node.missing.title": "Vibepaws couldn't start Core",
     "core.node.missing.body":
-      "Core runs on `node --experimental-strip-types`, and that flag doesn't exist before 22.6. " +
-      "Install Node from nodejs.org, then pick \u201cRestart Core\u201d in the tray menu.\n\n{found}",
+      "Core normally runs inside Vibepaws itself, with no separate install. That failed here, and " +
+      "there's no Node 22.6+ on this machine to fall back to.\n\n" +
+      "Installing Node from nodejs.org gives it a second path, then pick \u201cRestart Core\u201d in the " +
+      "tray menu. If it keeps failing, the reason is in the log.\n\n{found}",
 
     // ---- 设置窗口 ----
     "settings.title": "Vibepaws Settings",
@@ -448,10 +453,12 @@ export const MESSAGES = {
     "tray.core.state.adopted": "运行中（不是本应用启动的）",
     "tray.core.state.failed": "未运行",
     "tray.core.restart": "重启 Core",
-    "core.node.missing.title": "Vibepaws 需要 Node 22.6 或更高版本",
+    "core.node.missing.title": "Vibepaws 起不来 Core",
     "core.node.missing.body":
-      "Core 跑在 `node --experimental-strip-types` 上，而这个 flag 在 22.6 之前不存在。" +
-      "请到 nodejs.org 安装，然后在托盘菜单里选「重启 Core」。\n\n{found}",
+      "Core 平常跑在 Vibepaws 自己里面，不需要另外装什么。这次那条路没走通，而这台机器上" +
+      "也没有可以兜底的 Node 22.6+。\n\n" +
+      "到 nodejs.org 装一个能给它多一条路，然后在托盘菜单里选「重启 Core」。" +
+      "如果还是起不来，原因在日志里。\n\n{found}",
 
     // ---- 设置窗口 ----
     "settings.title": "Vibepaws 设置",
