@@ -247,6 +247,11 @@ function installCodex(ctx: Ctx): string {
   say(ctx, t("cli.codex.written", { file }));
   if (ctx.global) {
     cleanupProjectHooks(ctx, "codex", file);
+    // 全局装也一样要过 hook 信任这一关（Codex 0.153 实测：hooks.json 写对了、命令手跑也通，
+    // 但没在 /hooks 里批准过就一条都不发 —— Core 侧看到的是零事件，界面上和「没装」完全一样）。
+    // 从前这句只在项目级分支里说，而设置窗口那颗按钮走的正是全局（server.ts 固定 global:true），
+    // 于是从 UI 装 Codex 的人只看到一句「✓ 已写入」，然后宠物永远不动。
+    say(ctx, t("cli.codex.globalTrustNote", { file }));
   } else {
     // 项目信任（Codex 0.148+：项目未信任则项目级 hooks 被门控跳过）
     const trust = trustProjectForCodex(ctx.projectRoot, ctx.home);
