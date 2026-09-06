@@ -14,16 +14,17 @@ Poe 有两条路，这个账号只有第二条能走（实测）：
   · POST /v1/images/generations —— 403 "Images API is not enabled for this user"，
     而且是**整个账号**级别的，gpt-image-2 / nano-banana-pro / flux-2-pro 全一样；
   · POST /v1/chat/completions  —— nano-banana-pro、flux-2-pro 可用，返回一段
-    markdown，图在 poecdn 的 URL 里。gpt-image-* 系列在这条路上直接断连
-    （RemoteDisconnected），所以 --model gpt-image-2 现在跑不通。
-    等 Images API 开了，加一条 images 传输即可，命令行参数不用变。
+    markdown，图在 poecdn 的 URL 里。gpt-image-* 在这个账号上用流式、非流式和
+    OpenAI SDK 都会断连；等 Poe 开通兼容的传输后再切模型。
 
 ## 用法
 
     export POE_API_KEY=...            # 只从环境变量读，绝不写进仓库
     python3 scripts/gen_states.py --dry-run          # 只打印要生成什么
+    python3 scripts/gen_states.py --pet cinderclaw --pet infernomane --designs-only
+    python3 scripts/gen_states.py --pet cinderclaw --designs-only --force-designs
     python3 scripts/gen_states.py --pet embercub --state tired
-    python3 scripts/gen_states.py                    # 全量（5 只 x 7 态 = 35 张）
+    python3 scripts/gen_states.py                    # 全量（当前 7 只 x 7 态 = 49 张）
 
 产物落在 output/imagegen/pet-states/<slug>/<state>.png（output/ 已 gitignore）。
 它们是 scripts/build_assets.py 的输入；构建出来的小图在 ui/pets/ 下并且提交进仓库，
@@ -99,10 +100,36 @@ FRAMING = (
     "No scenery, no text, no UI, no watermark, no border, no extra props, no second character."
 )
 
+EVOLUTION_FRAMING = (
+    "The result must read immediately as the next evolution of the reference character: "
+    "preserve its species, signature palette, facial identity, core markings, personality, "
+    "pixel-art rendering, and outline weight. Mature the design only through the requested "
+    "features; do not replace it with an unrelated character.\n"
+    "Square 1:1 canvas, one full-body character, three-quarter view facing slightly right, "
+    "neutral confident standing pose, horizontally centered, feet on the same ground line, "
+    "body filling about 68 percent of the canvas.\n"
+    "Background must be a single perfectly flat pale warm-gray, edge to edge, with NOTHING "
+    "else on it. No shadow of any kind, no floor, no horizon, no scenery, no text, no UI, "
+    "no watermark, no border, no props, and no second character."
+)
+
 
 def prompt_for(state: str) -> str:
     return (
         f"Redraw this exact character in a new pose: {STATE_DIRECTION[state]}.\n\n{FRAMING}"
+    )
+
+
+def evolution_prompt(pet: dict) -> str:
+    return (
+        "Use case: stylized-concept\n"
+        "Asset type: game character evolution source art\n"
+        "Input images: Image 1 is the direct previous evolution stage and identity reference\n"
+        f"Primary request: evolve the reference character into {pet['name']}\n"
+        f"Subject: {pet['evolution_design']}\n"
+        "Style/medium: the exact same polished faux-pixel-art illustration style as Image 1\n"
+        "Composition/framing: full-body game character source art on a square canvas\n"
+        f"Constraints: {EVOLUTION_FRAMING}"
     )
 
 
@@ -115,15 +142,14 @@ def extract_url(text: str) -> str | None:
     return m[0] if m else None
 
 
-def generate(model: str, ref: Path, state: str, timeout: int) -> tuple[str, bytes]:
+def generate(model: str, ref: Path, prompt: str, timeout: int) -> tuple[str, bytes]:
     """一次生成。返回 (图片 URL, 图片字节)。失败抛异常，由调用方重试。"""
     key = os.environ.get("POE_API_KEY")
     if not key:
         raise RuntimeError("POE_API_KEY 没设置")
-    prompt = prompt_for(state)
     body = {
         "model": model,
-        "stream": True,  # 非流式会被服务端直接断连
+        "stream": True,  # 可用的 Poe 图片模型在非流式下会断连
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_uri(ref)}},
@@ -153,8 +179,8 @@ def generate(model: str, ref: Path, state: str, timeout: int) -> tuple[str, byte
         piece = d.get("choices", [{}])[0].get("delta", {}).get("content")
         if piece:
             chunks.append(piece)
-
     text = "".join(chunks)
+
     url = extract_url(text)
     if not url:
         raise RuntimeError(f"响应里没有图片 URL：{text[:200]}")
@@ -172,7 +198,7 @@ def one(model: str, pet: dict, state: str, timeout: int, retries: int) -> dict:
     last = None
     for attempt in range(1, retries + 1):
         try:
-            url, blob = generate(model, ref, state, timeout)
+            url, blob = generate(model, ref, prompt_for(state), timeout)
             dest.write_bytes(blob)
             print(f"  ✓ {pet['slug']}/{state}  {len(blob) // 1024} KB")
             return {"slug": pet["slug"], "state": state, "model": model,
@@ -187,13 +213,48 @@ def one(model: str, pet: dict, state: str, timeout: int, retries: int) -> dict:
     return {}
 
 
+def generate_design(model: str, pet: dict, by_slug: dict[str, dict], timeout: int,
+                    retries: int, force: bool) -> dict:
+    """Generate one evolution anchor; callers keep roster order so chains stay sequential."""
+    dest = SRC_DIR / pet["src"]
+    if dest.exists() and not force:
+        print(f"  · {pet['slug']} design 已存在")
+        return {}
+    parent = by_slug.get(pet.get("evolves_from"))
+    if parent is None:
+        raise RuntimeError(f"{pet['slug']}: evolves_from 不在 roster")
+    ref = SRC_DIR / parent["src"]
+    if not ref.exists():
+        raise RuntimeError(f"{pet['slug']}: 上一阶参考图不存在：{ref.name}")
+    prompt = evolution_prompt(pet)
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            url, blob = generate(model, ref, prompt, timeout)
+            dest.write_bytes(blob)
+            print(f"  ✓ {pet['slug']} design  {len(blob) // 1024} KB")
+            return {"slug": pet["slug"], "kind": "evolution-design", "model": model,
+                    "prompt": prompt, "ref": parent["src"], "url": url,
+                    "out": pet["src"]}
+        except Exception as e:
+            last = e
+            print(f"  … {pet['slug']} design 第 {attempt}/{retries} 次失败：{str(e)[:120]}")
+            if attempt < retries:
+                time.sleep(2 * attempt)
+    raise RuntimeError(f"{pet['slug']} design 生成失败：{str(last)[:160]}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="生成逐状态宠物立绘")
     ap.add_argument("--model", default=DEFAULT_MODEL,
-                    help=f"默认 {DEFAULT_MODEL}。gpt-image-2 需要先在 Poe 开通 Images API")
+                    help=f"默认 {DEFAULT_MODEL}；当前 Poe chat 传输不兼容 gpt-image-2")
     ap.add_argument("--pet", action="append", help="只做这些 slug（可重复）")
     ap.add_argument("--state", action="append", choices=STATES, help="只做这些状态（可重复）")
-    ap.add_argument("--force", action="store_true", help="已存在也重新生成")
+    ap.add_argument("--designs-only", action="store_true",
+                    help="只生成 roster 中带 evolves_from 的进化设计原图")
+    ap.add_argument("--force", action="store_true", help="已存在的状态帧也重新生成")
+    ap.add_argument("--force-designs", action="store_true",
+                    help="已存在的进化设计原图也重新生成")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划")
     ap.add_argument("--workers", type=int, default=3, help="并发数（默认 3，别把限流打满）")
     ap.add_argument("--timeout", type=int, default=300)
@@ -201,27 +262,43 @@ def main() -> int:
     args = ap.parse_args()
 
     roster = json.loads((SRC_DIR / "roster.json").read_text())["pets"]
+    by_slug = {p["slug"]: p for p in roster}
     pets = [p for p in roster if not args.pet or p["slug"] in args.pet]
     states = [s for s in STATES if not args.state or s in args.state]
     if not pets:
         sys.exit(f"没有匹配的宠物；可选：{[p['slug'] for p in roster]}")
 
-    jobs = [(p, s) for p in pets for s in states
+    designs = [p for p in pets if p.get("evolves_from") and
+               (args.force_designs or not (SRC_DIR / p["src"]).exists())]
+    jobs = [] if args.designs_only else [(p, s) for p in pets for s in states
             if args.force or not (OUT_DIR / p["slug"] / f"{s}.png").exists()]
-    skipped = len(pets) * len(states) - len(jobs)
-    print(f"模型 {args.model}｜{len(pets)} 只 x {len(states)} 态 = "
-          f"{len(pets) * len(states)} 张，其中 {len(jobs)} 张要生成"
-          f"{f'（{skipped} 张已存在，--force 可覆盖）' if skipped else ''}")
+    if args.designs_only:
+        print(f"模型 {args.model}｜{len(designs)} 张进化设计要生成")
+    else:
+        skipped = len(pets) * len(states) - len(jobs)
+        print(f"模型 {args.model}｜{len(designs)} 张进化设计｜"
+              f"{len(pets)} 只 x {len(states)} 态 = "
+              f"{len(pets) * len(states)} 张，其中 {len(jobs)} 张要生成"
+              f"{f'（{skipped} 张已存在，--force 可覆盖）' if skipped else ''}")
     if args.dry_run:
+        for p in designs:
+            print(f"  would generate {p['slug']} evolution design")
         for p, s in jobs:
             print(f"  would generate {p['slug']}/{s}")
         return 0
-    if not jobs:
+    if not designs and not jobs:
         return 0
     if not os.environ.get("POE_API_KEY"):
         sys.exit("POE_API_KEY 没设置")
 
     records = []
+    for pet in designs:
+        try:
+            records.append(generate_design(args.model, pet, by_slug, args.timeout,
+                                           args.retries, args.force_designs))
+        except Exception as e:
+            print(f"  ✗ {pet['slug']} design 放弃：{str(e)[:160]}")
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = [pool.submit(one, args.model, p, s, args.timeout, args.retries)
                    for p, s in jobs]
@@ -237,7 +314,7 @@ def main() -> int:
             for rec in records:
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    ok, total = len(records), len(jobs)
+    ok, total = len(records), len(designs) + len(jobs)
     print(f"\n完成 {ok}/{total}")
     if ok < total:
         print("有失败的，重跑一次即可 —— 已存在的会自动跳过")

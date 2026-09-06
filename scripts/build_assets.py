@@ -267,7 +267,23 @@ def build_pet(pet: dict, check: bool) -> tuple[dict, dict]:
         "components": base["comps"],
         "motion": {},
     }
+    if pet.get("evolution_meta"):
+        record["evolution_meta"] = pet["evolution_meta"]
     return record, frames
+
+
+def validate_roster(roster: list[dict]) -> None:
+    """Fail early when an evolution points at missing or randomly assignable art."""
+    by_id = {str(p["id"]): p for p in roster}
+    if len(by_id) != len(roster):
+        raise ValueError("pet_assests/roster.json 里有重复 id")
+    for pet in roster:
+        for rule in pet.get("evolution_meta", []):
+            target = by_id.get(str(rule.get("to_stage", "")))
+            if target is None:
+                raise ValueError(f"{pet['slug']}: 进化目标 {rule.get('to_stage')} 不在素材清单")
+            if target.get("starter"):
+                raise ValueError(f"{pet['slug']}: 进化目标 {target['slug']} 不能同时是 starter")
 
 
 def contact_sheet(built: list[tuple[dict, dict]], path: Path) -> None:
@@ -313,6 +329,7 @@ def main() -> int:
     args = ap.parse_args()
 
     roster = json.loads((SRC_DIR / "roster.json").read_text())["pets"]
+    validate_roster(roster)
     built = [build_pet(pet, args.check) for pet in roster]
     records = [rec for rec, _ in built]
 

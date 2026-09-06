@@ -48,8 +48,8 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· 三档宠物大小 · 每块屏各记一个位置，可跟随可固定 · hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 · 已签名 + 已公证的 macOS 发布流水线（Apple 凭据自备） |
-| ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 · 进化规则会触发，但进化形态素材还没画 |
+| ✅ **今天可用** | 七状态桌面宠物 · 一条完整的三阶段进化家族 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· 三档宠物大小 · 每块屏各记一个位置，可跟随可固定 · hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 · 已签名 + 已公证的 macOS 发布流水线（Apple 凭据自备） |
+| ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
 逐条需求的对账：[PRD §15](docs/prd_mvp_zh.md#15-实现状态截至-2026-08-21)。
@@ -506,6 +506,12 @@ Core 的 HTTP 接口（除 `/health` 外都要 `X-Vibepaws-Token`）：
 
 首次启动随机分配一只。
 
+Embercub 是第一条完整进化家族。健康使用会让它在 Lv5 和 Lv10 各进化一次；三个形态都有完整的七张状态立绘。
+
+| Lv1–4 | Lv5–9 | Lv10+ |
+| --- | --- | --- |
+| <img src="ui/pets/embercub/idle.png" width="72"><br>**Embercub** | <img src="ui/pets/cinderclaw/idle.png" width="72"><br>**Cinderclaw** | <img src="ui/pets/infernomane/idle.png" width="72"><br>**Infernomane** |
+
 ### 加一只自己的宠物
 
 `ui/pets/` 里的构建产物**已提交进仓库** —— 跑应用、装依赖都不需要 Python。只有**加新宠物**时才需要这条 pipeline。
@@ -517,6 +523,9 @@ Core 的 HTTP 接口（除 `/health` 外都要 `X-Vibepaws-Token`）：
 export POE_API_KEY=...                      # 只从环境变量读，不写进仓库
 npm run states -- --dry-run                 # 只打印要生成什么
 npm run states                              # 生成 7 个状态的立绘；已存在的自动跳过
+# 进化条目可声明 evolves_from + evolution_design；先生成进化设计原图：
+npm run states -- --pet cinderclaw --pet infernomane --designs-only
+# 只有确定要重画已提交的设计原图时，才额外加 --force-designs。
 
 npm run assets -- --check                   # 只体检：抠底结果、连通域、锚点、主色，不写盘
 npm run assets                              # 写 ui/pets/<slug>/*.png 与 ui/pets/index.json
@@ -527,7 +536,7 @@ npm run db:init                             # 让 pet_types 表跟上
 
 **记得看联络表。** `npm run assets` 会顺手拼一张 `output/imagegen/pet-states/contact-sheet.png`（棋盘垫底）—— **每次生成后过一眼。** 模型偶尔会在脚下画一片提示词里明令禁止的地面阴影，而它在数值上和宠物自身的大片浅色分不开（饱和度 / alpha / 平坦度三种判据都试过，非漏报即误报）。所以这里不做自动质检：脏的那一帧在联络表上一眼可见，删掉重新生成就好。
 
-模型默认 `nano-banana-pro`。`gpt-image-2` 目前不可用 —— Poe 的 Images API 在这个账号上没开通（`403 Images API is not enabled for this user`，对所有图像模型一视同仁），而 `gpt-image-*` 走 chat/completions 会直接断连。开通之后 `--model gpt-image-2` 即可。
+模型默认 `nano-banana-pro`。`gpt-image-2` 在这个 Poe 账号上目前不可用：Images API 返回 `403 Images API is not enabled for this user`，chat/completions 则无论走裸 HTTP 还是 OpenAI SDK 都会断连。Poe 提供兼容传输之前请继续用默认模型。
 
 素材缺失、解码失败或 `pet_type_id` 没有对应素材时，宠物回落到程序生成的兜底形象（`ui/pets/procedural.js`）—— 界面上永远是一只宠物，不会是一扇空窗。
 

@@ -264,28 +264,34 @@ export class ExpEngine {
   }
 
   private checkEvolution(petId: number, level: number): void {
-    const pet = this.petRow();
-    if (!pet) return;
-    const type = this.db.prepare("SELECT evolution_meta FROM pet_types WHERE id=?").get(pet.pet_type_id) as
-      | { evolution_meta: string }
-      | undefined;
-    if (!type) return;
-    let meta: Array<{ from_level: number; conditions?: string[]; to_stage: string }> = [];
-    try {
-      meta = JSON.parse(type.evolution_meta);
-    } catch {
-      meta = [];
-    }
-    for (const rule of meta) {
-      if (level >= rule.from_level && rule.conditions?.includes("health>=0.7")) {
-        const health = this.healthScore(petId);
-        if (health >= 0.7) {
-          this.db
-            .prepare("UPDATE pets SET pet_type_id=?, health_score=? WHERE id=?")
-            .run(rule.to_stage, 1.0, petId);
-          console.log(`[vibepaws] 🐣 evolution → ${rule.to_stage}`);
-        }
+    const visited = new Set<number>();
+    while (true) {
+      const pet = this.petRow();
+      if (!pet || visited.has(pet.pet_type_id)) return;
+      visited.add(pet.pet_type_id);
+
+      const type = this.db.prepare("SELECT evolution_meta FROM pet_types WHERE id=?").get(pet.pet_type_id) as
+        | { evolution_meta: string }
+        | undefined;
+      if (!type) return;
+      let meta: Array<{ from_level: number; conditions?: string[]; to_stage: string }> = [];
+      try {
+        meta = JSON.parse(type.evolution_meta);
+      } catch {
+        return;
       }
+
+      const rule = meta.find((candidate) =>
+        level >= candidate.from_level && candidate.conditions?.includes("health>=0.7"),
+      );
+      if (!rule || this.healthScore(petId) < 0.7) return;
+      const targetId = Number(rule.to_stage);
+      if (!Number.isInteger(targetId) || visited.has(targetId)) return;
+
+      this.db
+        .prepare("UPDATE pets SET pet_type_id=?, health_score=? WHERE id=?")
+        .run(targetId, 1.0, petId);
+      console.log(`[vibepaws] 🐣 evolution → ${targetId}`);
     }
   }
 
