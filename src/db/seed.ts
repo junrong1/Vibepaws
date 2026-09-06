@@ -58,6 +58,7 @@ interface SpriteManifest {
   name: string;
   rarity: PetTypeSeed["rarity"];
   starter: boolean;
+  evolution_meta?: PetTypeSeed["evolution_meta"];
 }
 
 /** 读一个素材清单文件，映射成 PetTypeSeed，读不到就返回空数组（不抛） */
@@ -70,7 +71,7 @@ function readRoster(path: string): PetTypeSeed[] {
       rarity: p.rarity,
       sprite_pack: p.slug,
       starter: p.starter ? 1 : 0,
-      evolution_meta: [],
+      evolution_meta: Array.isArray(p.evolution_meta) ? p.evolution_meta : [],
     }));
   } catch {
     return [];

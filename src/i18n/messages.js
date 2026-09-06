@@ -341,6 +341,12 @@ export const MESSAGES = {
       "    ① Interactive:  cd {repo} && codex, then run /hooks and approve vibepaws\n" +
       "    ② Headless:     codex exec --dangerously-bypass-hook-trust …\n" +
       "  💡 Global install (optional): merge {file} into ~/.codex/hooks.json",
+    "cli.codex.globalTrustNote":
+      "\n  ⚠ One more step — Codex will NOT run these hooks until you trust them:\n" +
+      "    Start codex; it prompts “Hooks need review” → pick “Trust all and continue”.\n" +
+      "    Already dismissed it? Run /hooks inside codex and trust vibepaws.\n" +
+      "  Until then Vibepaws receives zero Codex events and the pet never reacts.\n" +
+      "  (Written to {file}; trust is recorded in ~/.codex/config.toml under [hooks.state].)",
     "cli.pi.dryrun": "[dry-run] would write {file} — pi extension (vibepaws adapter)",
     "cli.pi.written": "✓ Pi extension written to {file}",
     "cli.pi.cleanup.skill": "  ↳ Removed obsolete skill dir (old skill-based adapter): {dir}",
@@ -665,6 +671,12 @@ export const MESSAGES = {
       "    ① 交互模式：cd {repo} && codex，然后运行 /hooks 批准 vibepaws\n" +
       "    ② headless：codex exec --dangerously-bypass-hook-trust …\n" +
       "  💡 全局安装（可选）：把 {file} 的内容合并到 ~/.codex/hooks.json",
+    "cli.codex.globalTrustNote":
+      "\n  ⚠ 还差一步 —— 没批准过信任，Codex 一条 hook 都不会跑：\n" +
+      "    启动 codex，它会问「Hooks need review」→ 选「Trust all and continue」。\n" +
+      "    已经点掉了？在 codex 里运行 /hooks，把 vibepaws 设为信任。\n" +
+      "  在那之前 Vibepaws 收到的 Codex 事件是零，宠物不会有任何反应。\n" +
+      "  （已写入 {file}；信任状态记在 ~/.codex/config.toml 的 [hooks.state]。）",
     "cli.pi.dryrun": "[dry-run] 将写入 {file} — pi 插件（vibepaws adapter）",
     "cli.pi.written": "✓ Pi 插件已写入 {file}",
     "cli.pi.cleanup.skill": "  ↳ 已移除废弃的 skill 目录（旧 skill 版 adapter）：{dir}",

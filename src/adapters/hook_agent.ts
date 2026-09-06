@@ -7,7 +7,7 @@
  * 用法（由 hooks 配置调用，见 install.ts）：
  *   node src/adapters/hook_agent.ts <event-name>   （stdin 为 hook 输入 JSON）
  */
-import { readFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync, existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readApiToken } from "../core/token.ts";
@@ -203,37 +203,149 @@ function safeSummary(
   }
 }
 
-/* ---------------- transcript token 提取（SessionEnd 兜底） ---------------- */
+/* ---------------- transcript 用量提取（无 statusline 的 agent 的唯一来源） ---------------- */
 
 /**
- * SessionEnd 时从 transcript 提取 token 消耗（Claude Code JSONL：assistant message.usage；
- * Codex 存档 best-effort）。隐私：只提取数字，不读代码/文本内容。
- * 返回 null 表示无法提取（降级，不影响核心循环）。
+ * 尾部读多少字节。Codex 每轮结束都会往 rollout 里写一条 token_count，
+ * 所以「最近一条」几乎必然落在尾巴里 —— 而整份 rollout 动辄几 MB，
+ * 这个函数现在每轮都要跑，不能每次都把它整个读进内存。
  */
-export function extractTokensFromTranscript(transcriptPath: string | undefined): number | null {
-  if (!transcriptPath) return null;
-  try {
-    const content = readFileSync(transcriptPath, "utf-8");
-    let total = 0;
-    let found = false;
-    for (const line of content.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line) as {
-          message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number } };
-        };
-        const u = obj.message?.usage;
-        if (u) {
-          found = true;
-          total += (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
-        }
-      } catch {
-        // 跳过坏行
-      }
+const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+
+/**
+ * 哪几条 hook 之后值得回头读一次 transcript。
+ *
+ * PostToolUse：一个长回合里的实时刻度（Codex 一轮可以跑几十个工具）。
+ * Stop：一轮说完的那一刻 —— 界面上「安静了」旁边显示的就是这个数。
+ * SessionEnd：收尾总量。
+ *
+ * 其余事件跳过：读的是同一份存档、报的是同一个累计值，只会给 Core 灌重复行。
+ * （重复本身无害：registry 是 MAX，exp 只结算增量。）
+ */
+const TOKEN_REFRESH_HOOKS = new Set(["PostToolUse", "Stop", "SessionEnd"]);
+
+/** 一次 transcript 读取能拿到的东西。Core 侧分两条事件落库，所以这里也分两个字段。 */
+export interface TranscriptUsage {
+  /** session 至今的累计 token（token_update） */
+  tokens: number;
+  /** 最后一轮占 context 窗口的百分比（context_update）。存档里没有窗口大小时为 undefined。 */
+  context_pct?: number;
+}
+
+/**
+ * Codex rollout JSONL → 这次会话的用量。
+ *
+ * 每轮一条：{"type":"event_msg","payload":{"type":"token_count","info":{
+ *   "total_token_usage":{…,"total_tokens":N},
+ *   "last_token_usage":{…,"total_tokens":M,"reasoning_output_tokens":R},
+ *   "model_context_window":W}}}
+ *
+ * · tokens：`total_token_usage` **本身就是累计值**，所以取最后一条、绝不求和 ——
+ *   求和等于把每轮的累计值再累计一遍，一个 10M tokens 的会话能报到几十上百 M。
+ * · context_pct：占 context 的是**最后一轮**的用量（`last_token_usage`，其中 input
+ *   已含此前全部对话），不是累计量 —— 拿累计量去除窗口，第二轮就能「超过 100%」。
+ *   再减掉 reasoning：那部分下一轮不会带回上下文（Codex 自己的 context 条目同此口径）。
+ */
+export function extractCodexUsage(text: string): TranscriptUsage | null {
+  const lines = text.split("\n");
+  // 从后往前 = 时间上从新到旧，命中即止
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    // 先按字符串筛一道：rollout 里绝大多数行是消息体，不值得 JSON.parse
+    if (!line.includes('"token_count"')) continue;
+    try {
+      const obj = JSON.parse(line) as { payload?: { type?: string; info?: Record<string, unknown> } };
+      if (obj.payload?.type !== "token_count") continue;
+      const info = obj.payload.info;
+      if (!info) continue;
+      const cumulative = (info.total_token_usage ?? {}) as Record<string, unknown>;
+      // total_tokens 已含 cached input 与 reasoning output（与 Claude statusline 的口径一致）
+      const tokens =
+        num(cumulative.total_tokens) ?? (num(cumulative.input_tokens) ?? 0) + (num(cumulative.output_tokens) ?? 0);
+      if (tokens <= 0) continue;
+      return { tokens, context_pct: codexContextPct(info) };
+    } catch {
+      // 坏行/半行（尾部读取会切断第一行）→ 继续往前找
     }
-    return found ? total : null;
+  }
+  return null;
+}
+
+/** 最后一轮在 context 窗口里占了多少（0–100）。窗口未知 → undefined（宁可不报，也不报个假的）。 */
+function codexContextPct(info: Record<string, unknown>): number | undefined {
+  const window = num(info.model_context_window);
+  const last = (info.last_token_usage ?? {}) as Record<string, unknown>;
+  const total = num(last.total_tokens);
+  if (window === undefined || window <= 0 || total === undefined) return undefined;
+  const inContext = Math.max(0, total - (num(last.reasoning_output_tokens) ?? 0));
+  return Math.max(0, Math.min(100, Math.round((inContext / window) * 100)));
+}
+
+/** Claude Code JSONL → token 总量：每条 assistant 消息带一份**本轮** usage，所以这里是求和。 */
+export function extractClaudeTokens(text: string): number | null {
+  let total = 0;
+  let found = false;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line) as {
+        message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number } };
+      };
+      const u = obj.message?.usage;
+      if (u) {
+        found = true;
+        total += (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+      }
+    } catch {
+      // 跳过坏行
+    }
+  }
+  return found ? total : null;
+}
+
+/** 两种存档格式都试一遍（Codex 优先：它的判据更具体，不会误吃 Claude 的行）。 */
+export function extractTranscriptUsage(text: string): TranscriptUsage | null {
+  const codex = extractCodexUsage(text);
+  if (codex) return codex;
+  const tokens = extractClaudeTokens(text);
+  // Claude 的存档里没有窗口大小，context_pct 只能留空（它本来也走 statusline 那条实时通道）
+  return tokens === null ? null : { tokens };
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * 从 transcript 文件提取用量。隐私：只认 usage 里的数字，不读 message/content 里的任何文本。
+ * 返回 null 表示无法提取（降级，不影响核心循环）。
+ *
+ * 大文件只读尾巴，且**只采信 Codex 那条累计值** —— Claude 那种「逐条求和」的口径在半份
+ * 存档上算出来的是个偏小的假数，宁可把整份读完。
+ */
+export function extractUsageFromTranscript(transcriptPath: string | undefined): TranscriptUsage | null {
+  if (!transcriptPath) return null;
+  let fd: number | undefined;
+  try {
+    const size = statSync(transcriptPath).size;
+    if (size > TRANSCRIPT_TAIL_BYTES) {
+      fd = openSync(transcriptPath, "r");
+      const buf = Buffer.allocUnsafe(TRANSCRIPT_TAIL_BYTES);
+      const read = readSync(fd, buf, 0, TRANSCRIPT_TAIL_BYTES, size - TRANSCRIPT_TAIL_BYTES);
+      const fromTail = extractCodexUsage(buf.toString("utf-8", 0, read));
+      if (fromTail !== null) return fromTail;
+    }
+    return extractTranscriptUsage(readFileSync(transcriptPath, "utf-8"));
   } catch {
     return null; // 文件不存在/不可读 → 降级
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* 关不上也没什么可做的 */
+      }
+    }
   }
 }
 
@@ -308,28 +420,52 @@ async function main(): Promise<void> {
       if (ev) {
         const delivered = await send(ev);
         if (process.env.VIBEPAWS_DEBUG || debug) console.error(`[hook] ${ev.event_type} delivered=${delivered}`);
-        // SessionEnd：从 transcript 提取 token 总量 → 补发 token_update（一次性总量）。
-        // hooks stdin 无 token 字段（实测），token 只存在于 transcript_path 指向的存档里。
-        // 仅 Codex 需要：Claude Code 有 statusline 实时累计值（准确），transcript 累加会虚高。
-        if (ev.event_type === "session_finished" && ev.agent !== "claude_code") {
-          const tokens = extractTokensFromTranscript(raw.transcript_path);
-          if (tokens !== null && tokens > 0) {
-            const tokenEv: CoreEvent = {
-              event_id: `hook-token-${Date.now()}-${++seqCounter}`,
-              seq: ++seqCounter,
-              agent: ev.agent,
-              session_id: ev.session_id,
-              project_id: ev.project_id,
-              event_type: "token_update",
-              severity: "low",
-              safe_summary: `Session total tokens: ${tokens}`,
-              timestamp: new Date().toISOString(),
-              payload: { tokens },
-            };
-            const ok = await send(tokenEv);
-            if (debug) debugLog(`token_update(${tokens}) delivered=${ok}`);
+        // 从 transcript 提取用量 → 补发 token_update（+ Codex 还给得出 context_update）。
+        // hooks stdin 无 token 字段（实测），用量只存在于 transcript_path 指向的存档里。
+        // 只在 SessionEnd 补一次是不够的：会话没结束之前界面上就一直是 0k，而 Codex 的
+        // 会话常常一开就是一整天。Codex 的每条 hook 输入都带 transcript_path（源码 schema
+        // 确认），所以按 TOKEN_REFRESH_HOOKS 的节奏刷。
+        // Claude Code 除外：它有 statusline 实时通道（准确），transcript 逐条求和会虚高。
+        if (ev.agent !== "claude_code" && TOKEN_REFRESH_HOOKS.has(raw.hook_event_name ?? "")) {
+          const usage = extractUsageFromTranscript(raw.transcript_path);
+          if (usage && usage.tokens > 0) {
+            const stamp = Date.now();
+            // token_update 只写 token_used，context_pct 必须走独立的 context_update（registry.ts），
+            // 与 statusline.ts 那条通道同构。
+            const usageEvents: CoreEvent[] = [
+              {
+                event_id: `hook-token-${stamp}-${++seqCounter}`,
+                seq: ++seqCounter,
+                agent: ev.agent,
+                session_id: ev.session_id,
+                project_id: ev.project_id,
+                event_type: "token_update",
+                severity: "low",
+                safe_summary: `Transcript tokens: ${usage.tokens}`,
+                timestamp: new Date().toISOString(),
+                payload: { tokens: usage.tokens },
+              },
+            ];
+            if (usage.context_pct !== undefined) {
+              usageEvents.push({
+                event_id: `hook-ctx-${stamp}-${++seqCounter}`,
+                seq: ++seqCounter,
+                agent: ev.agent,
+                session_id: ev.session_id,
+                project_id: ev.project_id,
+                event_type: "context_update",
+                severity: "low",
+                safe_summary: `Transcript context: ${usage.context_pct}%`,
+                timestamp: new Date().toISOString(),
+                payload: { context_pct: usage.context_pct },
+              });
+            }
+            for (const usageEv of usageEvents) {
+              const ok = await send(usageEv);
+              if (debug) debugLog(`${usageEv.event_type}(${usageEv.safe_summary}) delivered=${ok}`);
+            }
           } else if (debug) {
-            debugLog(`no tokens extracted from transcript: ${raw.transcript_path}`);
+            debugLog(`no usage extracted from transcript: ${raw.transcript_path}`);
           }
         }
       } else if (debug) {

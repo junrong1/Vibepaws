@@ -152,6 +152,37 @@ test("一次大额 EXP 能连跳多级，余量不会卡在原地", () => {
   assert.equal(pet.exp, 50);
 });
 
+test("Embercub 在健康使用下沿真实素材家族进化", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  db.prepare("UPDATE pets SET pet_type_id=20, level=4, exp=249").run();
+
+  exp.handle(ev({ payload: { tokens: 1000 } }));
+  assert.equal(exp.getPetSnapshot().pet_type_id, 30, "Lv5 应切换到 Cinderclaw 素材");
+  assert.equal(exp.getPetSnapshot().species, "Cinderclaw");
+
+  db.prepare("UPDATE pets SET level=9, exp=499").run();
+  exp.handle(ev({ payload: { tokens: 2000 } }));
+  assert.equal(exp.getPetSnapshot().pet_type_id, 31, "Lv10 应切换到 Infernomane 素材");
+  assert.equal(exp.getPetSnapshot().species, "Infernomane");
+});
+
+test("一次跨过多段门槛会追上 Embercub 的最终进化形态", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  db.prepare("UPDATE settings SET value='3000' WHERE key='daily_exp_cap'").run();
+  db.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES('daily_exp_cap','3000')").run();
+  db.prepare("UPDATE pets SET pet_type_id=20, level=4, exp=249").run();
+
+  exp.handle(ev({ payload: { tokens: 2_001_000 } }));
+  const pet = exp.getPetSnapshot();
+  assert.equal(pet.level, 10);
+  assert.equal(pet.pet_type_id, 31, "Lv10 的 Embercub 应一次追上 Infernomane");
+  assert.equal(pet.species, "Infernomane");
+});
+
 test("用户给宠物起的名字优先于物种名", () => {
   const db = makeDb();
   const exp = new ExpEngine(db);

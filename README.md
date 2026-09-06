@@ -48,8 +48,8 @@ It also can't spend your tokens: there is no API key and no model client in it, 
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · 3 pet sizes · per-display position memory with follow-or-pin · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
-| ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin · evolution rules fire but evolved-form art isn't drawn yet |
+| ✅ **Works today** | Desktop pet with 7 states · one complete three-stage evolution family · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · 3 pet sizes · per-display position memory with follow-or-pin · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
+| ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
 Full requirement-by-requirement status: [PRD §15](docs/prd_mvp_en.md#15-implementation-status-as-of-2026-08-21).
@@ -510,6 +510,12 @@ Five starter pets ship today, each with all seven state portraits. The registry 
 
 You get one at random on first launch.
 
+Embercub is the first complete evolution family. Healthy usage evolves it at Lv5 and again at Lv10; every form keeps the full seven-state portrait set.
+
+| Lv1–4 | Lv5–9 | Lv10+ |
+| --- | --- | --- |
+| <img src="ui/pets/embercub/idle.png" width="72"><br>**Embercub** | <img src="ui/pets/cinderclaw/idle.png" width="72"><br>**Cinderclaw** | <img src="ui/pets/infernomane/idle.png" width="72"><br>**Infernomane** |
+
 ### Adding your own pet
 
 The built assets in `ui/pets/` are **committed to the repo** — running the app and installing dependencies need no Python. You only need the pipeline when adding a pet.
@@ -521,6 +527,9 @@ The built assets in `ui/pets/` are **committed to the repo** — running the app
 export POE_API_KEY=...                      # read from the environment only, never committed
 npm run states -- --dry-run                 # print what would be generated
 npm run states                              # generate all 7 state portraits (skips existing)
+# Evolution entries can declare evolves_from + evolution_design; generate their source art first:
+npm run states -- --pet cinderclaw --pet infernomane --designs-only
+# Add --force-designs only when you intentionally want to redraw a committed source anchor.
 
 npm run assets -- --check                   # inspect only: cutout, components, anchor, accent color
 npm run assets                              # write ui/pets/<slug>/*.png and ui/pets/index.json
@@ -531,7 +540,7 @@ npm run db:init                             # bring the pet_types table in line
 
 **Check the contact sheet.** `npm run assets` also assembles `output/imagegen/pet-states/contact-sheet.png` (checkerboard behind the alpha) — **look at it after every generation run.** The model occasionally paints a ground shadow under the pet's feet despite the prompt forbidding it, and numerically that shadow is indistinguishable from the pet's own large pale areas (saturation, alpha, and flatness heuristics were all tried; each gives either false negatives or false positives). So there's no automated check here: the dirty frame is obvious to your eye on the contact sheet. Delete it and regenerate.
 
-Default model is `nano-banana-pro`. `gpt-image-2` doesn't currently work — Poe's Images API isn't enabled on this account (`403 Images API is not enabled for this user`, for every image model), and `gpt-image-*` over chat/completions disconnects outright. Once it's enabled, `--model gpt-image-2` is all you need.
+Default model is `nano-banana-pro`. `gpt-image-2` doesn't currently work on this Poe account: the Images API returns `403 Images API is not enabled for this user`, while chat/completions disconnects over raw HTTP and the OpenAI SDK. Keep the default model until Poe enables a compatible transport.
 
 If an asset is missing, fails to decode, or a `pet_type_id` has no art, the pet falls back to a procedurally drawn form (`ui/pets/procedural.js`). The UI always shows a pet — never an empty window.
 

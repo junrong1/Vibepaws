@@ -102,6 +102,26 @@ test("petTypeSeeds：id 不重复", () => {
   assert.equal(new Set(ids).size, ids.length, "pet_type id 撞了");
 });
 
+test("Embercub 进化家族的素材与规则一起进入运行时清单", () => {
+  const roster = spriteRoster();
+  const embercub = roster.find((p) => p.sprite_pack === "embercub");
+  assert.ok(embercub, "Embercub 不在素材清单里");
+  assert.deepEqual(embercub.evolution_meta, [
+    { from_level: 5, conditions: ["health>=0.7"], to_stage: "30" },
+  ]);
+
+  const cinderclaw = roster.find((p) => p.id === 30);
+  const infernomane = roster.find((p) => p.id === 31);
+  assert.ok(cinderclaw, "Embercub 的一阶进化素材缺失");
+  assert.ok(infernomane, "Embercub 的二阶进化素材缺失");
+  assert.equal(cinderclaw.starter, 0, "进化体不能进入 starter 池");
+  assert.equal(infernomane.starter, 0, "进化体不能进入 starter 池");
+  assert.deepEqual(cinderclaw.evolution_meta, [
+    { from_level: 10, conditions: ["health>=0.7"], to_stage: "31" },
+  ]);
+  assert.deepEqual(infernomane.evolution_meta, []);
+});
+
 test("mergePetSeeds：仓库是兜底，本地覆盖按 id 追加", () => {
   const base: PetTypeSeed[] = [
     { id: 20, name: "A", rarity: "common", sprite_pack: "a", starter: 1, evolution_meta: [] },

@@ -5,7 +5,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { extractTokensFromTranscript } from "./hook_agent.ts";
+import { extractUsageFromTranscript } from "./hook_agent.ts";
+
+/** 这些用例只关心 token 总量（context_pct 是 Codex 专属，见 hook_agent.test.ts） */
+function extractTokensFromTranscript(path: string | undefined): number | null {
+  return extractUsageFromTranscript(path)?.tokens ?? null;
+}
 
 const DIR = join(".vibepaws", "token_test");
 const TXT = join(DIR, "session.jsonl");

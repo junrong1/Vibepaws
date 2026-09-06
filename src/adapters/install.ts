@@ -116,15 +116,51 @@ function backup(ctx: Ctx, file: string): void {
 }
 
 /**
- * 按事件在数组层合并：追加新条目、按 JSON 序列化去重。
- * 这样写全局配置（~/.claude/settings.json）时不会清掉用户已有/其他工具的 hooks。
+ * 从一个 hook 条目里摘掉 Vibepaws 自己的那几条命令，别人的原样留着；全空了返回 null。
+ *
+ * 为什么要拆到**命令**这一层：条目是按 matcher 分组的（Claude 的
+ * `{matcher:"", hooks:[…]}`），用户完全可能把自己的命令挂在同一个 matcher 下。
+ * 整条扔掉就是顺手删了别人的 hook —— 而配置文件里的删除是无声的，
+ * 等到发现时已经不知道是谁干的了。
+ */
+function withoutVibepawsHooks(entry: unknown): unknown | null {
+  if (!entry || typeof entry !== "object") return isVibepawsEntry(entry) ? null : entry;
+  const e = entry as Record<string, unknown>;
+  if (!Array.isArray(e.hooks)) return isVibepawsEntry(entry) ? null : entry;
+  const kept = e.hooks.filter((h) => !isVibepawsEntry(h));
+  if (kept.length === e.hooks.length) return entry; // 里面没有我们的东西，原样放回
+  return kept.length > 0 ? { ...e, hooks: kept } : null;
+}
+
+/**
+ * 按事件在数组层合并：先清掉**上一次装的自己**，再追加这一次的，按 JSON 序列化去重。
+ * 别人的 hooks（用户自己的、其他工具的）一条不动 —— 这正是不能整份覆盖的原因。
+ *
+ * 「先清自己」不是洁癖，是这条路径唯一的正确语义：去重只认逐字相同，而 Vibepaws 那条
+ * 命令里写着解释器和源码的**绝对路径**，重装时它几乎必然变（app bundle ↔ 仓库、
+ * `brew upgrade node` 换掉 /opt/homebrew 下的真实路径、仓库换个目录）。变了的旧条目
+ * 在去重眼里就是「别人的 hook」，于是被留下 —— 同一个事件挂着两条 Vibepaws 命令，
+ * 每个事件采集两遍：events 表翻倍、hook_ms 面板翻倍、Core 收到两份同样的东西。
+ * 而这一切在界面上完全看不出来（Core 侧是 MAX 和增量结算，数字仍然是对的）。
+ *
+ * 清理范围是**整份配置**而不只是这次要写的那几个事件：事件集本身会变（老版本注册过
+ * 的事件今天可能不再注册），只扫 incoming 的话，那些事件下的旧条目会永远指着一个
+ * 早就不存在的路径。
  */
 function mergeHooks(existing: Record<string, unknown>, newHooks: Record<string, unknown>): Record<string, unknown> {
   const out = { ...existing };
   const existingHooks =
     typeof existing.hooks === "object" && existing.hooks ? (existing.hooks as Record<string, unknown>) : {};
   const incoming = (newHooks.hooks as Record<string, unknown>) ?? {};
-  const mergedHooks: Record<string, unknown> = { ...existingHooks };
+  const mergedHooks: Record<string, unknown> = {};
+  for (const [event, entries] of Object.entries(existingHooks)) {
+    if (!Array.isArray(entries)) {
+      mergedHooks[event] = entries; // 形状不认识就别动它
+      continue;
+    }
+    const kept = entries.map(withoutVibepawsHooks).filter((e) => e !== null);
+    if (kept.length > 0) mergedHooks[event] = kept;
+  }
   for (const [event, entries] of Object.entries(incoming)) {
     const prev = Array.isArray(mergedHooks[event]) ? (mergedHooks[event] as unknown[]) : [];
     const add = Array.isArray(entries) ? entries : [];
@@ -247,6 +283,11 @@ function installCodex(ctx: Ctx): string {
   say(ctx, t("cli.codex.written", { file }));
   if (ctx.global) {
     cleanupProjectHooks(ctx, "codex", file);
+    // 全局装也一样要过 hook 信任这一关（Codex 0.153 实测：hooks.json 写对了、命令手跑也通，
+    // 但没在 /hooks 里批准过就一条都不发 —— Core 侧看到的是零事件，界面上和「没装」完全一样）。
+    // 从前这句只在项目级分支里说，而设置窗口那颗按钮走的正是全局（server.ts 固定 global:true），
+    // 于是从 UI 装 Codex 的人只看到一句「✓ 已写入」，然后宠物永远不动。
+    say(ctx, t("cli.codex.globalTrustNote", { file }));
   } else {
     // 项目信任（Codex 0.148+：项目未信任则项目级 hooks 被门控跳过）
     const trust = trustProjectForCodex(ctx.projectRoot, ctx.home);

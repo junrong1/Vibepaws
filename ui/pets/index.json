@@ -25,7 +25,16 @@
         "level-up": "embercub/level-up.png"
       },
       "components": 1,
-      "motion": {}
+      "motion": {},
+      "evolution_meta": [
+        {
+          "from_level": 5,
+          "conditions": [
+            "health>=0.7"
+          ],
+          "to_stage": "30"
+        }
+      ]
     },
     {
       "id": 21,
@@ -127,6 +136,67 @@
         "finished": "circuit-witch/finished.png",
         "tired": "circuit-witch/tired.png",
         "level-up": "circuit-witch/level-up.png"
+      },
+      "components": 1,
+      "motion": {}
+    },
+    {
+      "id": 30,
+      "slug": "cinderclaw",
+      "name": "Cinderclaw",
+      "rarity": "uncommon",
+      "starter": false,
+      "w": 158,
+      "h": 160,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#e85818",
+      "base": "cinderclaw/idle.png",
+      "frames": {
+        "idle": "cinderclaw/idle.png",
+        "working": "cinderclaw/working.png",
+        "needs-you": "cinderclaw/needs-you.png",
+        "warning": "cinderclaw/warning.png",
+        "finished": "cinderclaw/finished.png",
+        "tired": "cinderclaw/tired.png",
+        "level-up": "cinderclaw/level-up.png"
+      },
+      "components": 1,
+      "motion": {},
+      "evolution_meta": [
+        {
+          "from_level": 10,
+          "conditions": [
+            "health>=0.7"
+          ],
+          "to_stage": "31"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "slug": "infernomane",
+      "name": "Infernomane",
+      "rarity": "legendary",
+      "starter": false,
+      "w": 160,
+      "h": 156,
+      "anchor": {
+        "feetX": 0.5,
+        "feetY": 1.0
+      },
+      "accent": "#f88818",
+      "base": "infernomane/idle.png",
+      "frames": {
+        "idle": "infernomane/idle.png",
+        "working": "infernomane/working.png",
+        "needs-you": "infernomane/needs-you.png",
+        "warning": "infernomane/warning.png",
+        "finished": "infernomane/finished.png",
+        "tired": "infernomane/tired.png",
+        "level-up": "infernomane/level-up.png"
       },
       "components": 1,
       "motion": {}
