@@ -231,6 +231,10 @@ export const MESSAGES = {
     "settings.session.budget.placeholder": "default",
     "settings.session.meta": "{used}k tokens · context {pct}%",
     "settings.session.state.working": "Working",
+    // subagent 两档（landscape 0.11）。juggling 带个数：宠物本体最多画 5 颗方块，
+    // 确切的「几个」只能由这行字给。delegating 恒为 1，不必写数字。
+    "settings.session.state.delegating": "Delegating",
+    "settings.session.state.juggling": "Juggling ×{n}",
     "settings.session.state.ready": "Ready",
     "settings.session.state.needs-you": "Needs you",
     "settings.session.state.warning": "Warning",
@@ -565,6 +569,8 @@ export const MESSAGES = {
     "settings.session.budget.placeholder": "默认",
     "settings.session.meta": "{used}k tokens · 上下文 {pct}%",
     "settings.session.state.working": "干活中",
+    "settings.session.state.delegating": "派活中",
+    "settings.session.state.juggling": "多线并行 ×{n}",
     "settings.session.state.ready": "待命",
     "settings.session.state.needs-you": "等你",
     "settings.session.state.warning": "告警",

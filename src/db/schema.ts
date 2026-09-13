@@ -5,7 +5,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- confirmed：同一个 pid 被两条不同事件报到过才算数 —— 见 core/reclaim.ts 的说明。
   agent_pid     INTEGER,
   agent_pid_confirmed INTEGER NOT NULL DEFAULT 0,
+  -- 这个 session 当前在跑几个 subagent（subagent_started 加一，subagent_stopped 减一，下界 0）。
+  -- 1 个和 2+ 个要渲染成不同状态（landscape 20c / 0.11），所以存的是**计数**而不是布尔。
+  -- 计数天然会漂：漏掉一条 subagent_stopped（hook 超时、进程被 kill）就永远回不到 0。
+  -- 三道闸：减法夹 0、session 生命周期事件归零、以及 subagent 态只是 working 的细分 ——
+  -- 一个不干活的 session 无论计数多少都显示 idle（见 registry.sessionState）。
+  subagent_count INTEGER NOT NULL DEFAULT 0,
+  -- 计数从 0 变成 1 的那一刻（NULL = 当前没有 subagent）。界面用它说「派出去多久了」。
+  subagent_since TEXT,
   parent_id     INTEGER REFERENCES sessions(id),
   branch        TEXT,
   is_active     INTEGER NOT NULL DEFAULT 1,
@@ -145,6 +153,8 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "sessions", column: "last_working_at", ddl: "TEXT" },
   { table: "sessions", column: "agent_pid", ddl: "INTEGER" },
   { table: "sessions", column: "agent_pid_confirmed", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "subagent_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "subagent_since", ddl: "TEXT" },
 ];
 
 interface MigrateDb {

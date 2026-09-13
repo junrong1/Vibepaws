@@ -63,7 +63,8 @@ function blendMotion(from, to, k) {
 
 /**
  * 画一帧。
- * @param anim { state, elapsed, prev: {state, elapsed}|null, blend: 0..1 }
+ * @param anim { state, elapsed, prev: {state, elapsed}|null, blend: 0..1, subagents?: number }
+ *             `subagents` 只有 delegating / juggling 用得上：轨道上画几颗小方块。
  * @returns { done } 一次性动作（finished / level-up）是否放完 —— 由 app.js 决定回落
  */
 export function drawPet(canvas, petTypeId, anim) {
@@ -107,7 +108,8 @@ export function drawPet(canvas, petTypeId, anim) {
   }
 
   const box = spriteAabb(m, w, h, feetX);
-  if (m.fx && FX_BEHIND.has(m.fx)) drawFx(ctx, m.fx, m.phase, box, accent);
+  const subagents = anim.subagents ?? 0;
+  if (m.fx && FX_BEHIND.has(m.fx)) drawFx(ctx, m.fx, m.phase, box, accent, subagents);
 
   ctx.save();
   // 变换原点是**脚底**，不是画布中心。绕中心做 squash 会看起来像悬在空中扭 ——
@@ -124,6 +126,6 @@ export function drawPet(canvas, petTypeId, anim) {
   }
   ctx.restore();
 
-  if (m.fx && !FX_BEHIND.has(m.fx)) drawFx(ctx, m.fx, m.phase, box, accent);
+  if (m.fx && !FX_BEHIND.has(m.fx)) drawFx(ctx, m.fx, m.phase, box, accent, subagents);
   return { done };
 }

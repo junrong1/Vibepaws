@@ -693,7 +693,8 @@ export class VibepawsServer {
    * 宠物聚合状态。原来这里直接用 pets 表里的 state —— 而那一列只会是 idle 或
    * level-up，于是宠物永远是 idle 表情：working/needs-you/warning/finished/tired
    * 全都推不出去，registry.aggregatePetState 成了没人调用的死代码。
-   * 优先级：level-up（庆祝）> needs-you > warning > working > finished > tired > idle。
+   * 优先级：level-up（庆祝）> needs-you > warning > juggling > delegating > working
+   *        > ready > finished > tired > idle。
    */
   private derivePetState(petState: PetState, healthScore: number, sessions: SessionView[]): PetState {
     if (petState === "level-up") return "level-up";
@@ -749,6 +750,8 @@ export class VibepawsServer {
       needs_you: sessions.filter((s) => s.is_active && s.state === "needs-you"),
       warning: sessions.filter((s) => s.is_active && s.state === "warning"),
       working: sessions.filter((s) => s.is_active && s.state === "working"),
+      delegating: sessions.filter((s) => s.is_active && s.state === "delegating"),
+      juggling: sessions.filter((s) => s.is_active && s.state === "juggling"),
       ready: sessions.filter((s) => s.is_active && s.state === "ready"),
       idle: sessions.filter((s) => s.is_active && s.state === "idle"),
     };

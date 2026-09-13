@@ -30,7 +30,7 @@ CREATE TABLE sessions (
   UNIQUE (agent, agent_session_id)
 );`;
 
-test("v1 老库升级：补上 token_exp_granted / needs_input_* 且数据不丢", () => {
+test("v1 老库升级：补上 token_exp_granted / needs_input_* / subagent_* 且数据不丢", () => {
   const db = new Database(":memory:");
   db.exec(V1_SESSIONS);
   db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','old','/p')").run();
@@ -38,9 +38,16 @@ test("v1 老库升级：补上 token_exp_granted / needs_input_* 且数据不丢
   assert.equal(applySchema(db), SCHEMA_VERSION);
 
   const cols = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((c) => c.name);
-  for (const col of ["token_exp_granted", "needs_input_since", "needs_input_kind", "ready_since"]) {
+  for (const col of [
+    "token_exp_granted", "needs_input_since", "needs_input_kind", "ready_since",
+    "subagent_count", "subagent_since",
+  ]) {
     assert.ok(cols.includes(col), `缺少列 ${col}`);
   }
+  // NOT NULL DEFAULT 0 的列补到老表上必须有值 —— 否则老 session 的计数是 NULL，
+  // 而 `NULL >= 2` 在 SQLite 里既不真也不假，subagent 判定会静默整场失效
+  const counted = db.prepare("SELECT subagent_count FROM sessions").get() as { subagent_count: number };
+  assert.equal(counted.subagent_count, 0);
   const row = db.prepare("SELECT agent_session_id, token_exp_granted FROM sessions").get() as {
     agent_session_id: string;
     token_exp_granted: number;

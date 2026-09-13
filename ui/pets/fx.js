@@ -8,6 +8,7 @@
  *
  * 所有图形都按 PX 对齐成方块，跟 sprite 烘出来的块状质感对上。
  */
+import { CANVAS } from "./motion.js";
 
 /** 特效的「像素」边长 */
 const PX = 4;
@@ -31,6 +32,9 @@ const C = {
   paper: "#e6edf3",
   star: "#ffd700",
   dim: "#8b949e",
+  /** subagent 轨道。与 ui/style.css 的 --busy 是同一个紫 —— 宠物身上和 session
+   *  列表里说的必须是同一件事、同一个颜色，否则用户得分别学两套暗号。 */
+  busy: "#a371f7",
 };
 
 /** 画在宠物**后面**的特效（升级光芒）；其余都盖在前面 */
@@ -77,11 +81,67 @@ function star(ctx, x, y, arm, color, alpha) {
 }
 
 /**
+ * 「分身」小方块最多画几个。
+ *
+ * 8 个 subagent 画 8 颗就是绕着宠物的一圈噪点 —— 而这个状态要传达的信息只有
+ * 「1 个」和「一堆」两档（landscape 0.11）。超过上限的那些由 session 列表里的
+ * 数字负责说清楚，宠物本体只负责让你在余光里看出档位。
+ */
+const HELPERS_MAX = 5;
+
+/** 逐颗微调半径的上限（1 ± 0.08），用来打散正多边形的排布 */
+const WOBBLE_MAX = 1.08;
+
+/**
+ * delegating / juggling：绕着宠物转的小方块，一个方块 = 一个在跑的 subagent。
+ *
+ * 为什么是轨道而不是头顶徽章：这个状态和 needs-you 会在同一只宠物上交替出现，
+ * 而头顶那块地方已经被「!」徽章占了 —— 两个都往头上画，余光里就分不出是哪个。
+ * 轨道还顺带把个数变成了可数的东西：1 颗慢慢绕，4 颗挤成一圈，不用读字就知道差别。
+ *
+ * 椭圆轨道是必须的：正圆的上下两点会顶出 canvas，而 canvas 只有 208px、精灵占掉 160px。
+ */
+function helpers(ctx, phase, box, count) {
+  const n = Math.max(1, Math.min(HELPERS_MAX, Math.round(count) || 1));
+  const cx = (box.x0 + box.x1) / 2;
+  const cy = (box.y0 + box.y1) / 2;
+  // 轨道必须按 **canvas 装得下多少** 收口，而不是只按精灵有多大摊开。
+  // 一只 160px 宽的宠物居中放在 208px 的画布上，左右各只剩 24px —— 想要的
+  // 「盒子外 3 格」在横向根本放不下，方块会被切在画布边上（而画布是透明窗口，
+  // 切掉的部分不是被裁剪，是直接消失，看起来像特效在随机丢帧）。
+  const edge = PX * 2.5; // 方块半边 PX*1.5 + blk 对格取整最多再吃掉 PX/2
+  const fitX = Math.min(cx, CANVAS - cx) - edge;
+  const fitY = Math.min(cy, CANVAS - cy) - edge;
+  // 竖向压到 0.55：椭圆而不是正圆，见上面的说明
+  const rx = Math.max(PX * 4, Math.min((box.x1 - box.x0) / 2 + PX * 3, fitX / WOBBLE_MAX));
+  const ry = Math.max(PX * 3, Math.min(((box.y1 - box.y0) / 2) * 0.55, fitY / WOBBLE_MAX));
+  // 固定紫，**不用**宠物主色：这是状态信号，不是装饰。跟着主色走的话，每只宠物的
+  // 「分身」都是不同颜色，而且在暖色系宠物身上会和 finished 的金色星星撞车。
+  // （rays 用主色是另一回事 —— 那是庆祝这只宠物自己。）
+  for (let i = 0; i < n; i++) {
+    // 每颗错开相位；半径逐颗微调，免得 n 颗排成一个僵硬的正多边形
+    const ang = phase + (i / n) * Math.PI * 2;
+    const wobble = 1 + ((i % 3) - 1) * (WOBBLE_MAX - 1);
+    const x = cx + Math.cos(ang) * rx * wobble;
+    const y = cy + Math.sin(ang) * ry * wobble;
+    // 远端（sin > 0，画面下方）稍暗：一点纵深，免得看起来像贴在玻璃上的贴纸
+    ctx.save();
+    ctx.globalAlpha = 0.55 + (1 - (Math.sin(ang) + 1) / 2) * 0.45;
+    ctx.fillStyle = C.paper;
+    blk(ctx, x - PX * 1.5, y - PX * 1.5, 3, 3); // 描边：浅色宠物身上也读得出来
+    ctx.fillStyle = C.busy;
+    blk(ctx, x - PX, y - PX, 2, 2);
+    ctx.restore();
+  }
+}
+
+/**
  * 画特效。
  * @param box 精灵在 canvas 上的包围盒（来自 motion.spriteAabb）——
  *            特效贴着头顶/脚边，所以必须跟着精灵一起动。
+ * @param count 只有 `helpers` 用：在跑的 subagent 个数（0/缺省当 1 画）。
  */
-export function drawFx(ctx, kind, phase, box, accent) {
+export function drawFx(ctx, kind, phase, box, accent, count = 0) {
   const s = Math.sin(phase);
   const headX = (box.x0 + box.x1) / 2;
   const headY = box.y0;
@@ -161,6 +221,10 @@ export function drawFx(ctx, kind, phase, box, accent) {
         ctx.restore();
       }
       ctx.restore();
+      break;
+    }
+    case "helpers": {
+      helpers(ctx, phase, box, count);
       break;
     }
     case "dust": {

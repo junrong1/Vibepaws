@@ -86,6 +86,33 @@ test("decision_required kind=Stop → ready（待命），stateSnapshot 有 read
   assert.equal(after.ready.length, 0);
 });
 
+test("subagent 分档一路推到 SSE：working 组不再吞掉派了活的 session（0.11）", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "agent_working", payload: { tool_name: "Read" } }));
+  server.handleEvent(ev({ event_type: "subagent_started", payload: { tool_name: "Task" } }));
+
+  const one = server.stateSnapshot();
+  assert.equal(one.pet.state, "delegating");
+  assert.equal(one.delegating.length, 1);
+  assert.equal(one.working.length, 0, "派了活的 session 不该同时算在 working 组里");
+  assert.equal(one.sessions[0]!.subagent_count, 1, "界面要靠它画轨道上的方块");
+
+  server.handleEvent(ev({ event_type: "subagent_started", payload: { tool_name: "Task" } }));
+  const two = server.stateSnapshot();
+  assert.equal(two.pet.state, "juggling");
+  assert.equal(two.juggling.length, 1);
+  assert.equal(two.delegating.length, 0);
+
+  // 两个分身都回来了：落回 working —— 不是 finished（clawd #214）
+  server.handleEvent(ev({ event_type: "subagent_stopped", payload: {} }));
+  server.handleEvent(ev({ event_type: "subagent_stopped", payload: {} }));
+  const done = server.stateSnapshot();
+  assert.equal(done.pet.state, "working");
+  assert.equal(done.working.length, 1);
+  assert.equal(done.juggling.length, 0);
+});
+
 test("needs-you 不会因为通知过期而自己消失（agent 还在等）", () => {
   const server = makeServer();
   server.handleEvent(ev({ payload: { source: "startup" } }));

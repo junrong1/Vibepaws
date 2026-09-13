@@ -1,7 +1,8 @@
 /**
  * Session Registry — 跨 session 管理核心（架构 §2.3）。
  * 数据源：事件流。生命周期由 session_started 的 source 推断。
- * 宠物聚合状态：needs-you > warning > working > idle（finished/tired/level-up 由宠物引擎设置）。
+ * 宠物聚合状态：needs-you > warning > juggling > delegating > working > ready > idle
+ * （finished/tired/level-up 由宠物引擎设置）。
  */
 import type Database from "better-sqlite3";
 import { isReclaimed } from "./events.ts";
@@ -59,6 +60,10 @@ export class SessionRegistry {
         if (existing) {
           this.clearNeedsInput(ev);
           this.clearReady(ev);
+          // 一个（重新）开始的 session 手上没有分身：resume / clear / compact 都发生在
+          // 两轮之间，上一轮派出去的 subagent 不可能还活着。这是计数漂移的**确定性**
+          // 排水口 —— 漏收的 stop 最迟在下一次 SessionStart 被冲掉，不必靠超时兜。
+          this.clearSubagents(ev);
         }
         if (source === "resume" || source === "continue") {
           if (existing) {
@@ -194,8 +199,45 @@ export class SessionRegistry {
 
       case "subagent_started": {
         this.ensureSession(ev);
+        // 加一 + 记下「第一个分身出发」的时刻（COALESCE：第 2、3 个不该重置这个起点）。
+        // subagent 在跑 = agent 在干活，所以同时刷 last_working_at —— 一次派出去跑
+        // 十分钟的 Task 期间主 agent 一条工具调用都不会发，不刷的话 session 会在
+        // 分身还没回来的时候先掉进 idle。
         db.prepare(
-          `UPDATE sessions SET last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
+          `UPDATE sessions
+             SET subagent_count = subagent_count + 1,
+                 subagent_since = COALESCE(subagent_since, ?),
+                 last_event_at=?, last_working_at=?
+           WHERE agent=? AND agent_session_id=?`,
+        ).run(ev.timestamp, ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
+        break;
+      }
+
+      case "subagent_stopped": {
+        this.ensureSession(ev);
+        // 减一，夹在 0（漏掉一条 start 时不能减成负数 —— 负计数会让后面的
+        // `count >= 1` 判定永远失效，等于把这个 session 的 subagent 态整场关掉）。
+        //
+        // **这里刻意什么都不结算**（clawd #214）：不写 finished_at，也不调
+        // clearNeedsInput。一个分身回来了不等于这一轮结束了 —— 主 agent 通常正拿着
+        // 它的结果继续干。把这条当成收工，用户就会在 agent 还在跑的时候走开，
+        // 而这正是 0.11 明确要求躲开的那个 bug。计数归 0 时状态回落 working，
+        // 不经过 ready，也不经过 finished。
+        //
+        // 计数归 0 的同时还要把 ready 标记**丢掉**，因为它已经被判定为可疑：一条在
+        // 分身还在跑的时候到达的「一轮结束」，要么来自漏收的 stop，要么就是把分身收工
+        // 当成了主任务收工（sessionState 里因此让它排在 subagent 后面）。留着的话，
+        // 它会在最后一个分身回来的那一刻原地复活 —— 宠物正好在这一秒说「干完了，等你」，
+        // 也就是把 #214 延后一个事件又演了一遍。代价是可能漏掉一次真的待命：那只会让
+        // session 停在 working 直到自然回落 idle，而下一轮真正的 Stop 会重新置位。
+        // 少说一次「待命」比错说一次「干完了」便宜得多。
+        db.prepare(
+          `UPDATE sessions
+             SET subagent_count = MAX(subagent_count - 1, 0),
+                 subagent_since = CASE WHEN subagent_count - 1 <= 0 THEN NULL ELSE subagent_since END,
+                 ready_since = CASE WHEN subagent_count - 1 <= 0 THEN NULL ELSE ready_since END,
+                 last_event_at=?, last_working_at=?
+           WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
         break;
       }
@@ -207,7 +249,8 @@ export class SessionRegistry {
         const reason = ev.payload.reason ?? "completion";
         const outcome = ev.payload.outcome ?? "success";
         db.prepare(
-          `UPDATE sessions SET is_active=0, finished_at=?, outcome=?, last_event_at=?
+          `UPDATE sessions SET is_active=0, finished_at=?, outcome=?, last_event_at=?,
+             subagent_count=0, subagent_since=NULL
            WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, outcome, ev.timestamp, ev.agent, ev.session_id);
         void reason;
@@ -231,6 +274,16 @@ export class SessionRegistry {
       .prepare(
         `UPDATE sessions SET needs_input_since=NULL, needs_input_kind=NULL
          WHERE agent=? AND agent_session_id=? AND needs_input_since IS NOT NULL`,
+      )
+      .run(ev.agent, ev.session_id);
+  }
+
+  /** session 生命周期事件 → 手上的分身一律归零（计数漂移的排水口，见调用处） */
+  private clearSubagents(ev: CoreEvent): void {
+    this.db
+      .prepare(
+        `UPDATE sessions SET subagent_count=0, subagent_since=NULL
+         WHERE agent=? AND agent_session_id=? AND subagent_count<>0`,
       )
       .run(ev.agent, ev.session_id);
   }
@@ -286,7 +339,8 @@ export class SessionRegistry {
   /** session 视图共用的列清单（listSessions 与 sessionView 必须取一样的字段） */
   private static readonly VIEW_COLUMNS = `agent, agent_session_id as session_id, project_id, title, is_active,
                 token_used, context_pct, correction_count, last_event_at, last_working_at, finished_at,
-                needs_input_since, ready_since, parent_id, outcome, goal, budget_tokens`;
+                needs_input_since, ready_since, subagent_count, subagent_since,
+                parent_id, outcome, goal, budget_tokens`;
 
   /** 全部 session 视图（按最后活动倒序） */
   listSessions(limit = 50): SessionView[] {
@@ -360,6 +414,8 @@ export class SessionRegistry {
       finished_at: (r.finished_at as string | null) ?? null,
       needs_input_since: (r.needs_input_since as string | null) ?? null,
       ready_since: (r.ready_since as string | null) ?? null,
+      subagent_count: (r.subagent_count as number) ?? 0,
+      subagent_since: (r.subagent_since as string | null) ?? null,
       goal: (r.goal as string | null) ?? null,
       budget_tokens: (r.budget_tokens as number | null) ?? null,
       is_active: (r.is_active as number) === 1,
@@ -400,24 +456,46 @@ export class SessionRegistry {
       )
       .get(agent, sessionId);
     if (warn) return "warning";
+    // 先算「还在干活吗」。subagent 态是 working 的**细分**，不是与它并列的第四个分支 ——
+    // 所以它必须共用同一个新鲜度判定：一个已经 20 分钟没动静的 session，哪怕计数还挂着
+    // 3 个没收回的分身，显示的也该是 idle。这是计数漂移的第三道闸（前两道：减法夹 0、
+    // 生命周期归零），也是它不需要自己的超时常量的原因。
+    const working = this.isWorking(r);
+    if (working) {
+      // subagent 排在 ready 前面：主 agent 不可能在自己的分身还在跑的时候「待命」。
+      // 计数 > 0 时若同时挂着 ready 标记，那个标记要么来自漏收的 stop，要么正是
+      // clawd #214 那种「把分身收工当成任务收工」—— 两种情况下显示「待命」都是在
+      // 告诉用户可以走了，而 agent 还在跑。
+      const subs = (r.subagent_count as number) ?? 0;
+      if (subs >= 2) return "juggling";
+      if (subs === 1) return "delegating";
+    }
     // ready：一轮结束待命（非阻塞），保鲜期 READY_MAX_MS，超时后自然回落 idle
     const readySince = r.ready_since as string | null;
     if (readySince) {
       const since = new Date(readySince).getTime();
       if (Number.isFinite(since) && Date.now() - since < READY_MAX_MS) return "ready";
     }
-    // working 只看「真干活」的最近时刻（last_working_at），而不是 last_event_at：
-    // session_started 这类生命周期事件会刷 last_event_at，一旦共用就会让
-    // 「刚启动、一条命令没输」的 session 也显示 working。空值 = 从没干过活 → idle。
-    const workedAt = (r.last_working_at as string | null) ?? null;
-    if (!workedAt) return "idle";
-    const last = new Date(workedAt).getTime();
-    if (!Number.isFinite(last)) return "idle";
-    return Date.now() - last > 15 * 60_000 ? "idle" : "working";
+    return working ? "working" : "idle";
   }
 
   /**
-   * 聚合宠物状态：needs-you > warning > working > ready > finished > idle。
+   * 「真干活」的最近时刻（last_working_at）还在 15 分钟窗口内吗。
+   *
+   * 看的是 last_working_at 而不是 last_event_at：session_started 这类生命周期事件会刷
+   * last_event_at，一旦共用就会让「刚启动、一条命令没输」的 session 也显示 working。
+   * 空值 = 从没干过活 → 不算在干活。
+   */
+  private isWorking(r: Record<string, unknown>): boolean {
+    const workedAt = (r.last_working_at as string | null) ?? null;
+    if (!workedAt) return false;
+    const last = new Date(workedAt).getTime();
+    if (!Number.isFinite(last)) return false;
+    return Date.now() - last <= 15 * 60_000;
+  }
+
+  /**
+   * 聚合宠物状态：needs-you > warning > juggling > delegating > working > ready > finished > idle。
    * `sessions` 可传入已算好的列表 —— 每次事件都重新查一遍会让 listSessions
    * 的 per-session 子查询翻倍（一次事件几百条 SQL）。
    */
@@ -425,15 +503,23 @@ export class SessionRegistry {
     if (overrides && overrides !== "idle") return overrides;
     const list = sessions ?? this.listSessions(100);
     let hasNeeds = false, hasWarning = false, hasWorking = false, hasReady = false;
+    // 全桌面的 subagent **总数**，不是「有几个 session 在 delegating」。
+    // clawd #862 就是没升上去的那一档：两个 session 各派 1 个分身，桌面上同时跑着的
+    // 就是 2 个 —— 宠物该 juggling。按 session 数聚合会把这种情况显示成 delegating，
+    // 而「1 个」和「一堆」恰恰是这个状态唯一要传达的信息。
+    let subagents = 0;
     for (const s of list) {
       if (!s.is_active) continue;
+      if (s.state === "delegating" || s.state === "juggling") subagents += s.subagent_count;
       if (s.state === "needs-you") hasNeeds = true;
       else if (s.state === "warning") hasWarning = true;
-      else if (s.state === "working") hasWorking = true;
+      else if (s.state === "working" || s.state === "delegating" || s.state === "juggling") hasWorking = true;
       else if (s.state === "ready") hasReady = true;
     }
     if (hasNeeds) return "needs-you";
     if (hasWarning) return "warning";
+    if (subagents >= 2) return "juggling";
+    if (subagents === 1) return "delegating";
     if (hasWorking) return "working";
     if (hasReady) return "ready";
     // 刚收工：短暂庆祝一下再回 idle（README 6.1 的 finished 态）。

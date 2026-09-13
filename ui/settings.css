@@ -18,6 +18,8 @@
   --warn: #f0883e;
   --danger: #f85149;
   --ok: #3fb950;
+  /* subagent 两档（见 ui/style.css 的同名变量） */
+  --busy: #a371f7;
   --input: #0d1117;
   --pixel: "SF Mono", Menlo, Consolas, monospace;
 }
@@ -167,6 +169,7 @@ button:hover:enabled { border-color: var(--accent); color: var(--accent); }
   flex-shrink: 0;
 }
 .session-state.working { color: var(--accent); border-color: var(--accent); }
+.session-state.delegating, .session-state.juggling { color: var(--busy); border-color: var(--busy); }
 .session-state.ready { color: var(--ok); border-color: var(--ok); }
 .session-state.needs-you { color: var(--danger); border-color: var(--danger); }
 .session-state.warning { color: var(--warn); border-color: var(--warn); }

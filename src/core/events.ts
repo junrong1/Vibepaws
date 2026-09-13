@@ -110,7 +110,7 @@ export function isReclaimed(outcome: string | null | undefined): boolean {
 }
 
 /**
- * 宠物聚合状态（8 态，README 6.1 / 架构 §2.3）。
+ * 宠物聚合状态（10 态，README 6.1 / 架构 §2.3）。
  *
  * ## ready 状态设计契约（单一事实来源）
  *
@@ -122,7 +122,7 @@ export function isReclaimed(outcome: string | null | undefined): boolean {
  *                                           → ready（非阻塞：一轮结束，待命）
  *   permission_required（任何来源）          → needs-you（阻塞：停下等批准）
  *
- * 聚合优先级（高 → 低）：needs-you > warning > working > ready > idle
+ * 聚合优先级（高 → 低）：needs-you > warning > juggling > delegating > working > ready > idle
  * （finished / tired / level-up 由宠物引擎叠加，不在这个排序里）
  *
  * ready 保鲜期：READY_MAX_MS = 15 min（与 idle 阈值一致，见 registry.ts）；
@@ -133,17 +133,44 @@ export function isReclaimed(outcome: string | null | undefined): boolean {
  * ready 帧（渲染兜底到 base），程序生成宠物（ui/pets/procedural.js）的 stateExpr
  * 显式映射到 normal。加独立素材前，宠物本体在 ready 时与 idle 一致，只有 session
  * 圆点（.s-state.ready）是绿色的。
+ *
+ * ## subagent 态设计契约（delegating / juggling，landscape 20c / 0.11）
+ *
+ * `subagent_started` / `subagent_stopped` 维护 `sessions.subagent_count`，它把
+ * `working` 细分成三档：
+ *
+ *   count = 0  → working      自己干
+ *   count = 1  → delegating   派出去 1 个，自己在等
+ *   count ≥ 2  → juggling     同时盯着好几个
+ *
+ * 三条约束，每条对应一个在别家产品上真实发生过的 bug：
+ *
+ *   ① **subagent 收工不是任务收工**（clawd #214）。`subagent_stopped` 只做减法，
+ *      绝不写 `ready_since` / `finished_at`，也不清 `needs_input_since` ——
+ *      「一个分身回来了」和「这一轮结束了」是两件事，混起来就是告诉用户可以走了。
+ *   ② **1 → 2+ 必须升档**（clawd #862）。宠物聚合看的是全部活跃 session 的 subagent
+ *      **总数**，不是「有没有 session 在 delegating」—— 两个 session 各派 1 个，
+ *      桌面上同时跑着的就是 2 个，宠物该 juggling。
+ *   ③ **subagent 态排在 ready 前面**。主 agent 不可能在自己的分身还在跑的时候「待命」，
+ *      所以计数 > 0 时的 ready 标记是可疑的（漏收的 stop，或 ① 那种误判），
+ *      按 subagent 态渲染。反过来把「还有 3 个在跑」显示成「待命」正是 #214 的症状。
+ *
+ * 视觉：与 ready 一样没有独立立绘 —— 渲染层回落到 working 帧（ui/pets/registry.js
+ * 的 FRAME_FALLBACK），差异由动作（delegating 沉稳、juggling 急促）和绕着宠物转的
+ * 小方块（ui/pets/fx.js 的 `helpers`，个数 = subagent 数）表达。
  */
 export type PetState =
-  | "idle" | "working" | "needs-you" | "warning"
+  | "idle" | "working" | "delegating" | "juggling" | "needs-you" | "warning"
   | "ready" | "finished" | "tired" | "level-up";
 
 export const PET_STATES: PetState[] = [
-  "idle", "working", "needs-you", "warning", "ready", "finished", "tired", "level-up",
+  "idle", "working", "delegating", "juggling", "needs-you", "warning",
+  "ready", "finished", "tired", "level-up",
 ];
 
 /** Session 状态（Registry 内部） */
-export type SessionState = "idle" | "working" | "needs-you" | "warning" | "ready" | "finished";
+export type SessionState =
+  | "idle" | "working" | "delegating" | "juggling" | "needs-you" | "warning" | "ready" | "finished";
 
 /** 聚合后的 session 视图（SSE /api/state 输出） */
 export interface SessionView {
@@ -161,6 +188,10 @@ export interface SessionView {
   needs_input_since: string | null;
   /** agent 一轮结束待命的起始时刻（ISO），null = 不待命 */
   ready_since: string | null;
+  /** 当前在跑的 subagent 个数（0 = 没有）。1 vs 2+ 渲染成不同状态 */
+  subagent_count: number;
+  /** 计数从 0 变成 1 的那一刻（ISO），null = 当前没有 subagent */
+  subagent_since: string | null;
   /** 这次要做什么（设置窗口录入）。有 goal → topic_multiplier 1.1，也是漂移判定的基准 */
   goal: string | null;
   /** 本 session 的 token 预算；null = 跟随设置里的全局默认 */
@@ -207,7 +238,11 @@ export interface PetStatePush {
   mute: { global_until: number | null; global_minutes: number | null };
   needs_you: SessionView[];
   warning: SessionView[];
+  /** 自己干活的 session。**不含** delegating / juggling —— 那两档单独成组，
+   * 否则「有没有 subagent 在跑」这件事在 API 层面又被压回一个扁平的 working。 */
   working: SessionView[];
+  delegating: SessionView[];
+  juggling: SessionView[];
   ready: SessionView[];
   idle: SessionView[];
 }

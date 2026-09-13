@@ -11,7 +11,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { drawFx, FX_BEHIND } from "./fx.js";
+import { CANVAS, motionAt, spriteAabb } from "./motion.js";
+
+const roster = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./index.json", import.meta.url)), "utf8"),
+).pets;
 
 /** 记下所有 fillRect 及其当时的 fillStyle */
 function recorder() {
@@ -42,7 +49,7 @@ function coverage(rects) {
 }
 
 test("每个特效都画了东西", () => {
-  for (const kind of ["exclaim", "alert", "zzz", "sparkle", "rays", "dust"]) {
+  for (const kind of ["exclaim", "alert", "zzz", "sparkle", "rays", "dust", "helpers"]) {
     const { ctx, rects } = recorder();
     drawFx(ctx, kind, Math.PI / 2, BOX, "#f89828");
     assert.ok(rects.length > 0, `${kind} 什么都没画`);
@@ -101,21 +108,76 @@ test("warning 三角：实心，没有被劈开的空洞", () => {
 
 test("rays 画在宠物后面，其余画在前面", () => {
   assert.ok(FX_BEHIND.has("rays"), "升级光芒应该在宠物后面");
-  for (const kind of ["exclaim", "alert", "zzz", "sparkle", "dust"]) {
+  for (const kind of ["exclaim", "alert", "zzz", "sparkle", "dust", "helpers"]) {
     assert.ok(!FX_BEHIND.has(kind), `${kind} 不该画在宠物后面`);
   }
 });
 
 test("特效跟着精灵的包围盒走，不会画到 canvas 外", () => {
   const CANVAS = 208;
-  for (const kind of ["exclaim", "alert", "zzz", "sparkle", "dust"]) {
+  for (const kind of ["exclaim", "alert", "zzz", "sparkle", "dust", "helpers"]) {
     for (const phase of [0, Math.PI / 3, Math.PI / 2, Math.PI, 4.7]) {
       const { ctx, rects } = recorder();
-      drawFx(ctx, kind, phase, BOX, "#f89828");
+      drawFx(ctx, kind, phase, BOX, "#f89828", 5);
       for (const r of rects) {
         assert.ok(r.x >= -8 && r.x + r.w <= CANVAS + 8,
           `${kind} 在 phase=${phase.toFixed(1)} 横向出界: x=${r.x} w=${r.w}`);
         assert.ok(r.y >= -8, `${kind} 在 phase=${phase.toFixed(1)} 顶部出界: y=${r.y}`);
+      }
+    }
+  }
+});
+
+/* ---------------- helpers：subagent 轨道（landscape 0.11） ---------------- */
+
+/** helpers 的方块是描边 + 芯两层，一颗 = 2 个 fillRect */
+function helperCount(rects) {
+  return rects.length / 2;
+}
+
+test("helpers：一个 subagent 一颗方块，个数就是那条信息", () => {
+  for (const n of [1, 2, 3, 4, 5]) {
+    const { ctx, rects } = recorder();
+    drawFx(ctx, "helpers", 0.7, BOX, "#f89828", n);
+    assert.equal(helperCount(rects), n, `${n} 个 subagent 应该画 ${n} 颗`);
+  }
+});
+
+test("helpers：超过上限只画上限颗 —— 8 颗是噪点，不是信息", () => {
+  for (const n of [6, 9, 40]) {
+    const { ctx, rects } = recorder();
+    drawFx(ctx, "helpers", 0.7, BOX, "#f89828", n);
+    assert.equal(helperCount(rects), 5, `${n} 个 subagent 也只该画 5 颗`);
+  }
+});
+
+test("helpers：计数缺失/为 0 时仍画一颗，而不是什么都不画", () => {
+  // 这个分支真会走到：状态由 Core 判定，而画帧用的是界面自己那份 session 列表，
+  // 两者差半个推送周期。空轨道配上 delegating 的动作，看起来就是「特效坏了」。
+  for (const n of [undefined, 0, -3]) {
+    const { ctx, rects } = recorder();
+    drawFx(ctx, "helpers", 0.7, BOX, "#f89828", n);
+    assert.equal(helperCount(rects), 1, `count=${n} 时应兜底画 1 颗`);
+  }
+});
+
+test("helpers：一整圈转下来都不出 canvas（轨道在精灵包围盒之外，这是唯一会出界的特效）", () => {
+  // 别的特效贴在包围盒的边上，helpers 是**绕到盒子外面**去的 —— 出界风险高一个量级，
+  // 所以这里不拿一个写死的盒子对付，而是用每只宠物、每个动作相位下的真实包围盒：
+  // 盒子本身就在随 bob / squash / rot 变，只在静止的盒子上测等于没测。
+  for (const p of roster) {
+    for (const state of ["delegating", "juggling"]) {
+      for (let i = 0; i < 48; i++) {
+        const elapsed = (i / 48) * 3000;
+        const m = motionAt(state, elapsed, p.h, p.motion);
+        const box = spriteAabb(m, p.w, p.h, p.anchor.feetX);
+        const { ctx, rects } = recorder();
+        drawFx(ctx, "helpers", m.phase, box, p.accent, 5);
+        for (const r of rects) {
+          const where = `${p.slug} / ${state} / t=${elapsed.toFixed(0)}`;
+          assert.ok(r.x >= 0 && r.x + r.w <= CANVAS, `${where} 横向出界: x=${r.x} w=${r.w}`);
+          assert.ok(r.y >= 0 && r.y + r.h <= CANVAS, `${where} 纵向出界: y=${r.y} h=${r.h}`);
+        }
       }
     }
   }

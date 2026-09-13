@@ -48,7 +48,7 @@ coding agent 很擅长干活，很不擅长引起你的注意，而在「它什�
 
 | | |
 | --- | --- |
-| ✅ **今天可用** | 七状态桌面宠物 · 一条完整的三阶段进化家族 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· 三档宠物大小 · 每块屏各记一个位置，可跟随可固定 · hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 · 已签名 + 已公证的 macOS 发布流水线（Apple 凭据自备） |
+| ✅ **今天可用** | 十状态桌面宠物，含 subagent 感知的 **派活中** / **多线并行** · 一条完整的三阶段进化家族 · 决策/权限气泡 · context 警告 · EXP / 等级 · 静音（30m / 2h / 项目 / session）· 设置窗口（预算、警告阈值、session 目标、宠物名、语言）· 三档宠物大小 · 每块屏各记一个位置，可跟随可固定 · hook 开销计数器 · 崩溃会话回收 · Claude Code + Codex + pi + dsh adapter · 通用 JSONL bridge · 事件模拟器 · 隐私白名单 · 已签名 + 已公证的 macOS 发布流水线（Apple 凭据自备） |
 | ⚠️ **部分完成** | 计划 12 只 starter pet，目前 5 只 · topic drift 通路已通但规则还薄 |
 | ❌ **还没有** | 语音命令（STT）· 图形化首启动向导 · 任何社交功能（画廊、排行榜、交易） |
 
@@ -131,6 +131,7 @@ npm run sim -- --scenario context_overload    # context 88% → 96% → 警告 +
 npm run sim -- --scenario correction_loop     # 反复改同一文件 → correction 计数
 npm run sim -- --scenario multi_session       # 3 个 session 并行 → 聚合状态 + 轮播
 npm run sim -- --scenario crashed_session     # agent 卡在提问上崩掉 → 一分钟内被回收
+npm run sim -- --scenario subagent_fanout     # 1 → 3 个分身 → 收回到 1 → 回 working（不是「干完了」）
 ```
 
 如果宠物对 `normal` 有反应，说明安装没问题。接下来接真实 agent。
@@ -248,6 +249,22 @@ npm run bridge   # 同时监听两处目录，归一化后转发给 Core
 </table>
 
 多个 session 并行时，宠物显示的是所有 session 里**最紧急**的那个状态；浮层里再逐条展开。
+
+### 另外三个状态，没有另外三张立绘
+
+`ready`、`delegating`、`juggling` 复用上面这几张立绘。它们说的是**agent 在干什么**，不是宠物什么心情；真要画，每只宠物就要多三张 —— 今天 15 张，按计划的宠物数是 36 张 —— 而这条信息本来就是动作更擅长表达的。
+
+- **`ready`（待命）** —— 一轮结束，没有什么被卡住。借 `idle` 立绘，session 圆点变绿。
+- **`delegating`（派活中）** —— 有 1 个 subagent 在跑。借 `working` 立绘，但动作**比自己干活时更慢**：活派出去了，它在盯着。身边绕一颗紫色小方块。
+- **`juggling`（多线并行）** —— 2 个及以上。同一张立绘，更快、更晃，一个 subagent 一颗方块（最多五颗）。
+
+subagent 现在是常规操作，而扁平的 `working` 把它们全藏起来了：一只正在改文件的宠物，和一只在等四个并行 Task 的宠物，长得一模一样。两条规则让这个区分可信：
+
+**一个分身回来了，不等于这件事干完了。** 最后一个分身返回时，宠物回到 `working` —— 不是 `finished`，也不是「等你」。这个产品的全部意义就是让你知道什么时候可以走开，而一个 Task 返回并不是那一刻。
+
+**计数是整张桌面的。** 两个 session 各派 1 个，桌面上跑着的就是 2 个，宠物该 juggling。按 session 数来分档会把这种情况显示成 `delegating`，而「一个」和「一堆」恰恰是这个状态唯一要说的话。
+
+确切的数字在浮层里（`多线并行 ×4`）—— 绕着转的方块到五颗就数不清了。
 
 ### 点击宠物
 
@@ -465,7 +482,7 @@ claude_code hooks ─┐                 ┌────────────
 codex hooks ───────┤  HTTP + token   │ Event ingress             │             ┌───────────┐
 pi extension ──────┼───────────────► │  ↓ 校验 / 去重            │    SSE      │ 宠物状态   │
 generic JSONL ─────┤  127.0.0.1      │ Session registry          │ ──────────► │ 气泡      │
-simulator ─────────┘                 │  ↓ 聚合 7 状态            │             │ 浮层      │
+simulator ─────────┘                 │  ↓ 聚合 10 状态           │             │ 浮层      │
                                      │ 通知引擎                  │             │ EXP 条    │
       （Core 离线？                  │ EXP / 健康 / 进化引擎     │             └───────────┘
        → JSONL + bridge）            │ SQLite: pets / sessions / │

@@ -353,3 +353,147 @@ test("pid 随事件记录：同一个 pid 来两次才确认（探活的输入�
   reg.handle(ev({ event_type: "token_update", payload: { tokens: 100 } }));
   assert.deepEqual(read(), { agent_pid: 9090, agent_pid_confirmed: 1 });
 });
+
+/* ---------------- subagent 两档（landscape 0.11 / clawd #214 #862） ---------------- */
+
+/** 让这个 session 处于「在干活」：subagent 态是 working 的细分，不干活就没有它 */
+function working(reg: SessionRegistry): void {
+  reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Read" } }));
+}
+
+test("subagent 计数：0 → working，1 → delegating，2+ → juggling", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  assert.equal(reg.listSessions()[0]!.state, "working");
+
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  assert.equal(reg.listSessions()[0]!.state, "delegating");
+  assert.equal(reg.aggregatePetState(), "delegating");
+
+  // 1 → 2 必须升档（clawd #862：没升上去就是这个 bug）
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  const two = reg.listSessions()[0]!;
+  assert.equal(two.state, "juggling");
+  assert.equal(two.subagent_count, 2);
+  assert.equal(reg.aggregatePetState(), "juggling");
+
+  // 收回一个 → 退回 delegating，再收回 → working
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+  assert.equal(reg.listSessions()[0]!.state, "delegating");
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+  const back = reg.listSessions()[0]!;
+  assert.equal(back.state, "working");
+  assert.equal(back.subagent_count, 0);
+  assert.equal(back.subagent_since, null);
+});
+
+test("subagent 收工不是任务收工：既不 finished 也不 ready（clawd #214）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+
+  const s = reg.listSessions()[0]!;
+  assert.equal(s.state, "working", "分身回来了 ≠ 这一轮结束了");
+  assert.equal(s.is_active, true, "分身回来了 ≠ session 结束了");
+  assert.equal(s.ready_since, null, "subagent_stopped 不该写「待命」标记");
+  assert.equal(s.finished_at, null, "subagent_stopped 不该写 finished_at");
+  assert.equal(reg.aggregatePetState(), "working", "宠物不该在这一刻庆祝");
+});
+
+test("subagent 在跑时不显示「待命」：ready 标记让位给 juggling（clawd #214）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  // 一条非阻塞的「一轮结束」混进来（漏收的 stop，或把分身收工当成主任务收工）
+  reg.handle(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+
+  assert.equal(reg.listSessions()[0]!.state, "juggling", "还有 2 个分身在跑，不能说「待命」");
+  assert.equal(reg.aggregatePetState(), "juggling");
+
+  // 分身回来后那条可疑的「待命」不能原地复活 —— 否则宠物正好在最后一个分身返回的
+  // 那一秒说「干完了」，只是把 #214 延后了一个事件
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+  const drained = reg.listSessions()[0]!;
+  assert.equal(drained.ready_since, null, "分身在跑时到达的 ready 标记已被判定可疑，不该留着");
+  assert.equal(drained.state, "working");
+});
+
+test("等你 > subagent：分身在跑也挡不住「需要你」", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  reg.handle(ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }));
+  assert.equal(reg.listSessions()[0]!.state, "needs-you");
+  assert.equal(reg.aggregatePetState(), "needs-you");
+});
+
+test("跨 session 升档：两个 session 各派 1 个 → 宠物 juggling（clawd #862）", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  for (const id of ["a", "b"]) {
+    reg.handle(ev({ session_id: id, payload: { source: "startup" } }));
+    reg.handle(ev({ session_id: id, event_type: "agent_working", payload: { tool_name: "Read" } }));
+    reg.handle(ev({ session_id: id, event_type: "subagent_started", payload: {} }));
+  }
+  const list = reg.listSessions();
+  assert.deepEqual(list.map((s) => s.state).sort(), ["delegating", "delegating"]);
+  assert.equal(reg.aggregatePetState(), "juggling", "桌面上同时跑着 2 个分身");
+});
+
+test("计数不会减成负数：多出来的 subagent_stopped 夹在 0", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+  reg.handle(ev({ event_type: "subagent_stopped", payload: {} }));
+  assert.equal(reg.listSessions()[0]!.subagent_count, 0);
+  // 负数会让后面真正的 subagent_started 升不到 delegating —— 那才是这条断言守的东西
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  assert.equal(reg.listSessions()[0]!.state, "delegating");
+});
+
+test("session 生命周期归零计数：收工与重启都不留下没收回的分身", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  const count = () =>
+    (db.prepare("SELECT subagent_count AS c FROM sessions").get() as { c: number }).c;
+
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  reg.handle(ev({ event_type: "session_finished", payload: { outcome: "success" } }));
+  assert.equal(count(), 0, "收工后不该还挂着分身");
+
+  // 漏收 stop 的那条路：重新开一轮（resume/compact）就把计数冲掉
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  assert.equal(count(), 1);
+  reg.handle(ev({ payload: { source: "resume" } }));
+  assert.equal(count(), 0, "新的一轮手上没有上一轮的分身");
+});
+
+test("不干活的 session 不显示 subagent 态：漏收的计数最多挂 15 分钟", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  reg.handle(ev({ payload: { source: "startup" } }));
+  working(reg);
+  reg.handle(ev({ event_type: "subagent_started", payload: {} }));
+  assert.equal(reg.listSessions()[0]!.state, "delegating");
+
+  // 20 分钟没有任何动静：计数还挂着 1，但这个 session 早就不在干活了
+  const old = new Date(Date.now() - 20 * 60_000).toISOString();
+  db.prepare("UPDATE sessions SET last_working_at=?, last_event_at=?").run(old, old);
+  assert.equal(reg.listSessions()[0]!.state, "idle", "没在干活就没有 subagent 态");
+  assert.equal(reg.aggregatePetState(), "idle");
+});

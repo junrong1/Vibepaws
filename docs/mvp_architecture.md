@@ -42,7 +42,7 @@
 │  │ 校验/去重/落库   │   │ 全局发现/聚合/分组    │   │ 5s 气泡/轮播/去重/   │  │
 │  └────────────────┘   │ 按 project 分组       │   │ mute(30m/2h/proj)   │  │
 │                       │ 最后活跃记忆          │   └─────────┬───────────┘  │
-│                       │ 状态机(7 状态聚合)     │             │ SSE 推送
+│                       │ 状态机(10 状态聚合)    │             │ SSE 推送
 │                       └──────────┬──────────┘   ┌─────────▼───────────┐  │
 │  ┌────────────────┐   ┌──────────▼──────────┐   │ UI 客户端             │  │
 │  │ 宠物内容注册表   │   │ EXP/健康/进化引擎     │   │ (气泡/状态/浮层/EXP条) │  │
@@ -131,8 +131,12 @@ pi 插件的能力声明 `PI_CAPABILITIES`（`session_started / agent_working / 
 session 主键: (agent, agent_session_id)      ← 跨 agent 天然隔离
 聚合键:       project_id（cwd 归一化）        ← 按项目分组
 树:           parent_id / branch             ← subagent、fork、compact 链（P0 alpha，尽力而为）
-状态机:       idle/working/needs-you/warning/finished/tired/level-up
-聚合宠物状态: 所有活跃 session 按优先级合并: needs-you > warning > working > idle
+状态机:       idle/working/delegating/juggling/needs-you/warning/ready/finished/tired/level-up
+              delegating(1 个 subagent) 与 juggling(2+) 是 working 的细分，由
+              sessions.subagent_count 分档（landscape 0.11）
+聚合宠物状态: 所有活跃 session 按优先级合并:
+              needs-you > warning > juggling > delegating > working > ready > idle
+              subagent 按**全部活跃 session 的总数**分档，不是按 session 数
 最后活跃记忆: 每 agent 记录最近有事件的 session，Core 重启后恢复焦点
 ```
 

@@ -319,14 +319,18 @@ function shortAgent(agent) {
 }
 
 /** 与 core/events.ts 的 SessionState 一致；未知值不渲染标签（不把外部字符串拼进 class） */
-const SESSION_STATES = ["working", "ready", "needs-you", "warning", "idle", "finished"];
+const SESSION_STATES = [
+  "working", "delegating", "juggling", "ready", "needs-you", "warning", "idle", "finished",
+];
 
-/** 状态 pill：干活中 / 待命 / 等你 / 告警 / 空闲。finished 不该出现在活跃列表里，但兜底渲染。 */
-function sessionStateBadge(state) {
+/** 状态 pill：干活中 / 派活中 / 多线并行 / 待命 / 等你 / 告警 / 空闲。
+ *  finished 不该出现在活跃列表里，但兜底渲染。 */
+function sessionStateBadge(state, subagents) {
   if (!SESSION_STATES.includes(state)) return null;
   const el = document.createElement("span");
   el.className = `session-state ${state}`;
-  el.textContent = t(`settings.session.state.${state}`);
+  // juggling 的文案带个数：这一栏是把 session 摊开看的地方，「一堆」在这里不够用
+  el.textContent = t(`settings.session.state.${state}`, { n: subagents ?? 0 });
   return el;
 }
 
@@ -342,6 +346,7 @@ function renderSessions(sessions) {
       s.goal,
       s.budget_tokens,
       s.state,
+      s.subagent_count,
       Math.round((s.token_used ?? 0) / K),
       Math.round(s.context_pct ?? 0),
     ]),
@@ -381,7 +386,7 @@ function sessionRow(s) {
     pct: Math.round(s.context_pct ?? 0),
   });
   head.append(badge);
-  const stateBadge = sessionStateBadge(s.state);
+  const stateBadge = sessionStateBadge(s.state, s.subagent_count);
   if (stateBadge) head.appendChild(stateBadge);
   head.append(title, meta);
   wrap.appendChild(head);

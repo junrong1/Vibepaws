@@ -22,6 +22,19 @@ let rosterPromise = null;
 const sets = new Map();
 
 /**
+ * 没有独立立绘的状态 → 借用哪一帧。
+ *
+ * 缺帧的默认兜底是 `base`（= idle 立绘），对 `ready` 是对的（待命本来就该是闲着的样子），
+ * 对 subagent 两档就完全错了：delegating / juggling 的 session **正在干活**，
+ * 借 idle 的脸等于告诉用户「没事了」。借 working 帧再叠上轨道小方块和各自的动作，
+ * 是在不加 2 × 7 张图的前提下唯一说得通的表达（landscape 0.11）。
+ */
+const FRAME_FALLBACK = {
+  delegating: "working",
+  juggling: "working",
+};
+
+/**
  * 加载一次清单（仓库 index.json 是兜底，本地 index.local.json 按 id 覆盖/新增）。
  * 失败**不抛**：素材层挂了不该让整个界面白屏，宠物退回程序生成就行。
  */
@@ -91,7 +104,7 @@ export function get(petTypeId, state) {
   if (!manifest) return { status: "fallback", pet: getProceduralPet(petTypeId) };
 
   const set = sets.get(manifest.slug) ?? loadSet(manifest);
-  const img = set.images[state] ?? set.images.base;
+  const img = set.images[state] ?? set.images[FRAME_FALLBACK[state]] ?? set.images.base;
   if (img) return { status: "sprite", manifest, img };
   if (set.failed) return { status: "fallback", pet: getProceduralPet(petTypeId) };
   return { status: "loading" };

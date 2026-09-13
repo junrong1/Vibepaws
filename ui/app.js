@@ -29,7 +29,7 @@ function applyStaticI18n() {
 }
 
 /**
- * 只给调试用的状态覆写：?petstate=warning 之类。7 个状态里有几个（tired / level-up）
+ * 只给调试用的状态覆写：?petstate=warning 之类。状态里有几个（tired / level-up）
  * 靠模拟器很难稳定复现，改一次动作就得等半天 —— 视觉验收需要能直接点到。
  * 值不在配方表里就当没写，绝不让一个拼错的参数把宠物卡在空状态。
  */
@@ -232,6 +232,27 @@ let blendStart = 0;
 /** 已经放完的一次性动作：Core 还在推同一个状态，但不该再放一遍 */
 let consumed = null;
 
+/**
+ * 现在整张桌面上同时在跑几个 subagent（轨道上画几颗小方块）。
+ *
+ * 跟 Core 的聚合口径一致，是**总数**而不是「有几个 session 在派活」：两个 session
+ * 各派 1 个，跑着的就是 2 个（core/registry.ts 的 aggregatePetState，clawd #862）。
+ * 只数 delegating / juggling 的 session —— 已经 idle 的那些哪怕计数没收回来也不算，
+ * 免得一个漏收的 stop 在宠物身上留下一颗永远转圈的方块。
+ *
+ * `?petstate=` 调试覆写时桌面上通常一个 session 都没有，按覆写的档位补一个代表值
+ * （delegating 1 颗 / juggling 3 颗），否则这两个状态点进去轨道是空的、没法验收。
+ */
+function liveSubagents() {
+  let n = 0;
+  for (const s of state.sessions) {
+    if (!s.is_active) continue;
+    if (s.state === "delegating" || s.state === "juggling") n += s.subagent_count ?? 0;
+  }
+  if (n === 0 && PET_STATE_OVERRIDE) return PET_STATE_OVERRIDE === "juggling" ? 3 : 1;
+  return n;
+}
+
 function petStateNow() {
   const raw = PET_STATE_OVERRIDE ?? state.pet?.state ?? "idle";
   if (ONE_SHOT.has(raw)) {
@@ -268,6 +289,7 @@ function drawPetFrame(now) {
     elapsed: now - cur.since,
     prev: prevAnim ? { state: prevAnim.state, elapsed: now - prevAnim.since } : null,
     blend,
+    subagents: liveSubagents(),
   });
 
   if (blend >= 1) prevAnim = null;
@@ -515,7 +537,7 @@ function emptyPanelKey() {
 
 function renderPanel() {
   const container = $("sessions");
-  const rank = { "needs-you": 0, warning: 1, working: 2, ready: 3, idle: 4, finished: 5 };
+  const rank = { "needs-you": 0, warning: 1, juggling: 2, delegating: 3, working: 4, ready: 5, idle: 6, finished: 7 };
   const sorted = [...state.sessions].sort((a, b) => (rank[a.state] ?? 5) - (rank[b.state] ?? 5));
   // 有 session 在等你时，「等了多久」要继续走表 —— 让指纹每分钟变一次，
   // 其余时候完全不重建（不然焦点每 5 秒被清一次）。
@@ -528,6 +550,9 @@ function renderPanel() {
     // 但只看 is_active 的话「进程没了」那行小字永远画不出来
     sorted.map((s) => [
       s.agent, s.session_id, s.state, s.is_active, s.token_used, s.needs_input_since, s.title, s.outcome,
+      // 计数要进指纹：2 → 3 个分身时 state 仍然是 juggling，只有「×3」那个数字变了。
+      // 少了这一项，升档在列表里就是静默的（clawd #862 的另一半）。
+      s.subagent_count,
     ]),
   ]);
   if (signature === lastPanelSignature) return;
@@ -570,6 +595,15 @@ function reclaimedSession(s) {
   return !s.is_active && (s.outcome === "orphaned" || s.outcome === "timeout");
 }
 
+/**
+ * 与 core/events.ts 的 SessionState 一致。用途有两个，都要求它是**白名单**：
+ * 拼进 class 名的字符串必须先被这张表认过（state 来自 Core，但渲染层不假设它干净），
+ * 以及「哪些状态配一个文字标签」。设置窗口有一份同名常量（ui/settings.js）。
+ */
+const SESSION_STATES = [
+  "idle", "working", "delegating", "juggling", "needs-you", "warning", "ready", "finished",
+];
+
 function sessionRow(s) {
   const row = document.createElement("div");
   row.className = "session-row";
@@ -580,7 +614,7 @@ function sessionRow(s) {
   const dot = document.createElement("span");
   dot.className = "s-state";
   // class 里也不拼外部字符串：state 只可能是这几个已知值，别的一律不加 class
-  if (["idle", "working", "needs-you", "warning", "ready", "finished"].includes(s.state)) {
+  if (SESSION_STATES.includes(s.state)) {
     dot.classList.add(s.state);
   }
   if (reclaimedSession(s)) dot.classList.add("lost");
@@ -594,10 +628,12 @@ function sessionRow(s) {
   // 状态文字（与设置窗口共用 settings.session.state.* 同一份文案）。
   // 只有还活着的 session 需要：已结束的靠 finished 圆点、被回收的靠 s-lost 小字表达，
   // 再贴一个「空闲」反而重复。
-  if (s.is_active && ["working", "ready", "needs-you", "warning", "idle"].includes(s.state)) {
+  if (s.is_active && s.state !== "finished") {
     const label = document.createElement("span");
     label.className = `s-label ${s.state}`;
-    label.textContent = t(`settings.session.state.${s.state}`);
+    // juggling 的文案带个数（「×3」）—— 「一堆」和「三个」不是同一条信息，
+    // 而宠物本体最多只画 5 颗方块，确切的数字只能由这里给。
+    label.textContent = t(`settings.session.state.${s.state}`, { n: s.subagent_count ?? 0 });
     row.appendChild(label);
   }
 

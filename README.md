@@ -48,7 +48,7 @@ It also can't spend your tokens: there is no API key and no model client in it, 
 
 | | |
 | --- | --- |
-| ✅ **Works today** | Desktop pet with 7 states · one complete three-stage evolution family · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · 3 pet sizes · per-display position memory with follow-or-pin · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
+| ✅ **Works today** | Desktop pet with 10 states, including subagent-aware **delegating** / **juggling** · one complete three-stage evolution family · decision & permission bubbles · context warnings · EXP / levels · mute (30m / 2h / project / session) · settings window (budget, warning thresholds, session goals, pet name, language) · 3 pet sizes · per-display position memory with follow-or-pin · hook cost counter · crashed-session cleanup · Claude Code + Codex + pi + dsh adapters · generic JSONL bridge · event simulator · privacy allowlist · signed + notarized macOS release pipeline (bring your own Apple credentials) |
 | ⚠️ **Partial** | 5 of 12 planned starter pets · topic-drift heuristics wired but thin |
 | ❌ **Not yet** | Voice commands (STT) · graphical onboarding wizard · anything social (gallery, leaderboard, trading) |
 
@@ -135,6 +135,7 @@ npm run sim -- --scenario context_overload    # context 88% → 96% → warnings
 npm run sim -- --scenario correction_loop     # same file edited over and over → correction count
 npm run sim -- --scenario multi_session       # 3 parallel sessions → aggregated state + carousel
 npm run sim -- --scenario crashed_session     # agent dies mid-question → reclaimed within a minute
+npm run sim -- --scenario subagent_fanout     # 1 → 3 subagents → back to 1 → working (not "done")
 ```
 
 If the pet reacts to `normal`, your install is good. Now connect a real agent.
@@ -252,6 +253,22 @@ Each state is a separate hand-checked portrait of the same pet, generated image-
 </table>
 
 With several sessions running, the pet shows the **most urgent** state across all of them; the flyout breaks them down individually.
+
+### Three more states without three more drawings
+
+`ready`, `delegating` and `juggling` share the portraits above. They're differences in *what the agent is doing*, not in how the pet feels, and drawing them would have meant three more images per pet — 15 today, 36 at the planned roster — for information that motion carries better anyway.
+
+- **`ready`** — the turn ended, nothing is blocked. Borrows the `idle` portrait; the session dot goes green.
+- **`delegating`** — one subagent is running. Borrows the `working` portrait, but the pet moves *slower* than when it's working alone: the job went out, and it's supervising. One purple square orbits it.
+- **`juggling`** — two or more. Same portrait, faster and slightly off-kilter, one square per subagent (up to five).
+
+Subagents are routine now, and a flat `working` hides them: you can't tell a pet that's mid-edit from one waiting on four parallel Tasks. Two rules make the distinction trustworthy:
+
+**A subagent finishing is not the task finishing.** When the last subagent returns, the pet goes back to `working` — never to `finished`, never to "waiting for you". The whole point of this product is knowing when it's safe to walk away, and one returning Task is not that moment.
+
+**The count is desk-wide.** Two sessions with one subagent each is two subagents running, so the pet juggles. Sorting by *session* instead would show that as `delegating` and lose the only thing this state exists to say.
+
+The flyout carries the exact number (`Juggling ×4`), because five orbiting squares is the point where they stop being countable.
 
 ### Click the pet
 
@@ -469,7 +486,7 @@ claude_code hooks ─┐                 ┌────────────
 codex hooks ───────┤  HTTP + token   │ Event ingress             │             ┌───────────┐
 pi extension ──────┼───────────────► │  ↓ validate / dedup       │   SSE       │ pet state │
 generic JSONL ─────┤  127.0.0.1      │ Session registry          │ ──────────► │ bubbles   │
-simulator ─────────┘                 │  ↓ aggregate 7 states     │             │ flyout    │
+simulator ─────────┘                 │  ↓ aggregate 10 states    │             │ flyout    │
                                      │ Notification engine       │             │ EXP bar   │
         (Core offline?               │ EXP / health / evolution  │             └───────────┘
          → JSONL + bridge)           │ SQLite: pets, sessions,   │

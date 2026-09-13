@@ -10,7 +10,8 @@ export type ScenarioName =
   | "context_overload"
   | "correction_loop"
   | "multi_session"
-  | "crashed_session";
+  | "crashed_session"
+  | "subagent_fanout";
 
 export const SCENARIOS: ScenarioName[] = [
   "normal",
@@ -19,6 +20,7 @@ export const SCENARIOS: ScenarioName[] = [
   "correction_loop",
   "multi_session",
   "crashed_session",
+  "subagent_fanout",
 ];
 
 let seqCounter = 0;
@@ -144,6 +146,53 @@ function crashedSession(): CoreEvent[] {
   return out;
 }
 
+/**
+ * subagent 扇出（landscape 0.11）：working → delegating → juggling → 收回来 → 收工。
+ *
+ * 这个场景存在的理由是它是**唯一**能把两个新状态跑出来的入口 —— 没有它，验收
+ * delegating / juggling 就得真的去开一个会派分身的 agent 再守着看。事件按秒铺开，
+ * 注入后照着宠物看一遍就能验完：
+ *
+ *   +1s  1 个分身  → delegating（沉稳的动作，轨道上 1 颗方块）
+ *   +3s  3 个分身  → juggling（急促，3 颗）—— 这一跳就是 clawd #862 的升档
+ *   +6s  收回 2 个 → 还剩 1 个，退回 delegating
+ *   +8s  收回最后1个 → **working**，不是 ready、更不是 finished（clawd #214）
+ *   +11s session_finished
+ *
+ * 旁边那个 session 一直只有 1 个分身：它和主 session 各派 1 个的那几秒，宠物必须是
+ * juggling（聚合看的是全桌面的总数，不是单个 session 的档位）。
+ */
+function subagentFanout(): CoreEvent[] {
+  const out: CoreEvent[] = [];
+  const proj = "/Users/demo/api-server";
+  const sid = "sim-sub-1";
+  const push = (type: CoreEvent["event_type"], summary: string, payload: CoreEvent["payload"], at: number) =>
+    out.push(ev("claude_code", sid, proj, type, summary, payload, "low", at));
+
+  push("session_started", "Session started", { source: "startup", cwd: proj, title: "api-server" }, 0);
+  push("agent_working", "Planning the change", { tool_name: "Read" }, 1);
+  // 1 个：delegating
+  push("subagent_started", "Subagent started: Task", { tool_name: "Task", subagent_kind: "explore" }, 2);
+  // 3 个：juggling
+  push("subagent_started", "Subagent started: Task", { tool_name: "Task", subagent_kind: "review" }, 4);
+  push("subagent_started", "Subagent started: Task", { tool_name: "Task", subagent_kind: "test" }, 5);
+  // 收回两个 → 退回 delegating
+  push("subagent_stopped", "Subagent stopped", {}, 7);
+  push("subagent_stopped", "Subagent stopped", {}, 8);
+  // 最后一个回来：这里必须落回 working。宠物在这一秒**不该**庆祝，也不该说「待命」
+  push("subagent_stopped", "Subagent stopped", {}, 10);
+  push("agent_working", "Applying the result", { tool_name: "Edit", file: "server.ts" }, 11);
+  push("token_update", "Tokens used", { tokens: 38_000 }, 12);
+  push("session_finished", "Session complete", { reason: "completion", outcome: "success" }, 14);
+
+  // 第二个 session：全程只派 1 个分身，用来验证跨 session 的总数聚合
+  const proj2 = "/Users/demo/frontend";
+  out.push(ev("claude_code", "sim-sub-2", proj2, "session_started", "Session started", { source: "startup", cwd: proj2, title: "frontend" }, "low", 0));
+  out.push(ev("claude_code", "sim-sub-2", proj2, "agent_working", "Running tests", { tool_name: "Bash" }, "low", 1));
+  out.push(ev("claude_code", "sim-sub-2", proj2, "subagent_started", "Subagent started: Task", { tool_name: "Task" }, "low", 3));
+  return out;
+}
+
 const GENERATORS: Record<ScenarioName, () => CoreEvent[]> = {
   normal,
   frequent_decisions: frequentDecisions,
@@ -151,6 +200,7 @@ const GENERATORS: Record<ScenarioName, () => CoreEvent[]> = {
   correction_loop: correctionLoop,
   multi_session: multiSession,
   crashed_session: crashedSession,
+  subagent_fanout: subagentFanout,
 };
 
 export function generateScenario(name: ScenarioName): CoreEvent[] {

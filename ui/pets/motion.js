@@ -25,6 +25,12 @@ export const SPRITE_MAX = 160;
 export const MOTION = {
   idle:        { period: 3100, bobY: 0.020, squash: 0.015 },
   working:     { period:  620, bobY: 0.055, squash: 0.045 },
+  // subagent 两档（landscape 0.11）。它们没有独立立绘 —— 渲染层回落到 working 帧，
+  // 差异全在这里：delegating **比 working 更慢**（活派出去了，自己在等，动作沉下来），
+  // juggling 比 working 更快、并且多一点摇晃。这个方向是故意的：如果 delegating 也画
+  // 得很忙，「自己干」和「派出去了」在余光里就是同一只抖动的宠物。
+  delegating:  { period:  980, bobY: 0.042, squash: 0.028,             fx: "helpers" },
+  juggling:    { period:  520, bobY: 0.070, squash: 0.055, rot: 0.018, fx: "helpers" },
   "needs-you": { period:  560, shakeX: 0.045,              fx: "exclaim" },
   warning:     { period:  380, shakeX: 0.040, rot: 0.035,  fx: "alert",   tint: "warn" },
   finished:    { period:  900, hopY: 0.090,  once: 3,      fx: "sparkle" },

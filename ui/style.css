@@ -9,6 +9,9 @@
   --warn: #f0883e;
   --danger: #f85149;
   --ok: #3fb950;
+  /* subagent 两档共用的紫：与 working 的蓝明确分开，又不像 warn/danger 那样喊人。
+     1 个和 2+ 个靠形状区分（实心点 / 带外圈），不靠动画 —— 关掉动效后差别还得在。 */
+  --busy: #a371f7;
   --pixel: "SF Mono", Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -255,12 +258,17 @@ body.dragging #pet { filter: none; }
 .session-row .s-state { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .session-row .s-label { font-size: 9px; flex-shrink: 0; }
 .s-label.working { color: var(--accent); }
+.s-label.delegating, .s-label.juggling { color: var(--busy); }
 .s-label.ready { color: var(--ok); }
 .s-label.needs-you { color: var(--danger); }
 .s-label.warning { color: var(--warn); }
 .s-label.idle { color: var(--dim); }
 .s-state.idle { background: #6e7681; }
 .s-state.working { background: var(--accent); }
+.s-state.delegating { background: var(--busy); }
+/* 2+ 个：同色加一圈外环。needs-you 已经占了「会闪的点」，再拿闪烁表示「多」，
+   余光里两者就分不开了 —— 何况 2+ 不是紧急，只是更忙。 */
+.s-state.juggling { background: var(--busy); box-shadow: 0 0 0 2px rgba(163, 113, 247, 0.35); }
 .s-state.needs-you { background: var(--danger); animation: pulse 1s infinite; }
 .s-state.warning { background: var(--warn); }
 .s-state.ready { background: var(--ok); }
