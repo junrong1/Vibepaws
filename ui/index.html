@@ -27,8 +27,11 @@
     <button id="mute-badge" type="button" hidden></button>
   </div>
 
-  <!-- 气泡层（Core 的通知） -->
-  <div id="bubbles" aria-live="polite"></div>
+  <!-- 气泡层（Core 的通知）。不做 live region：顶 / 单行换位会让整层重读一遍；
+       出现时的播报走下面两个看不见的区域（R28：可操作的 assertive，辅导类 polite） -->
+  <div id="bubbles"></div>
+  <div id="bubble-alert" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
+  <div id="bubble-status" class="sr-only" aria-live="polite" aria-atomic="true"></div>
   <!-- 提示层（本机操作确认）：和通知分开，否则一串通知会把「已复制」顶掉 -->
   <div id="toasts" aria-live="polite"></div>
 

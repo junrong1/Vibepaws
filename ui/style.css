@@ -211,6 +211,95 @@ body.dragging #pet { filter: none; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* ---- 气泡组件（U7） ----
+ * 通知气泡铺满窗口宽度（300 − 两边各 8px = 284px）：按钮要有地方放。
+ * 只有顶上那条（.top，贴着宠物）展开、带动作行；其余折成单行（.stub）叠在它上方，
+ * 再多的藏起来、折进顶上那条的「后面还有 N 条」。气泡区只有 180px：
+ * 一条展开约 100px + 三条单行约 66px（含间距），放得下。toast 不受影响（它们不在 #bubbles 里）。 */
+#bubbles { gap: 4px; }
+#bubbles .bubble { width: 284px; max-width: none; }
+#bubbles .bubble[hidden] { display: none; }
+.bubble .b-head { display: flex; gap: 6px; font-size: 9px; margin-bottom: 2px; }
+.bubble .b-head:not(:has(:not([hidden]))) { display: none; }
+.bubble .b-factor { color: var(--warn); }
+.bubble.danger .b-factor { color: var(--danger); }
+.bubble .b-count { color: var(--dim); margin-left: auto; margin-right: 14px; }
+.bubble .b-factor[hidden], .bubble .b-count[hidden], .bubble .b-note[hidden] { display: none; }
+.bubble .b-note { font-size: 9px; color: var(--warn); margin-top: 3px; }
+.bubble .b-actions { display: none; position: relative; gap: 5px; margin-top: 6px; padding-bottom: 3px; }
+.bubble.top .b-actions { display: flex; }
+.bubble .b-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--pixel);
+  font-size: 10px;
+  cursor: pointer;
+}
+.bubble .b-act:hover { border-color: var(--accent); }
+.bubble .b-act kbd {
+  min-width: 13px;
+  padding: 0 3px;
+  border: 1px solid #6e7681;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+  color: var(--dim);
+}
+/* 停留护栏看得见：窗口刚拿到焦点 / 这条刚成为顶，动作行底下走一条进度线，
+ * 走完数字键亮起来 = 现在按有效。没焦点时既不走线也不亮 —— 数字键此时到不了这里。 */
+.bubble .b-dwell {
+  position: absolute;
+  left: 0; bottom: 0;
+  height: 2px;
+  width: 0;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+}
+.bubble.top.dwell .b-dwell { opacity: 0.7; animation: dwell-fill var(--dwell-ms, 600ms) linear forwards; }
+.bubble.top.dwell .b-act kbd { opacity: 0.45; }
+.bubble.top.armed .b-act kbd { color: var(--text); border-color: var(--accent); }
+@keyframes dwell-fill {
+  from { width: 0; }
+  to { width: 100%; }
+}
+/* 单行：只剩标题一行，省略号截断；不带动作、不带关闭 */
+/* 标题和正文排在同一行：同一 session 的两个权限请求标题一样，只有正文分得开它们 */
+.bubble.stub {
+  padding: 2px 10px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: stub-in 0.18s ease;
+}
+.bubble.stub .b-title, .bubble.stub .b-body { display: inline; font-size: 10px; margin: 0; }
+.bubble.stub .b-title { font-weight: 400; }
+.bubble.stub .b-title::after { content: " · "; color: var(--dim); }
+.bubble.stub .b-head, .bubble.stub .b-meta, .bubble.stub .b-note, .bubble.stub .b-dismiss { display: none; }
+.bubble.stub.sticky { border-left-width: 4px; }
+@keyframes stub-in {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+/* 看不见、但读屏会读的播报区（R28） */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ---- 浮层 ---- */
 /* 浮层不再压在宠物身上：宠物本体只有 210×250，浮层一开就把它整个盖住 ——
  * 「再点一次宠物关掉浮层」这个最自然的操作直接失效，只剩右上角那个小 ×。
@@ -403,13 +492,17 @@ body.dragging #pet { filter: none; }
 #explog .cost-meter { color: var(--dim); }
 
 /* ---- 减弱动态效果（R27） ----
- * 这里只收本计划加的过渡（pip 条、分数行）和两处纯装饰的入场/进度动画。
+ * 这里只收本计划加的过渡（pip 条、分数行、气泡入场 / 单行 / 停留进度线）和两处纯装饰的入场/进度动画。
  * 会闪的状态点（needs-you、conn-degraded）不在其中：那两处的闪烁本身就是信息，
  * 而且只改透明度、不产生位移。宠物本体的持续起伏在 app.js 里按同一条媒体查询停掉。 */
 @media (prefers-reduced-motion: reduce) {
   .pip, .f-fill { transition: none; }
   #panel { animation: none; }
   #expfill { transition: none; }
+  /* 气泡的入场、单行折叠、停留进度线：都不动。停留护栏照样生效 ——
+   * 只剩「数字键未亮」→「亮」这一下切换，看得出什么时候按有效 */
+  .bubble, .bubble.stub { animation: none; }
+  .bubble.top.dwell .b-dwell { animation: none; width: 100%; opacity: 0.35; }
 }
 
 ::-webkit-scrollbar { width: 6px; }

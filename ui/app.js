@@ -5,7 +5,11 @@
 import { drawPet } from "./pets/render.js";
 import * as petRegistry from "./pets/registry.js";
 import { BLEND_MS, MOTION, motionAt } from "./pets/motion.js";
-import { stickyBubbleStale } from "./health/bubbles.js";
+import {
+  stickyBubbleStale, bubbleKey, isActionable, collapseTarget, sortBubbles, layoutBubbles, pickEvictions,
+  bubbleFactor, bubbleActions, actionsLabel, MAX_STUBS, DWELL_MS,
+  guardFocus, guardTop, guardContent, guardResnap, decideKey,
+} from "./health/bubbles.js";
 import { PIP_CELLS, PIP_GAP_AFTER, nameplateStrip, healthSurfaces } from "./health/pips.js";
 import {
   FACTOR_MAX, rowHealth, sortSessions, panelSignature, factorBreakdown, weakestFactor, rowKey,
@@ -49,7 +53,8 @@ const shell = window.vibepaws ?? null;
 const POLL_MS = 5000;
 const POLL_TIMEOUT_MS = 4000;
 const BUBBLE_TTL_MS = 8000;
-const MAX_BUBBLES = 3;
+/** 同时在屏幕上的气泡上限：一条展开 + 三条单行。常驻的不受它限制（R16，见 pickEvictions） */
+const MAX_BUBBLES = 1 + MAX_STUBS;
 /** 「等你」类通知不自动消失：错过它就等于错过了这个产品唯一必须做对的提醒 */
 const STICKY_TYPES = new Set(["decision", "permission"]);
 
@@ -157,6 +162,7 @@ function applyPush(push) {
   state.healthToday = push.health_today ?? null;
   state.healthVisibility = push.health_visibility ?? "flyout";
   render();
+  // 顺带重画气泡：可见性变了，因子点名要跟着出现 / 消失
   reconcileStickyBubbles();
 }
 
@@ -481,36 +487,88 @@ function notifText(n, slot) {
   return spec ? t(spec.key, spec.params) : (n[slot] ?? "");
 }
 
-function bubbleKey(n) {
-  return `${n.agent ?? "?"}:${n.session_id ?? "?"}:${n.type ?? "?"}`;
-}
+/**
+ * 屏幕上的气泡：一份记录数组，DOM 只是它的画法（排版 / 键 / 淘汰的判定都在 ui/health/bubbles.js）。
+ * 每条记录：
+ *   uid      本地唯一标识（快照比的就是它；老 Core 不发 id 也照样能指认）
+ *   seq      到达序号 —— 同一 tick 到的两条靠它定序，顶上那条不会在按键时换人
+ *   ids      这条气泡代表过的通知行 id（辅导类原地合并时会攒好几个）；id = 最新那个
+ */
+const bubbles = [];
+let bubbleSeq = 0;
+/** 停留护栏 + 快照（见 ui/health/bubbles.js 的 decideKey）；null = 宠物窗口没有键盘焦点 */
+let guard = null;
+let dwellTimer = null;
+
+/** 动作 id → 处理函数。U9 / U10 往 ACTION_SPECS 里加一项的同时，在这里加它的处理 */
+const BUBBLE_ACTIONS = {
+  dismiss(b) {
+    resolveBubble(b, "dismiss");
+    removeBubble(b);
+  },
+};
 
 function pushBubble(n) {
-  const box = $("bubbles");
-  const key = bubbleKey(n);
-  const sticky = STICKY_TYPES.has(n.type);
-  // 聚合：同类同 session 已存在则更新文字并重新计时
-  const existing = [...box.children].find((el) => el.dataset.key === key);
+  const now = performance.now();
+  // 聚合（只对辅导类）：同类同 session 已存在则更新文字并重新计时
+  const existing = collapseTarget(bubbles, n);
   if (existing) {
-    existing.querySelector(".b-title").textContent = notifText(n, "title");
-    existing.querySelector(".b-body").textContent = notifText(n, "body");
-    // 指向最新那一行：叉掉时标记的应当是用户正看着的这条文字
-    if (Number.isInteger(n.id)) existing.dataset.id = String(n.id);
+    const changed = notifText(n, "title") !== notifText(existing.n, "title")
+      || notifText(n, "body") !== notifText(existing.n, "body");
+    existing.n = n;
+    // 指向最新那一行：叉掉时标记的应当是用户正看着的这条文字。
+    // 之前攒下的老 id 留在 ids 里 —— 叉掉只标记最新一条，老的几行照旧由 Core 自己收尾
+    if (Number.isInteger(n.id)) {
+      existing.id = n.id;
+      existing.ids.push(n.id);
+    }
+    fillBubble(existing);
     // 重新计时：不重置的话，一条不断刷新的通知会在**第一次**出现后 8 秒消失，
     // 用户看到的是「刚更新完就没了」。
-    armDismiss(existing, sticky);
+    armDismiss(existing);
+    // 正文变了 = 用户读过的那句话已经不在了：停留护栏重新上膛（72% → 95%）
+    if (changed) {
+      guard = guardContent(guard, existing.uid, now);
+      announce(existing);
+    }
+    renderBubbles();
     return;
   }
 
+  const seq = ++bubbleSeq;
+  const b = {
+    uid: `b${seq}`,
+    seq,
+    key: bubbleKey(n),
+    type: n.type ?? "",
+    actionable: isActionable(n.type),
+    sticky: STICKY_TYPES.has(n.type),
+    agent: n.agent ?? "",
+    session: n.session_id ?? "",
+    // 行 id：回 /api/action 用，也是 notification_resolved 撤气泡的依据。老 Core 不发 id
+    id: Number.isInteger(n.id) ? n.id : null,
+    ids: Number.isInteger(n.id) ? [n.id] : [],
+    createdAt: Date.now(),
+    n,
+    actions: bubbleActions(n),
+    timer: null,
+    el: null,
+  };
+  b.el = buildBubble(b);
+  bubbles.push(b);
+  armDismiss(b);
+  // 超出上限时先淘汰会自己消失的那些，常驻的一条都不碰（R16）
+  for (const victim of pickEvictions(bubbles, MAX_BUBBLES)) removeBubble(victim, { render: false });
+  renderBubbles();
+  announce(b);
+}
+
+/** 一条气泡的 DOM，建一次；展开 / 单行 / 藏起来都只是换 class（见 renderBubbles） */
+function buildBubble(b) {
   const el = document.createElement("div");
-  el.className = `bubble ${bubbleTone(n.type)}${sticky ? " sticky" : ""}`;
-  el.dataset.key = key;
-  el.dataset.agent = n.agent ?? "";
-  el.dataset.session = n.session_id ?? "";
-  el.dataset.type = n.type ?? "";
-  // 行 id：回 /api/action 用，也是 notification_resolved 撤气泡的依据。老 Core 不发 id
-  if (Number.isInteger(n.id)) el.dataset.id = String(n.id);
-  el._createdAt = Date.now();
+  el.className = `bubble ${bubbleTone(b.type)}${b.sticky ? " sticky" : ""}`;
+  el.dataset.uid = b.uid;
+  el.dataset.type = b.type;
 
   const dismiss = document.createElement("button");
   dismiss.type = "button";
@@ -519,24 +577,139 @@ function pushBubble(n) {
   dismiss.setAttribute("aria-label", t("ui.bubble.dismiss"));
   dismiss.onclick = (e) => {
     e.stopPropagation();
-    resolveBubble(el, "dismiss");
-    removeBubble(el);
+    runAction(b, "dismiss");
   };
   el.appendChild(dismiss);
+
+  const head = document.createElement("div");
+  head.className = "b-head";
+  head.appendChild(line("b-factor", ""));
+  head.appendChild(line("b-count", ""));
+  el.appendChild(head);
   // textContent 而不是 innerHTML：agent / session_id 来自 hook 上报的外部数据，
   // 拼进 HTML 既可能注入，也可能因为字段缺失直接抛异常吃掉整条通知。
-  el.appendChild(line("b-title", notifText(n, "title")));
-  el.appendChild(line("b-body", notifText(n, "body")));
-  el.appendChild(line("b-meta", `${shortAgent(n.agent)} · ${shortId(n.session_id)}`));
+  const title = line("b-title", "");
+  title.id = `${b.uid}-title`;
+  el.appendChild(title);
+  const body = line("b-body", "");
+  body.id = `${b.uid}-body`;
+  el.appendChild(body);
+  el.appendChild(line("b-meta", `${shortAgent(b.agent)} · ${shortId(b.session)}`));
+  const note = line("b-note", t("ui.bubble.changed"));
+  note.hidden = true;
+  el.appendChild(note);
+
+  // 动作行：按动作表画按钮，数字键写在按钮上（只有顶上那条露出来）
+  const row = document.createElement("div");
+  row.className = "b-actions";
+  for (const a of b.actions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `b-act${a.safe ? " safe" : ""}`;
+    btn.dataset.action = a.id;
+    const kbd = document.createElement("kbd");
+    kbd.textContent = a.key;
+    btn.appendChild(kbd);
+    btn.appendChild(document.createTextNode(t(a.labelKey, a.params)));
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      runAction(b, a.id);
+    };
+    row.appendChild(btn);
+  }
+  const dwell = document.createElement("span");
+  dwell.className = "b-dwell";
+  dwell.setAttribute("aria-hidden", "true");
+  row.appendChild(dwell);
+  el.appendChild(row);
 
   el.onclick = () => {
     openPanel();
-    resolveBubble(el, "actioned");
-    removeBubble(el);
+    // 单行只是「后面还有这一条」：点它打开浮层，不替用户处理掉一条没展开读过的请求
+    if (!el.classList.contains("top")) return;
+    resolveBubble(b, "actioned");
+    removeBubble(b);
   };
-  box.appendChild(el);
-  armDismiss(el, sticky);
-  trimBubbles();
+  fillBubble(b, el);
+  return el;
+}
+
+/** 写进会变的那几段文字（原地合并时也走这里） */
+function fillBubble(b, el = b.el) {
+  el.querySelector(".b-title").textContent = notifText(b.n, "title");
+  el.querySelector(".b-body").textContent = notifText(b.n, "body");
+}
+
+/**
+ * 按 layoutBubbles 的结果排 DOM：顶上那条展开、贴着宠物（列的最下面），
+ * 后面的折成单行叠在它上方，再多的藏起来、折进顶上那条的计数里 —— 一条都不丢。
+ */
+function renderBubbles() {
+  const box = $("bubbles");
+  const { top, stubs, behind } = layoutBubbles(bubbles);
+  const shown = new Set([top, ...stubs].filter(Boolean));
+  const factorsOn = healthSurfaces(state.healthVisibility).flyout;
+  const hiddenOnes = sortBubbles(bubbles).filter((b) => !shown.has(b));
+  const order = [...hiddenOnes, ...[...stubs].reverse(), ...(top ? [top] : [])];
+  order.forEach((b, i) => {
+    if (box.children[i] !== b.el) box.insertBefore(b.el, box.children[i] ?? null);
+  });
+
+  for (const b of bubbles) {
+    const el = b.el;
+    const isTop = b === top;
+    el.hidden = !shown.has(b);
+    el.classList.toggle("top", isTop);
+    el.classList.toggle("stub", !isTop && shown.has(b));
+    // 因子点名（R14）；分数可见性为 off 时连因子名也不出现
+    const factor = bubbleFactor(b.type);
+    const chip = el.querySelector(".b-factor");
+    chip.hidden = !(isTop && factor && factorsOn);
+    chip.textContent = factor ? t("ui.bubble.factor", { factor: t(`ui.health.factor.${factor}`) }) : "";
+    const count = el.querySelector(".b-count");
+    count.hidden = !(isTop && behind > 0);
+    count.textContent = t("ui.bubble.more", { count: behind });
+    if (isTop) {
+      // R28：可操作的顶端气泡是 alertdialog，无障碍名写明每个数字键做什么
+      el.setAttribute("role", b.actionable ? "alertdialog" : "group");
+      el.setAttribute("aria-label", bubbleAria(b));
+      el.setAttribute("aria-describedby", `${b.uid}-body`);
+    } else {
+      el.removeAttribute("role");
+      el.removeAttribute("aria-label");
+      el.removeAttribute("aria-describedby");
+      el.querySelector(".b-note").hidden = true;
+    }
+  }
+  syncGuard();
+}
+
+function bubbleAria(b) {
+  return t("ui.bubble.aria", {
+    title: notifText(b.n, "title"),
+    body: notifText(b.n, "body"),
+    keys: actionsLabel(b.actions, t),
+  });
+}
+
+function topBubble() {
+  return layoutBubbles(bubbles).top;
+}
+
+/**
+ * 气泡出现时报给辅助技术（R28）：可操作的走 assertive，辅导类走 polite。
+ * 先清空再写：同一句话连着写两次，屏幕阅读器会当作没变。
+ */
+function announce(b) {
+  const region = $(b.actionable ? "bubble-alert" : "bubble-status");
+  if (!region) return;
+  const text = b === topBubble()
+    ? bubbleAria(b)
+    : `${notifText(b.n, "title")}. ${notifText(b.n, "body")}`;
+  region.textContent = "";
+  setTimeout(() => {
+    region.textContent = text;
+  }, 30);
 }
 
 function line(cls, text) {
@@ -554,37 +727,43 @@ function bubbleTone(type) {
   return "";
 }
 
-function armDismiss(el, sticky) {
-  if (el._timer) clearTimeout(el._timer);
-  el._timer = sticky ? null : setTimeout(() => removeBubble(el), BUBBLE_TTL_MS);
+function armDismiss(b) {
+  if (b.timer) clearTimeout(b.timer);
+  b.timer = b.sticky ? null : setTimeout(() => removeBubble(b), BUBBLE_TTL_MS);
 }
 
-function removeBubble(el) {
-  if (el._timer) clearTimeout(el._timer);
-  el.remove();
+function removeBubble(b, { render = true } = {}) {
+  if (b.timer) clearTimeout(b.timer);
+  const i = bubbles.indexOf(b);
+  if (i >= 0) bubbles.splice(i, 1);
+  b.el?.remove();
+  if (render) renderBubbles();
 }
 
+/**
+ * Core 说这一行结束了。辅导类原地合并过的气泡代表好几行：只有最新那行结束才撤整条，
+ * 老的那几行结束只是从账上划掉（用户看着的是最新那句话）。
+ */
 function removeBubbleById(id) {
-  for (const el of [...$("bubbles").children]) {
-    if (el.dataset.id === String(id)) removeBubble(el);
+  for (const b of [...bubbles]) {
+    if (b.id === id) removeBubble(b);
+    else if (b.ids.includes(id)) b.ids = b.ids.filter((x) => x !== id);
   }
 }
 
 /** 告诉 Core 用户在宠物里处理了这条气泡（dismiss / actioned）。没有 id 的老通知无从指认，跳过 */
-function resolveBubble(el, action) {
-  if (!el.dataset.id) return;
-  void postAction(action, { id: Number(el.dataset.id) });
+function resolveBubble(b, action) {
+  if (b.id === null) return;
+  void postAction(action, { id: b.id });
 }
 
-/** 超出上限时先淘汰会自己消失的那些，别把「等你」挤掉 */
-function trimBubbles() {
-  const box = $("bubbles");
-  while (box.children.length > MAX_BUBBLES) {
-    const victim =
-      [...box.children].find((el) => !el.classList.contains("sticky")) ?? box.firstElementChild;
-    if (!victim) return;
-    removeBubble(victim);
-  }
+/** 执行一个动作（点按钮或按数字键）。用户自己处理掉了顶上那条 → 对新的顶重拍快照 */
+function runAction(b, actionId) {
+  const handler = BUBBLE_ACTIONS[actionId];
+  if (!handler) return;
+  handler(b);
+  guard = guardResnap(guard, topBubble()?.uid ?? null, performance.now());
+  paintDwell();
 }
 
 /**
@@ -594,12 +773,109 @@ function trimBubbles() {
  */
 function reconcileStickyBubbles() {
   const now = Date.now();
-  for (const el of [...$("bubbles").children]) {
-    if (!el.classList.contains("sticky")) continue;
-    const bubble = { agent: el.dataset.agent, session: el.dataset.session, createdAt: el._createdAt ?? 0 };
-    if (stickyBubbleStale(bubble, state.sessions, now)) removeBubble(el);
+  for (const b of [...bubbles]) {
+    if (!b.sticky) continue;
+    if (stickyBubbleStale({ agent: b.agent, session: b.session, createdAt: b.createdAt }, state.sessions, now)) {
+      removeBubble(b, { render: false });
+    }
   }
+  renderBubbles();
 }
+
+/* ---- 停留护栏：画出来，而不是悄悄吞键 ----
+ * 窗口拿到焦点、或者某条气泡成为顶（取较晚者）起，DWELL_MS 内按键不算数；
+ * 这段时间动作行下面走一条进度线，走完数字键亮起来 = 现在按有效。 */
+function syncGuard() {
+  guard = guardTop(guard, topBubble()?.uid ?? null, performance.now());
+  paintDwell();
+}
+
+function paintDwell() {
+  if (dwellTimer) clearTimeout(dwellTimer);
+  dwellTimer = null;
+  const top = topBubble();
+  for (const b of bubbles) {
+    if (b === top) continue;
+    b.el.classList.remove("dwell", "armed");
+  }
+  if (!top) return;
+  const el = top.el;
+  // 没有焦点，或者快照不是这条（按下去会被拒）：数字键不亮
+  if (!guard || guard.snapshotId !== top.uid) {
+    el.classList.remove("dwell", "armed");
+    return;
+  }
+  const remaining = guard.armedAt + DWELL_MS - performance.now();
+  if (remaining > 0) {
+    if (el._dwellFor !== guard.armedAt) {
+      // 重新上膛：摘掉再挂上，让进度线从头走（减弱动态下 CSS 不放这段动画，只剩「未亮」→「亮」）
+      el._dwellFor = guard.armedAt;
+      el.classList.remove("dwell");
+      void el.offsetWidth;
+      el.style.setProperty("--dwell-ms", `${Math.round(remaining)}ms`);
+    }
+    el.classList.remove("armed");
+    el.classList.add("dwell");
+    dwellTimer = setTimeout(paintDwell, remaining + 5);
+    return;
+  }
+  el.classList.remove("dwell");
+  el.classList.add("armed");
+}
+
+/** 「请求变了」：按下去的数字没有落在新的那条上，并说明为什么 */
+function showChangedNote(b) {
+  const note = b.el.querySelector(".b-note");
+  note.hidden = false;
+  clearTimeout(note._timer);
+  note._timer = setTimeout(() => {
+    note.hidden = true;
+  }, 2000);
+}
+
+window.addEventListener("focus", () => {
+  guard = guardFocus(performance.now(), topBubble()?.uid ?? null);
+  paintDwell();
+});
+window.addEventListener("blur", () => {
+  guard = null;
+  paintDwell();
+});
+if (document.hasFocus()) guard = guardFocus(performance.now(), null);
+
+/** 在这些地方打字 / 按 Enter 是它们自己的事，气泡不抢 */
+function keyBelongsToTarget(e) {
+  const el = e.target;
+  if (!(el instanceof Element)) return false;
+  if (el.closest("input, textarea, select, [contenteditable='true']")) return true;
+  // Enter 在按钮上是「按这个按钮」（宠物本身是 role=button：Enter 照旧开关浮层）
+  return e.key === "Enter" && Boolean(el.closest("button, [role='button']"));
+}
+
+// 捕获阶段：早于宠物自己的 keydown；只吞我们认的键，其余照常下去
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || keyBelongsToTarget(e)) return;
+  const top = topBubble();
+  const now = performance.now();
+  const r = decideKey(guard, {
+    key: e.key, repeat: e.repeat, now, topId: top?.uid ?? null, actions: top?.actions ?? [],
+  });
+  if (r.kind === "pass") return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (r.kind === "unfocused") {
+    // 焦点事件没来过就收到了键：现在上膛，这一下不算
+    guard = guardFocus(now, top.uid);
+    paintDwell();
+  } else if (r.kind === "changed") {
+    showChangedNote(top);
+    guard = guardResnap(guard, top.uid, now);
+    paintDwell();
+  } else if (r.kind === "act") {
+    runAction(top, r.action.id);
+  }
+  // swallow / dwell：什么都不做 —— 进度线本身就在说「还没到」
+}, true);
 
 /* ---------------- 浮层 ---------------- */
 /* 开关浮层只改 DOM，一个字节的窗口几何都不碰：壳的窗口恒为 300×430，

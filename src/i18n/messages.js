@@ -79,6 +79,11 @@ export const MESSAGES = {
     "ui.badge.muted": "🔕 {time}",
     "ui.mute.remaining": "Muted · {time} left · click to undo",
     "ui.bubble.dismiss": "Dismiss",
+    // ---- 气泡组件（U7）：数字键、停留护栏、快照、因子点名 ----
+    "ui.bubble.aria": "{title}. {body}. Keys — {keys}",
+    "ui.bubble.changed": "Request changed — read it, then press again",
+    "ui.bubble.more": "+{count} waiting",
+    "ui.bubble.factor": "moves {factor}",
     "ui.toast.muted30": "🔕 Muted everything for 30 minutes",
     "ui.toast.muted2h": "😴 Muted everything for 2 hours",
     "ui.toast.unmuted": "🔔 Notifications are back on",
@@ -464,6 +469,11 @@ export const MESSAGES = {
     "ui.badge.muted": "🔕 {time}",
     "ui.mute.remaining": "安静中 · 还剩 {time} · 点一下恢复",
     "ui.bubble.dismiss": "关闭",
+    // ---- 气泡组件（U7）：数字键、停留护栏、快照、因子点名 ----
+    "ui.bubble.aria": "{title}。{body}。按键 — {keys}",
+    "ui.bubble.changed": "请求变了 — 先看一眼，再按一次",
+    "ui.bubble.more": "后面还有 {count} 条",
+    "ui.bubble.factor": "影响 {factor}",
     "ui.toast.muted30": "🔕 已安静 30 分钟",
     "ui.toast.muted2h": "😴 已安静 2 小时",
     "ui.toast.unmuted": "🔔 通知已恢复",
