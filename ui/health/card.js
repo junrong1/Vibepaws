@@ -22,6 +22,8 @@
  * createObjectURL 的预览会被挡掉（见 src/ui/server.ts）。
  */
 import { FACTOR_NAMES, FACTOR_MAX } from "./rows.js";
+import { localDayKey } from "./day.js";
+import { redactProject } from "./names.js";
 
 export const CARD_W = 1200;
 export const CARD_H = 630;
@@ -29,16 +31,8 @@ export const CARD_H = 630;
 export const MIN_WEIGHT_MS = 5 * 60_000;
 /** 卡上至多写几个项目名 */
 export const MAX_PROJECTS = 3;
-/** 项目短名的长度上限（字符）：再长的名字到了卡上也是被省略号截掉，不如早点截 */
-const MAX_NAME_CHARS = 40;
 
 /* ================= 1. 数据 ================= */
-
-/** 本地日历日键（与 core/health_query.ts 的 localDayKey 同一个口径） */
-export function localDayKey(at) {
-  const d = at instanceof Date ? at : new Date(at);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 /** 本地日往前数 n 天的那一天（用年月日构造：跨夏令时的那一天不是 24 小时） */
 function dayBack(now, n) {
@@ -47,19 +41,6 @@ function dayBack(now, n) {
 
 function finite(v) {
   return typeof v === "number" && Number.isFinite(v);
-}
-
-/**
- * 项目名脱敏：控制字符去掉、只留最后一段（/ 与 \ 都算分隔符）、截到上限。
- * 空的、全是分隔符的 → "?"。
- */
-export function redactProject(raw) {
-  const s = String(raw ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ");
-  const parts = s.split(/[\\/]+/).map((p) => p.trim()).filter(Boolean);
-  const last = parts.at(-1) ?? "";
-  if (last === "") return "?";
-  const chars = [...last];
-  return chars.length > MAX_NAME_CHARS ? chars.slice(0, MAX_NAME_CHARS).join("") : last;
 }
 
 /** 一段能不能上卡：已结算、有收工时刻、没被回收（history 本来就只给这些 —— 这里是防御，R9 / R10） */

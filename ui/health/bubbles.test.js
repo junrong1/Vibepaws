@@ -240,6 +240,31 @@ test("拿焦点时还没有气泡：第一条成为顶的那一刻拍快照、�
   assert.equal(press(g, "1", 4000 + DWELL_MS, 9).kind, "act");
 });
 
+test("快照那条自己走了、别的还在 → 对新的顶重拍并重新计停留，不算「请求变了」", () => {
+  // 7 是快照，8 在它后面；7 被 Core 撤掉（resolve），8 成为顶
+  const g0 = guardFocus(0, 7);
+  const g = guardTop(g0, 8, 5000, [8]);
+  assert.equal(g.snapshotId, 8);
+  assert.equal(press(g, "1", 5000 + DWELL_MS - 1, 8).kind, "dwell");
+  assert.equal(press(g, "1", 5000 + DWELL_MS, 8).kind, "act");
+  // 快照那条还在屏幕上、只是被挤下去了 → 照旧是「变了」
+  const pushed = guardTop(g0, 8, 5000, [7, 8]);
+  assert.equal(pushed.snapshotId, 7);
+  assert.equal(press(pushed, "1", 10_000, 8).kind, "changed");
+});
+
+test("焦点一直在：栈空了又来一条 → 过了停留，第一下按键就认", () => {
+  const g0 = guardFocus(0, 7);
+  const empty = guardTop(g0, null, 3000, []);
+  assert.equal(empty.snapshotId, null, "栈空了：快照清掉");
+  const g = guardTop(empty, 9, 8000, [9]);
+  assert.equal(g.snapshotId, 9);
+  assert.equal(press(g, "1", 8000 + DWELL_MS - 1, 9).kind, "dwell");
+  assert.equal(press(g, "1", 8000 + DWELL_MS, 9).kind, "act");
+  // 同一条再渲染一次：不重新上膛
+  assert.equal(guardTop(g, 9, 9000, [9]), g);
+});
+
 test("被拒之后重拍快照，并重新计停留", () => {
   const g = guardResnap(guardFocus(0, 7), 8, 10_000);
   assert.equal(g.snapshotId, 8);

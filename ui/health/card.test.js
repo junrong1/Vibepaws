@@ -12,12 +12,12 @@ import {
   weekBuckets,
   weekSummary,
   layoutCard,
-  redactProject,
   fitText,
   countable,
   cardFileName,
   CARD_W,
 } from "./card.js";
+import { redactProject } from "./names.js";
 
 const NOW = new Date(2026, 8, 29, 15, 0, 0); // 本地 9/29 下午
 const at = (d, h, m = 0) => new Date(2026, 8, d, h, m).toISOString();

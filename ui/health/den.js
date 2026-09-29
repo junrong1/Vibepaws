@@ -16,19 +16,12 @@
  */
 import { FACTOR_NAMES, FACTOR_MAX } from "./rows.js";
 import { scoreStrip } from "./pips.js";
+import { localDayKey } from "./day.js";
+import { shortName } from "./names.js";
 
 /** Den 显示分数吗（off = 不显示；认不出的值按默认 flyout 走 = 显示） */
 export function denShowsScores(visibility) {
   return visibility !== "off";
-}
-
-/** 本地日历日键（YYYY-MM-DD），与 core/health_query.ts 的 localDayKey 同一个口径 */
-export function localDay(at) {
-  const d = at instanceof Date ? at : new Date(at);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 function finite(v) {
@@ -69,10 +62,10 @@ export function settledSegment(s) {
 export function todayModel({ state, history, now = new Date() }) {
   if (!state || !history) return { kind: "offline" };
   const showScores = denShowsScores(state.health_visibility);
-  const today = localDay(now);
+  const today = localDayKey(now);
   const segments = (Array.isArray(history.segments) ? history.segments : [])
     .filter(settledSegment)
-    .filter((s) => localDay(s.finished_at) === today);
+    .filter((s) => localDayKey(s.finished_at) === today);
   if (segments.length === 0) return { kind: "first-run", showScores };
 
   const daily = (Array.isArray(history.daily) ? history.daily : []).find((d) => d?.day === today) ?? null;
@@ -81,7 +74,7 @@ export function todayModel({ state, history, now = new Date() }) {
   const sessions = segments
     .map((s) => ({
       key: `${s.agent}:${s.session_id}:${s.segment}`,
-      project: safeName(s.project),
+      project: shortName(s.project),
       agent: typeof s.agent === "string" ? s.agent : "?",
       started_at: s.started_at ?? null,
       finished_at: s.finished_at,
@@ -103,19 +96,6 @@ export function todayModel({ state, history, now = new Date() }) {
 }
 
 /**
- * 项目短名的最后一道：Core 给的已经是 projectShortName()，这里再削一次 ——
- * 一个路径分隔符都不许进 Den / 周卡（R26）。POSIX 与 Windows 两种分隔符都算。
- */
-export function safeName(raw) {
-  const s = String(raw ?? "")
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .trim();
-  const parts = s.split(/[\\/]+/).filter((p) => p.trim() !== "");
-  const last = (parts.at(-1) ?? "").trim();
-  return last === "" ? "?" : last;
-}
-
-/**
  * Journal 标签页。
  * @param {object|null} view /api/journal 的响应（null = 从来没拿到）
  * @param {{ showScores?: boolean, project?: string|null }} [opts]
@@ -126,12 +106,12 @@ export function safeName(raw) {
 export function journalModel(view, { showScores = true, project = null } = {}) {
   if (!view || typeof view !== "object") return { kind: "offline" };
   const months = Array.isArray(view.months) ? view.months : [];
-  const projects = (Array.isArray(view.projects) ? view.projects : []).map(safeName);
+  const projects = (Array.isArray(view.projects) ? view.projects : []).map(shortName);
   const entries = Array.isArray(view.entries) ? view.entries : [];
   // 一个月份都没有 = 从来没写过：这是新用户的第一屏，不是「这个月没东西」
   if (months.length === 0 && entries.length === 0) return { kind: "first-run" };
   const base = { month: String(view.month ?? ""), months, projects, file: typeof view.file === "string" ? view.file : null };
-  if (entries.length === 0) return { kind: "empty", ...base, project: project ? safeName(project) : null };
+  if (entries.length === 0) return { kind: "empty", ...base, project: project ? shortName(project) : null };
   return {
     kind: "entries",
     ...base,
@@ -159,7 +139,7 @@ function journalEntry(e, showScores) {
     kind: "session",
     id: Number(e.id) || 0,
     at: String(e.at ?? ""),
-    project: safeName(e.project),
+    project: shortName(e.project),
     agent: typeof e.agent === "string" ? e.agent : "?",
     segment: finite(e.segment) ? e.segment : null,
     started_at: e.started_at ?? null,
@@ -170,7 +150,7 @@ function journalEntry(e, showScores) {
     strip: showScores && finite(e.score) ? scoreStrip(e.score) : null,
     factors: showScores && e.factors ? dayFactors(e.factors) : [],
     omitted: showScores && Array.isArray(e.omitted) ? e.omitted.filter((f) => FACTOR_NAMES.includes(f)) : [],
-    files: (Array.isArray(e.files) ? e.files : []).map(safeName),
+    files: (Array.isArray(e.files) ? e.files : []).map(shortName),
     files_more: Math.max(0, (Number(e.files_total) || 0) - (Array.isArray(e.files) ? e.files.length : 0)),
   };
 }

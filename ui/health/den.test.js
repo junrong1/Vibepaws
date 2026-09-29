@@ -6,7 +6,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { todayModel, journalModel, growthModel, safeName, dayFactors, settledSegment, localDay } from "./den.js";
+import { todayModel, journalModel, growthModel, dayFactors, settledSegment } from "./den.js";
+import { localDayKey } from "./day.js";
+import { shortName, redactProject } from "./names.js";
 
 const NOW = new Date(2026, 8, 29, 15, 0, 0); // 本地 9/29 下午
 const at = (d, h, m = 0) => new Date(2026, 8, d, h, m).toISOString();
@@ -134,14 +136,19 @@ test("Growth：连不上 = offline；新宠物 = 曲线照画，这周与升级�
 });
 
 test("项目短名：路径分隔符一个都不进（POSIX 与 Windows）", () => {
-  assert.equal(safeName("/Users/alice/secret-corp/my-app"), "my-app");
-  assert.equal(safeName("C:\\Users\\alice\\client\\site"), "site");
-  assert.equal(safeName("my-app/"), "my-app");
-  assert.equal(safeName(""), "?");
-  assert.equal(safeName(null), "?");
+  assert.equal(shortName("/Users/alice/secret-corp/my-app"), "my-app");
+  assert.equal(shortName("C:\\Users\\alice\\client\\site"), "site");
+  assert.equal(shortName("my-app/"), "my-app");
+  assert.equal(shortName(""), "?");
+  assert.equal(shortName(null), "?");
+  // Den 不截长度（筛选要把名字原样交回 Core）；周卡截到 40 个字符，分隔符规则是同一份
+  const long = "x".repeat(60);
+  assert.equal(shortName(`/a/${long}`), long);
+  assert.equal(redactProject(`/a/${long}`), "x".repeat(40));
+  assert.equal(redactProject("C:\\Users\\alice\\client\\site"), shortName("C:\\Users\\alice\\client\\site"));
 });
 
 test("dayFactors：四个因子固定顺序；本地日键跟着本地时间走", () => {
   assert.deepEqual(dayFactors(null).map((f) => f.name), ["context", "focus", "response", "outcome"]);
-  assert.equal(localDay(new Date(2026, 8, 28, 23, 50)), "2026-09-28");
+  assert.equal(localDayKey(new Date(2026, 8, 28, 23, 50)), "2026-09-28");
 });

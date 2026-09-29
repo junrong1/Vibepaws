@@ -16,8 +16,9 @@
  *   连上过又断了 —— 内容照留、调淡，顶上说「这是几点的样子」。一扇挂着旧数据却不说的窗口也是在撒谎。
  */
 import { t as translate, normalizeLocale } from "/i18n.js";
-import { todayModel, journalModel, growthModel, signature, denShowsScores, localDay } from "./health/den.js";
-import { PIP_CELLS, PIP_GAP_AFTER } from "./health/pips.js";
+import { todayModel, journalModel, growthModel, signature, denShowsScores } from "./health/den.js";
+import { localDayKey } from "./health/day.js";
+import { renderPips } from "./health/pips_dom.js";
 import { FACTOR_MAX } from "./health/rows.js";
 import { weekSummary, layoutCard, paint, cardFileName } from "./health/card.js";
 
@@ -105,11 +106,7 @@ function fmtNum(v) {
 function pips(strip, small = false) {
   const box = el("span", `pips band-${strip.band}${small ? " small" : ""}`);
   box.setAttribute("aria-hidden", "true");
-  for (let i = 0; i < PIP_CELLS; i++) {
-    const cell = el("span", `pip${strip.cells[i] ? " on" : ""}${i === PIP_GAP_AFTER ? " gap" : ""}`);
-    box.appendChild(cell);
-  }
-  return box;
+  return renderPips(box, strip);
 }
 
 function emptyCard(title, body, extraClass = "") {
@@ -142,10 +139,13 @@ function factorRows(factors) {
 }
 
 /* ---------------- HTTP ---------------- */
-/** 失败一律 null：502（Core 不在）、401、UI server 自己没了（fetch 抛）对这扇窗口是同一件事 */
+/** 一次请求最多等多久：Core 接了连接却一直不回话时，这扇窗口要说「断了」，而不是挂着上一轮的绿灯 */
+const FETCH_TIMEOUT_MS = 4000;
+
+/** 失败一律 null：502（Core 不在）、401、UI server 自己没了（fetch 抛）、超时，对这扇窗口是同一件事 */
 async function getJson(path) {
   try {
-    const r = await fetch(path, { cache: "no-store" });
+    const r = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!r.ok) return null;
     return await r.json();
   } catch {
@@ -184,8 +184,12 @@ async function refresh() {
         if (h) data.history = h;
         else ok = false;
       } else if (tab === "journal") {
-        const j = await getJson(journalPath());
-        if (j) data.journal = j;
+        // 请求发出时的筛选：等回来时用户已经换了月份 / 项目 / 标签页 → 这一份作废
+        // （不然新筛选下会闪一下旧月份的行）；换筛选时已经排了下一轮，由它来补
+        const path = journalPath();
+        const j = await getJson(path);
+        if (path !== journalPath() || activeTab !== tab) queued = true;
+        else if (j) data.journal = j;
         else ok = false;
       } else if (tab === "growth") {
         const g = await getJson("/api/growth");
@@ -444,7 +448,7 @@ function renderJournal(showScores) {
   const list = el("div", "list");
   let lastDay = null;
   for (const e of model.entries) {
-    const day = localDay(e.at);
+    const day = localDayKey(e.at);
     if (day !== lastDay) {
       list.appendChild(el("div", "day-head", dayLabel(day)));
       lastDay = day;
@@ -627,7 +631,7 @@ function renderGrowth() {
     for (const u of model.levelUps) {
       const item = el("div", "item");
       item.appendChild(el("div", "item-title", t("den.growth.history.item", { level: u.level })));
-      item.appendChild(el("div", "item-score dim", `${dayLabel(localDay(u.at))} ${clock(u.at)}`));
+      item.appendChild(el("div", "item-score dim", `${dayLabel(localDayKey(u.at))} ${clock(u.at)}`));
       list.appendChild(item);
     }
     hist.appendChild(list);

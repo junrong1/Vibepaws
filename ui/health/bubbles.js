@@ -255,15 +255,28 @@ export function guardFocus(now, topId) {
 }
 
 /**
- * 顶上换了人。已经有快照 → 快照不动（换人是按键时要拒绝的那件事，不是要跟着走的那件事）；
+ * 顶上换了人。已经有快照、而且快照那条还在屏幕上 → 快照不动（它被挤下去了：
+ * 换人是按键时要拒绝的那件事，不是要跟着走的那件事）；
  * 拿焦点时还没有气泡 → 这一条就是用户第一眼看到的，拍快照、从现在起算停留。
+ *
+ * 快照那条**自己走了**（TTL 到期、Core 撤了、session 没了）不算「换人」：
+ *   栈空了 → 快照清掉，下一条上来时按「第一眼看到的」处理；
+ *   还有别的 → 对新的顶重拍、重新计停留。
+ * 否则一条过期的辅导气泡会让下一个请求的第一下按键白白被拒。
+ *
  * @param {ReturnType<typeof guardFocus>|null} g
  * @param {string|number|null} topId
  * @param {number} now
+ * @param {Array<string|number>} [onScreen] 屏幕上所有气泡的 uid；不给 = 当作快照那条还在
  */
-export function guardTop(g, topId, now) {
-  if (!g || g.snapshotId !== null || topId === null || topId === undefined) return g;
-  return { ...g, snapshotId: topId, armedAt: now };
+export function guardTop(g, topId, now, onScreen) {
+  if (!g) return g;
+  const top = topId ?? null;
+  if (g.snapshotId !== null && onScreen && !onScreen.includes(g.snapshotId)) {
+    return top === null ? { ...g, snapshotId: null } : { ...g, snapshotId: top, armedAt: now };
+  }
+  if (g.snapshotId !== null || top === null) return g;
+  return { ...g, snapshotId: top, armedAt: now };
 }
 
 /**

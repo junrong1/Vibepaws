@@ -10,7 +10,8 @@ import {
   bubbleFactor, bubbleActions, actionsLabel, MAX_STUBS, DWELL_MS,
   guardFocus, guardTop, guardContent, guardResnap, decideKey, decideClick, coachingThresholdLabel,
 } from "./health/bubbles.js";
-import { PIP_CELLS, PIP_GAP_AFTER, nameplateStrip, healthSurfaces } from "./health/pips.js";
+import { nameplateStrip, healthSurfaces } from "./health/pips.js";
+import { renderPips } from "./health/pips_dom.js";
 import {
   FACTOR_MAX, rowHealth, sortSessions, panelSignature, factorBreakdown, weakestFactor, rowKey,
 } from "./health/rows.js";
@@ -405,26 +406,15 @@ function renderNameplate() {
     return;
   }
   const strip = nameplateStrip(state.healthToday, connState());
-  if (pips.children.length !== PIP_CELLS) buildPipCells(pips, "pip");
   // kind / band 都来自 pips.js 的有限几个值，可以直接拼进 class
   pips.className = `pips ${strip.kind}${strip.band ? ` band-${strip.band}` : ""}`;
-  strip.cells.forEach((on, i) => pips.children[i].classList.toggle("on", on));
+  renderPips(pips, strip);
   const label =
     strip.kind === "score" ? t("ui.health.today", { score: Math.floor(strip.score) })
     : strip.kind === "empty" ? t("ui.health.today.empty")
     : t("ui.health.today.offline");
   pips.setAttribute("aria-label", label);
   $("nameplate").title = `${name} · ${label}`;
-}
-
-/** 十个格子，第七格之后那一格带 gap class（宽缝画在它左边） */
-function buildPipCells(box, cls) {
-  box.replaceChildren();
-  for (let i = 0; i < PIP_CELLS; i++) {
-    const cell = document.createElement("span");
-    cell.className = i === PIP_GAP_AFTER ? `${cls} gap` : cls;
-    box.appendChild(cell);
-  }
 }
 
 /* ---------------- 静音状态（issue #7） ---------------- */
@@ -518,13 +508,25 @@ const BUBBLE_ACTIONS = {
    */
   async always_allow(b) {
     if (!ACTION_CTX.canGrant || b.id === null) return;
-    const r = await shell.grantAlways(b.id).catch(() => null);
-    if (!r?.ok) {
-      flash(t("ui.toast.grantfailed"), { error: true });
-      return;
+    // 单飞：等壳回话的这段时间气泡还在、还上着膛 —— 再点一下 / 再按一次数字，
+    // 会对同一行再发一次永久授予（Core 拒掉重复的那次，就成了「成功」紧跟一条「失败」）
+    if (b.busy) return;
+    b.busy = true;
+    const btn = b.el?.querySelector('.b-act[data-action="always_allow"]');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await shell.grantAlways(b.id).catch(() => null);
+      if (!r?.ok) {
+        flash(t("ui.toast.grantfailed"), { error: true });
+        return;
+      }
+      removeBubble(b);
+      flash(t("ui.toast.granted", { rule: r.rule ?? b.n.grant?.rule ?? "", project: r.project ?? b.n.grant?.project ?? "" }));
+    } finally {
+      // 失败了气泡还在：让用户能再试一次（成功时它已经撤掉，这两行无害）
+      b.busy = false;
+      if (btn) btn.disabled = false;
     }
-    removeBubble(b);
-    flash(t("ui.toast.granted", { rule: r.rule ?? b.n.grant?.rule ?? "", project: r.project ?? b.n.grant?.project ?? "" }));
   },
   /**
    * 没用（U10）。把这条气泡代表过的**每一行**都交上去（辅导类原地合并时 b.ids 攒了好几个），
@@ -598,6 +600,8 @@ function pushBubble(n) {
     /** 最近一次成为顶 / 改了正文的时刻（点击的停留护栏，见 decideClick）；-Infinity = 还没当过顶 */
     topSince: -Infinity,
     wasTop: false,
+    /** 永远允许正在等壳回话（单飞，见 BUBBLE_ACTIONS.always_allow） */
+    busy: false,
     timer: null,
     el: null,
   };
@@ -820,6 +824,9 @@ function resolveBubble(b, action) {
 function runAction(b, actionId) {
   const handler = BUBBLE_ACTIONS[actionId];
   if (!handler) return;
+  // 还在等永远允许的回话：再来一个非安全动作什么都不做，快照也不动。
+  // 叉掉照常可以 —— 壳要是一直不回话，气泡不能卡在屏幕上关不掉
+  if (b.busy && !b.actions.some((a) => a.id === actionId && a.safe)) return;
   handler(b);
   guard = guardResnap(guard, topBubble()?.uid ?? null, performance.now());
   paintDwell();
@@ -860,7 +867,7 @@ function reconcileStickyBubbles() {
  * 窗口拿到焦点、或者某条气泡成为顶（取较晚者）起，DWELL_MS 内按键不算数；
  * 这段时间动作行下面走一条进度线，走完数字键亮起来 = 现在按有效。 */
 function syncGuard() {
-  guard = guardTop(guard, topBubble()?.uid ?? null, performance.now());
+  guard = guardTop(guard, topBubble()?.uid ?? null, performance.now(), bubbles.map((b) => b.uid));
   paintDwell();
 }
 
@@ -1028,7 +1035,37 @@ function renderPanel() {
   });
   if (signature === lastPanelSignature) return;
   lastPanelSignature = signature;
+  // 任何一次重建都会把焦点所在的节点扔掉（token、分数每次推送都在变）：
+  // 先记下焦点在哪一行的哪一个控件，建完再还回去 —— 键盘用户不会被甩回文档开头
+  const focusKey = panelFocusKey(container);
   container.replaceChildren();
+  try {
+    buildPanel(container, sorted, showHealth);
+  } finally {
+    restorePanelFocus(container, focusKey);
+  }
+}
+
+/** 焦点在浮层的哪一行、是行本身还是分数按钮；不在浮层里 = null */
+function panelFocusKey(container) {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement) || !container.contains(el)) return null;
+  const cls = el.classList.contains("s-health") ? "s-health" : el.classList.contains("session-row") ? "session-row" : null;
+  const key = el.dataset.rowKey;
+  return cls && key !== undefined ? { cls, key } : null;
+}
+
+function restorePanelFocus(container, focusKey) {
+  if (!focusKey) return;
+  for (const el of container.querySelectorAll(`.${focusKey.cls}`)) {
+    if (el.dataset.rowKey === focusKey.key) {
+      el.focus({ preventScroll: true });
+      return;
+    }
+  }
+}
+
+function buildPanel(container, sorted, showHealth) {
   const live = sorted.filter((s) => s.is_active);
   // 已结束的 session 会在列表里堆积到 50 条，把还在跑的挤出可见范围。
   // 只留最近一小段时间里的几条，其余折叠成一行计数。
@@ -1082,7 +1119,10 @@ const SESSION_STATES = [
 function sessionItem(s, showHealth) {
   const item = document.createElement("div");
   item.className = "session-item";
-  item.appendChild(sessionRow(s));
+  const row = sessionRow(s);
+  // 重建前后认同一行用（见 panelFocusKey）
+  row.dataset.rowKey = rowKey(s);
+  item.appendChild(row);
   const rh = showHealth ? rowHealth(s) : null;
   // null = 被回收 / 没有 health：不画分数也不画 pip —— 它没有分数，不是 0 分
   if (!rh) return item;
@@ -1104,12 +1144,11 @@ function scoreToggle(s, rh, key, open) {
   const num = document.createElement("span");
   num.className = "s-num";
   const pips = document.createElement("span");
-  buildPipCells(pips, "pip");
+  renderPips(pips, rh.kind === "score" ? rh.strip : null);
   if (rh.kind === "score") {
     num.textContent = String(rh.shown);
     num.classList.add(`band-${rh.band}`);
     pips.className = `pips s-pips band-${rh.band}`;
-    rh.strip.cells.forEach((on, i) => pips.children[i].classList.toggle("on", on));
     if (rh.provisional) btn.classList.add("provisional");
     btn.title = rh.provisional ? t("ui.health.provisional") : t("ui.health.settled");
     btn.setAttribute(
@@ -1129,11 +1168,8 @@ function scoreToggle(s, rh, key, open) {
     e.stopPropagation();
     if (expandedRows.has(key)) expandedRows.delete(key);
     else expandedRows.add(key);
+    // 整张列表按指纹重建：焦点由 renderPanel 还给同一行的这个按钮
     renderPanel();
-    // 整张列表按指纹重建了：把焦点还给同一行的按钮，键盘用户不会被甩回开头
-    for (const el of $("sessions").querySelectorAll(".s-health")) {
-      if (el.dataset.rowKey === key) el.focus({ preventScroll: true });
-    }
   };
   return btn;
 }
