@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { mkdtempSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "../db/schema.ts";
@@ -185,4 +185,25 @@ test("scope=data：主库与 WAL 一起缩小（VACUUM 之后必须 checkpoint�
   // 收尾之后连接还能用（VACUUM + checkpoint 都不该把库关掉）
   db.prepare("INSERT INTO settings(key, value) VALUES('probe', '1')").run();
   assert.equal(dataFootprint(db).events, 0);
+});
+
+/**
+ * 日志文件（U12 / R24）：reset 删的是行，而 journal/YYYY-MM.md 是那些行的导出 —— 两个 scope 都要连它一起删，
+ * 否则「删除全部本地数据」之后还剩一整本散文历史。只删我们起的那种名字；目录里别的文件一概不碰。
+ */
+test("两个 scope 都删日志文件（只删 YYYY-MM.md），且不算进「删了多少行」", () => {
+  for (const scope of ["pet", "data"] as const) {
+    const dir = join(mkdtempSync(join(tmpdir(), "vibepaws-reset-journal-")), "journal");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "2026-08.md"), "# old");
+    writeFileSync(join(dir, "2026-09.md"), "# new");
+    writeFileSync(join(dir, "ideas.md"), "user's own");
+    mkdirSync(join(dir, "2026-10.md")); // 同名的目录不是我们的文件
+    const server = usedServer();
+    const result = resetLocalData(server.db, scope, { journalDir: dir });
+    assert.equal(result.journal_files, 2, scope);
+    assert.equal(existsSync(join(dir, "2026-08.md")) || existsSync(join(dir, "2026-09.md")), false, scope);
+    assert.ok(existsSync(join(dir, "ideas.md")) && existsSync(join(dir, "2026-10.md")), `${scope}：别的东西不碰`);
+    assert.equal("journal_files" in result.deleted, false, "文件不是行：界面把 deleted 加起来说清掉了多少行");
+  }
 });

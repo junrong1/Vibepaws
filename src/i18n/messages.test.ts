@@ -105,9 +105,19 @@ test("每种通知的 key 都在目录里，且两种语言都渲染得出完整
     ev({ event_type: "agent_working", session_id: "s-repeat", payload: { tool_name: "Write", file: "a.ts" } }),
   ];
 
+  // 不来自某一条事件的通知（进化 R29：EXP 结算触发）也在这里过一遍同样的检查
+  const produced: Array<{ label: string; n: ReturnType<typeof engine.getForEvent> }> = cases.map((e) => ({
+    label: e.event_type,
+    n: engine.getForEvent(e),
+  }));
+  produced.push({
+    label: "evolution",
+    n: engine.forEvolution({ fromForm: "Spark Sprite", toForm: "Nova Sprite", fromTypeId: 10, toTypeId: 11, level: 5, health: 0.85 }),
+  });
+
   const producedTypes = new Set<string>();
-  for (const e of cases) {
-    const n = engine.getForEvent(e);
+  for (const { label, n } of produced) {
+    const e = { event_type: label };
     assert.ok(n, `${e.event_type} 应产出通知`);
     producedTypes.add(n.type);
     assert.ok(n.i18n, `${e.event_type} 的通知必须带 i18n（渲染层靠它出字）`);

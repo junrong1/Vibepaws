@@ -382,7 +382,7 @@ export interface SessionHealthDay extends DayHealthView {
 
 /** GET /api/session_health 的响应 */
 export interface SessionHealthHistory {
-  /** 历史取自哪里：今天是 sessions 表（每行只有最近一段）；U12 之后是 journal */
+  /** 历史取自哪里：日志行（memories，每段收工一行）。"sessions" 是 U12 之前的来源，已不再出现 */
   source: "sessions" | "journal";
   days: number;
   /** 范围起点：最早那一天的本地午夜（ISO） */
@@ -393,6 +393,51 @@ export interface SessionHealthHistory {
   segments: SessionHealthHistoryItem[];
   /** 范围里的**每一个**本地日，从早到晚；没有段的日子 unknown=true、segments=0 */
   daily: SessionHealthDay[];
+}
+
+/**
+ * 日志的一条（GET /api/journal，Den 的 Journal 标签页，U13）。kind=session 是一段收工的收据，
+ * kind=evolution 是一次进化。不适用的字段是 null / 空数组。project 是短名 —— 原始 project_id 不在日志里。
+ */
+export interface JournalEntryView {
+  id: number;
+  kind: "session" | "evolution";
+  /** 那一刻（段的 finished_at / 进化的时刻，ISO） */
+  at: string;
+  /** 本地日 YYYY-MM-DD */
+  day: string;
+  project: string | null;
+  agent: string | null;
+  session_id: string | null;
+  segment: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  outcome: string | null;
+  /** 收工那一刻结算的分（0–100） */
+  score: number | null;
+  /** 三因子的宠物分（不含 Response，KTD4） */
+  pet_score: number | null;
+  factors: Record<HealthFactorName, number | null> | null;
+  omitted: HealthFactorName[];
+  evidence: SessionHealthView["evidence"] | null;
+  /** 本段改过的文件名（basename，至多 10 个）；files_total = 去重后的总数 */
+  files: string[];
+  files_total: number;
+  evolution: { from_type_id: number; to_type_id: number; from: string; to: string; level: number; health: number } | null;
+}
+
+export interface JournalView {
+  /** 这份响应是哪个本地月（YYYY-MM） */
+  month: string;
+  /** 有条目的月份，从新到旧 */
+  months: string[];
+  /** 这个月出现过的项目短名（筛选用） */
+  projects: string[];
+  /** 从早到晚 */
+  entries: JournalEntryView[];
+  /** 导出文件相对数据目录的路径（如 journal/2026-09.md）；没有文件 → null。绝对路径不出 Core */
+  file: string | null;
 }
 
 export interface AgentCapabilities {

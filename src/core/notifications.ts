@@ -77,7 +77,13 @@ type Draft = Omit<Notification, "id" | "status" | "shown_at" | "title" | "body" 
   tier?: number;
   /** 影子模式（drift）：判定照常、照常落库，但不弹气泡（KTD11） */
   shadow?: boolean;
+  /** 不走 60s 去重（evolution：每一次都是不同的一件事） */
+  nodedup?: boolean;
 };
+
+/** 进化气泡的「谁」：它属于宠物，不属于任何一个 agent / session */
+export const EVOLUTION_AGENT = "vibepaws";
+export const EVOLUTION_SESSION = "pet";
 
 function render(text: I18nText): string {
   return t(DEFAULT_LOCALE, text.key, text.params);
@@ -128,6 +134,27 @@ export class NotificationEngine {
     const n = this.evaluate(ev);
     if (!n) return null;
     return this.persist(n);
+  }
+
+  /**
+   * 进化的气泡（R29）。它不来自某一条事件，而是来自 EXP 结算（token、收工奖励、自成长都可能触发），
+   * 所以不挂在 getForEvent 上。它属于宠物，不属于哪个 session：agent/session 固定为
+   * EVOLUTION_AGENT / EVOLUTION_SESSION，只认全局静音（按项目 / session 静音的人没说过「别告诉我宠物进化了」）；
+   * 不走 60s 去重 —— 连跳两级是两件事，而进化按构造就是稀有的。
+   */
+  forEvolution(e: { fromForm: string | null; toForm: string | null; fromTypeId: number; toTypeId: number; level: number; health: number }): Notification | null {
+    const from = e.fromForm ?? `#${e.fromTypeId}`;
+    const to = e.toForm ?? `#${e.toTypeId}`;
+    return this.persist({
+      agent: EVOLUTION_AGENT,
+      session_id: EVOLUTION_SESSION,
+      type: "evolution",
+      i18n: {
+        title: { key: "notif.evolution.title", params: { from, to } },
+        body: { key: "notif.evolution.body", params: { level: e.level, health: Math.round(e.health * 100) } },
+      },
+      nodedup: true,
+    });
   }
 
   private evaluate(ev: CoreEvent): Draft | null {
@@ -365,7 +392,7 @@ export class NotificationEngine {
   /** 去重 + mute + 落库 */
   private persist(draft: Draft): Notification | null {
     // 落库与兜底用英文渲染；用户看到的语言由渲染层按 i18n 决定
-    const { latch, tier, shadow, ...rest } = draft;
+    const { latch, tier, shadow, nodedup, ...rest } = draft;
     const n = { ...rest, title: render(draft.i18n.title), body: render(draft.i18n.body) };
     const rule = ruleForType(n.type);
     const ruleId = rule?.id ?? null;
@@ -401,7 +428,7 @@ export class NotificationEngine {
     const key = `${n.agent}:${n.session_id}:${n.type}`;
     const now = Date.now();
     const last = this.lastShown.get(key) ?? 0;
-    if (!latch && now - last < this.dedupMs) return null;
+    if (!latch && !nodedup && now - last < this.dedupMs) return null;
     this.lastShown.set(key, now);
     // 真的发出去了才记「这一档已经报过」
     if (latch) this.latched.set(latch.key, latch.tier);
@@ -422,6 +449,7 @@ export class NotificationEngine {
   private isMuted(sessionId: string, type: string): boolean {
     const g = getSetting(this.db, MUTE_GLOBAL_KEY);
     if (g && !isExpired(g)) return true;
+    if (type === "evolution") return false; // 宠物的事：只认全局静音
     if (type === "drift" || type === "milestone") return false; // 这两类只按显式项目/session mute
     const project = this.projectForSession(sessionId);
     if (project) {

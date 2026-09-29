@@ -8,6 +8,8 @@
  *   GET  /api/sessions     全部 session 视图
  *   GET  /api/session_health  Session Health 历史（?days=N，默认 7、上限 90）：已结算的段 + 按本地日聚合。
  *                          不叫 /api/health —— /health 是免鉴权的存活探针，两条同名路由鉴权相反是个坑
+ *   GET  /api/journal      日志（?month=YYYY-MM 默认本地这个月，&project=<短名> 可选）：每段收工一条、每次进化一条。
+ *                          返回的是**行**（Den 按 locale 渲染），不是 markdown 文件本身；file 只给相对数据目录的路径
  *   GET  /api/exp          宠物 EXP/等级
  *   GET  /api/hookstats    采集通道开销（字节 / 延迟 / 恒为 0 的模型调用，见 core/hookstats.ts）
  *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
@@ -27,6 +29,8 @@
  *   POST /api/action       气泡动作：mute / unmute / dismiss / actioned / not_useful（{id, ids}：记理由 + 调阈值）
  *
  * 后台循环：僵尸 session 回收（G10，见 core/reclaim.ts）—— 启动时一次 + 60s 一轮。
+ * 日志（core/journal.ts）：session_finished 在事件链里写一行 + 追加 <data>/journal/YYYY-MM.md；
+ * 进化经 exp.onEvolve 同样写一行，并发一条 evolution 气泡。
  */
 import { createServer } from "node:http";
 import { existsSync, mkdirSync } from "node:fs";
@@ -78,6 +82,7 @@ import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
 import { todayHealth } from "./health_query.ts";
 import { dayHealthView, parseHistoryDays, sessionHealthHistory } from "./health_history.ts";
+import { JOURNAL_DIR_NAME, Journal, journalView, parseJournalMonth } from "./journal.ts";
 import type {
   AdapterView,
   AgentId,
@@ -116,6 +121,12 @@ export interface ServerConfig {
    * （见文件末尾的 CLI 入口）；没有它 = 这个 Core 上没有授予这回事，气泡也不给这个选项。
    */
   grantSecret?: string | null;
+  /**
+   * 日志文件（journal/YYYY-MM.md）写到哪个目录。null = 只写库里的行、不写文件。
+   * 缺省：自己开库的真实 Core 写 <DATA_DIR>/journal（数据目录跟着 Core 的 cwd 走，打包版就是
+   * 用户数据目录）；注入 db 的测试/嵌入场景缺省 null —— 它们不该往开发机真实的数据目录里写东西。
+   */
+  journalDir?: string | null;
 }
 
 const DEFAULT_PORT = 17893;
@@ -171,6 +182,7 @@ export class VibepawsServer {
   registry: SessionRegistry;
   notifications: NotificationEngine;
   exp: ExpEngine;
+  journal: Journal;
   /** 采集通道开销计量（landscape 0.12）：每次 POST /events 记一条 */
   hookMeter = new HookMeter();
   token: string;
@@ -201,11 +213,27 @@ export class VibepawsServer {
     this.notifications = new NotificationEngine(this.db);
     this.exp = new ExpEngine(this.db);
     this.registry = cfg.registry ?? new SessionRegistry({ db: this.db, onUpdate: () => this.broadcastState() });
+    this.journal = new Journal(
+      this.db,
+      cfg.journalDir !== undefined ? cfg.journalDir : cfg.db ? null : join(DATA_DIR, JOURNAL_DIR_NAME),
+    );
+    // 升级后第一次启动：已经结算的老 session 收养成日志行；上次没写进文件的行补上
+    this.journal.catchUp();
+    // 进化（R29）：一行日志 + 一条气泡。exp 已经把它 try/catch 住了，这里再抛也伤不到 EXP 结算
+    this.exp.onEvolve = (e) => {
+      this.journal.onEvolution(e);
+      const n = this.notifications.forEvolution(e);
+      if (n) for (const client of [...this.sseClients]) this.sendSse(client, "notification", n);
+    };
 
     // 事件分发链：ingress → registry → notifications/exp → SSE
     this.notifications.onEvent = (ev: CoreEvent) => {
       const wasWaiting = this.isWaiting(ev.agent, ev.session_id);
       this.registry.handle(ev);
+      // 日志（U12）：**唯一**写收工收据的地方。必须紧跟 registry.handle —— 这一刻 sessions 行上的本段列
+      // 就是这一段的终值，而且要在 exp.handle 之前：收工奖励可能触发进化，进化门槛读的今天健康
+      // 从日志里来，得先有这一段。onFinish 不抛（写文件失败只记日志）
+      if (ev.event_type === "session_finished") this.journal.onFinish(ev.agent, ev.session_id);
       // 「等你」被这条事件清掉了，而用户没在宠物里点过那条气泡 —— 只能是在终端里答的
       // （或者 agent 自己放弃了等待）。气泡记成 inferred 并撤掉，别让它比「等你」活得久
       if (wasWaiting && !this.isWaiting(ev.agent, ev.session_id)) {
@@ -275,6 +303,14 @@ export class VibepawsServer {
             const days = parseHistoryDays(new URL(req.url ?? "/", "http://core").searchParams.get("days"));
             if (days === null) sendJson(res, 400, { error: "days must be a positive integer" });
             else sendJson(res, 200, sessionHealthHistory(this.db, { days }));
+            return;
+          }
+          // Den 的 Journal 标签页（U13）。行，不是文件：文件是给 grep 的，界面按 locale 自己出字
+          if (url === "/api/journal") {
+            const q = new URL(req.url ?? "/", "http://core").searchParams;
+            const month = parseJournalMonth(q.get("month"));
+            if (month === null) sendJson(res, 400, { error: "month must be YYYY-MM" });
+            else sendJson(res, 200, journalView(this.db, { month, project: q.get("project"), dir: this.journal.dir }));
             return;
           }
           if (url === "/api/exp") {
@@ -513,13 +549,13 @@ export class VibepawsServer {
    *   · registry 的 correction 启发式 —— 不清的话新 session 会继承旧 session 的「反复改同一个文件」
    *   · 宠物本身 —— pets 行删掉了，得当场滚一只新的，而不是等下一次快照兜底
    */
-  resetLocalData(scope: ResetScope): { deleted: Record<string, number>; vacuumed: boolean } {
-    const result = resetLocalData(this.db, scope);
+  resetLocalData(scope: ResetScope): { deleted: Record<string, number>; vacuumed: boolean; journal_files: number } {
+    const result = resetLocalData(this.db, scope, { journalDir: this.journal.dir });
     this.notifications.forgetAll();
     this.registry.forgetAll();
     this.exp.ensurePet();
     this.broadcastState();
-    return { deleted: result.deleted, vacuumed: result.vacuumed };
+    return { deleted: result.deleted, vacuumed: result.vacuumed, journal_files: result.journal_files };
   }
 
   private handleReset(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {

@@ -780,6 +780,7 @@ function line(cls, text) {
 function bubbleTone(type) {
   if (type === "error") return "danger";
   if (type === "milestone") return "ok";
+  if (type === "evolution") return "ok";
   if (type === "context" || type === "drift") return "warn";
   if (type === "ready") return "ok";
   return "";

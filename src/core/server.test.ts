@@ -195,6 +195,8 @@ test("健康分低且没有活跃 session 时宠物是 tired（README 6.4，不�
        VALUES('claude_code', 'gone', '/p', 0, ?, ?, 'abandoned', 98, ?, 7)`,
     )
     .run(start, end.toISOString(), start);
+  // 健康读的是日志行（U12）：直接摆的 session 行要像事件链那样在收工那一刻记一笔
+  server.journal.onFinish("claude_code", "gone");
   assert.equal(server.stateSnapshot().pet.state, "tired");
 });
 
@@ -698,7 +700,7 @@ test("HTTP：/api/session_health 要 token；带 token 返回已结算的段（�
       segments: Array<Record<string, unknown>>;
       daily: Array<Record<string, unknown>>;
     };
-    assert.equal(body.source, "sessions");
+    assert.equal(body.source, "journal", "历史读日志行（U12）：clear / resume 之前的段也在");
     assert.equal(body.days, 3);
     assert.equal(body.segments.length, 1, "还在跑的那一段不进历史（R9）");
     const seg = body.segments[0]!;

@@ -376,10 +376,10 @@ export const MESSAGES = {
     "settings.danger.footprint.nosize": "{sessions} sessions · {events} events · {notifications} notifications",
     "settings.danger.pet": "Start over with a new pet",
     "settings.danger.pet.hint":
-      "Rolls a new starter and drops its level, EXP history and memories. Sessions, settings and hooks stay. Health follows the last 24 hours of activity, so a rough day still shows on the new pet.",
+      "Rolls a new starter and drops its level, EXP history and journal (the rows and the journal files). Sessions, settings and hooks stay. Health is read from the journal, so the new pet starts the day healthy.",
     "settings.danger.data": "Delete all local data",
     "settings.danger.data.hint":
-      "Sessions, events, notifications, EXP history, budgets and thresholds — and the file is compacted afterwards, so deleted rows are really gone rather than just unlinked. Back to first launch with a new random pet. Adapter hooks are left alone.",
+      "Sessions, events, notifications, EXP history, the journal and its files, budgets and thresholds — and the file is compacted afterwards, so deleted rows are really gone rather than just unlinked. Back to first launch with a new random pet. Adapter hooks are left alone.",
     "settings.danger.uninstall": "Remove adapter hooks",
     "settings.danger.uninstall.hint":
       "Takes Vibepaws out of your agent's config. Do this before deleting the app: a leftover hook fires on every single tool call, forever, paying a process launch to POST a port nobody is listening on — and you would never guess why your agent got slower.",
@@ -416,6 +416,9 @@ export const MESSAGES = {
     "notif.drift.body": "This task may have drifted off goal — consider a new session",
     "notif.milestone.title": "{pct}% of budget used",
     "notif.milestone.body": "{used}k tokens · budget {budget}k",
+    // ---- 进化（R29）：原来只有一行 console.log ----
+    "notif.evolution.title": "{from} evolved into {to}!",
+    "notif.evolution.body": "Lv.{level} · health {health}% cleared the gate — it's in your journal",
     // ---- 重复编辑（Focus 的警告，U10）----
     "notif.repeat_edit.title": "Same file edited again ×{n}",
     "notif.repeat_edit.body": "The agent keeps reworking the same file within seconds",
@@ -803,10 +806,10 @@ export const MESSAGES = {
     "settings.danger.footprint.nosize": "{sessions} 个 session · {events} 条事件 · {notifications} 条通知",
     "settings.danger.pet": "换一只新宠物",
     "settings.danger.pet.hint":
-      "重新抽一只 starter，清掉等级、EXP 流水与 memories。session、设置与 hooks 都留着。健康分看的是最近 24 小时的活动，所以糟糕的一天在新宠物身上依然看得见。",
+      "重新抽一只 starter，清掉等级、EXP 流水与日志（库里的行和日志文件）。session、设置与 hooks 都留着。健康分从日志里读，所以新宠物这一天从健康开始。",
     "settings.danger.data": "删除全部本地数据",
     "settings.danger.data.hint":
-      "session、事件、通知、EXP 流水、预算与阈值一起清掉，并在删完后压缩数据库文件 —— 被删的行是真的没了，而不只是从索引里摘掉。回到首次启动的样子，附带一只新抽的宠物。adapter hooks 不动。",
+      "session、事件、通知、EXP 流水、日志与日志文件、预算与阈值一起清掉，并在删完后压缩数据库文件 —— 被删的行是真的没了，而不只是从索引里摘掉。回到首次启动的样子，附带一只新抽的宠物。adapter hooks 不动。",
     "settings.danger.uninstall": "移除 adapter hooks",
     "settings.danger.uninstall.hint":
       "把 Vibepaws 从你的 agent 配置里拿出来。删应用之前请先做这一步：残留的 hook 会在此后每一次工具调用上都启动一个进程，去 POST 一个已经没人监听的端口 —— 而你没有任何办法知道 agent 为什么变慢了。",
@@ -843,6 +846,8 @@ export const MESSAGES = {
     "notif.drift.body": "任务可能偏离目标，建议新开一个会话",
     "notif.milestone.title": "已用 {pct}% 预算",
     "notif.milestone.body": "{used}k tokens · 预算 {budget}k",
+    "notif.evolution.title": "{from} 进化成了 {to}！",
+    "notif.evolution.body": "Lv.{level} · 健康 {health}% 过了门槛 — 已记进日志",
     "notif.repeat_edit.title": "同一个文件又改了 ×{n}",
     "notif.repeat_edit.body": "agent 在几秒之内反复改同一个文件",
     "coach.context.action": "先收尾这一步，或者趁满之前 /compact",

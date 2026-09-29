@@ -12,11 +12,11 @@ import { scoreSegment } from "./health.ts";
 import {
   loadHistorySegments,
   loadSegmentInput,
-  loadSettledSegments,
   localDayKey,
   localDayStart,
   todayHealth,
 } from "./health_query.ts";
+import { recordFinish } from "./journal.ts";
 import type { CoreEvent } from "./events.ts";
 
 function makeDb(): Database.Database {
@@ -106,6 +106,8 @@ test("本段时间窗里的 session_error 拆开 success 的两档；窗口外�
   assert.equal(scoreSegment(input)!.factors.outcome, 20);
 });
 
+// 当天聚合读的是日志行（U12），不是 sessions：直接摆 session 行之后要像 server 的事件链那样
+// 在「收工」那一刻 recordFinish 一次 —— 没结算的、被回收的它根本不写（这正是要测的一部分）
 test("today：只收今天结算的段；昨天的、还在跑的都不算；一段都没有是 null", () => {
   const db = makeDb();
   const now = new Date();
@@ -120,12 +122,16 @@ test("today：只收今天结算的段；昨天的、还在跑的都不算；一
   const yesterday = new Date(dayStart - 3 * 60 * MIN).toISOString();
   put.run("old", 0, yesterday, yesterday, "abandoned", 99, yesterday, 9);
   put.run("live", 1, now.toISOString(), null, null, 99, now.toISOString(), 9);
+  assert.ok(recordFinish(db, "claude_code", "old"));
+  assert.equal(recordFinish(db, "claude_code", "live"), null, "还在跑的一段不写日志（R9）");
   assert.equal(todayHealth(db, now).mean, null, "昨天的与还在跑的都不进今天的聚合");
 
   const start = new Date(Math.max(dayStart, now.getTime() - 60 * MIN)).toISOString();
   put.run("good", 0, start, now.toISOString(), "success", 40, start, 0);
   put.run("gone", 0, start, now.toISOString(), "orphaned", 99, start, 9);
-  assert.equal(loadSettledSegments(db, localDayStart(now)).length, 2);
+  assert.ok(recordFinish(db, "claude_code", "good"));
+  assert.equal(recordFinish(db, "claude_code", "gone"), null, "被回收的一段不写日志（R10）");
+  assert.equal(loadHistorySegments(db, localDayStart(now)).length, 1);
   assert.deepEqual(todayHealth(db, now), { mean: 100, health: 1, segments: 1 });
 });
 
@@ -139,7 +145,7 @@ test("本地午夜：localDayStart 落在同一天的 00:00（本地时区）", 
   assert.equal(start.getMinutes(), 0);
 });
 
-test("批量读和逐个读是同一个口径：每个 session 的等待、报错各归各的", () => {
+test("批量读和逐个读是同一个口径；日志里存的打分输入与收工那一刻读到的一模一样", () => {
   const db = makeDb();
   const reg = new SessionRegistry({ db });
   const t0 = Date.now() - 2000;
@@ -153,12 +159,13 @@ test("批量读和逐个读是同一个口径：每个 session 的等待、报�
   ).run("err-b", "claude_code", "b", "session_error", "x");
   for (const id of ["a", "b"]) {
     reg.handle(ev(t0 + 5 * MIN, { session_id: id, event_type: "session_finished", payload: { outcome: "success" } }));
+    recordFinish(db, "claude_code", id); // server 的事件链在这一刻写日志
   }
   const history = loadHistorySegments(db, localDayStart(new Date(t0), 1));
   assert.deepEqual(history.map((h) => h.sessionId).sort(), ["a", "b"]);
   for (const h of history) {
     assert.deepEqual(h.input, loadSegmentInput(db, "claude_code", h.sessionId), h.sessionId);
-    assert.equal(h.projectId, "/Users/x/my-app");
+    assert.equal(h.project, "my-app", "日志行里只有短名，原始路径根本没存");
   }
   const a = history.find((h) => h.sessionId === "a")!.input;
   const b = history.find((h) => h.sessionId === "b")!.input;

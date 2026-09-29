@@ -9,7 +9,7 @@
  * outcome_bonus:      success→+20 · partial→+5 · abandoned→0
  * daily_care_bonus:   休息后恢复新 session → +5
  * self_growth:        每小时 +0.1 EXP（tired 暂停）
- * 进化: 纯配置 {from_level, conditions, to_stage}
+ * 进化: 纯配置 {from_level, conditions, to_stage}；发生时经 onEvolve 交给 server（气泡 + 日志，R29）
  * health:             今天已结算段的 Session Health（Context / Focus / Outcome，时长加权）
  *                     映射到 0.5–1.0（core/health.ts petHealthFromMean）；今天还没有 → 按 1.0
  */
@@ -17,6 +17,7 @@ import type Database from "better-sqlite3";
 import type { CoreEvent, PetState } from "./events.ts";
 import { getDailyExpCap } from "./settings.ts";
 import { todayHealth } from "./health_query.ts";
+import type { EvolutionRecord } from "./journal.ts";
 
 export interface PetSnapshot {
   id: number;
@@ -80,6 +81,8 @@ export function outcomeBonus(outcome: string): number {
 
 export class ExpEngine {
   private db: Database.Database;
+  /** 进化的那一刻（R29）。server 注入：发 evolution 气泡 + 写日志。这里只负责说「发生了」 */
+  onEvolve?: (e: EvolutionRecord) => void;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -296,7 +299,33 @@ export class ExpEngine {
       this.db
         .prepare("UPDATE pets SET pet_type_id=?, health_score=? WHERE id=?")
         .run(targetId, health, petId);
-      console.log(`[vibepaws] 🐣 evolution → ${targetId}`);
+      // 原来只有一行 console.log：用户从来不知道自己的宠物进化过（landscape：codachi 的「无声进化」）。
+      // 现在交给 server —— 它发一条 evolution 气泡、写一行日志。连跳两级就说两次，每一步各是一件事
+      this.announceEvolution({
+        petId,
+        fromTypeId: pet.pet_type_id,
+        toTypeId: targetId,
+        fromForm: this.typeName(pet.pet_type_id),
+        toForm: this.typeName(targetId),
+        level,
+        health: round2(health),
+        at: new Date().toISOString(),
+      });
+    }
+  }
+
+  private typeName(id: number): string | null {
+    const row = this.db.prepare("SELECT name FROM pet_types WHERE id=?").get(id) as { name: string } | undefined;
+    return row?.name ?? null;
+  }
+
+  /** 进化已经落库了：通知与日志失败不该回滚它，也不该从 EXP 结算里抛出去 */
+  private announceEvolution(e: EvolutionRecord): void {
+    console.log(`[vibepaws] 🐣 evolution ${e.fromTypeId} → ${e.toTypeId}`);
+    try {
+      this.onEvolve?.(e);
+    } catch (err) {
+      console.error("[vibepaws] evolution announce failed:", err);
     }
   }
 

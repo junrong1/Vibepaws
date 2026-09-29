@@ -5,7 +5,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   event_id      TEXT,
   agent         TEXT NOT NULL,
   session_id    TEXT NOT NULL,
-  type          TEXT NOT NULL,             -- decision | permission | context | error | drift | milestone
+  type          TEXT NOT NULL,             -- decision | permission | context | error | drift | milestone | repeat_edit | ready | evolution
   title         TEXT NOT NULL,
   body          TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'shown' CHECK (status IN ('shown','dismissed','actioned','muted')),
@@ -189,12 +189,53 @@ CREATE TABLE IF NOT EXISTS exp_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_exp_logs_session ON exp_logs(session_id);
 
+-- 日志（journal，U12 / R23 / KTD9）：每一段收工一行、每一次进化一行。**真相在这张表**，
+-- journal/<YYYY-MM>.md 只是从这些行渲染出来的导出（见 core/journal.ts）—— reset 删得到行，
+-- 删不到一份当作记录的 markdown。
+--   kind           session（一段收工）| evolution（进化）
+--   idem_key       幂等键：session:<agent>:<agent_session_id>:<segment> / evolution:<pet>:<from>:<to>。
+--                  唯一索引在 INDEXES_AFTER_COLUMNS 里建（老库要先补列）。重放同一条收工事件、
+--                  Core 写到一半重启，都写不出第二行 —— 靠的是这一列，不是内存里的标记
+--   occurred_at    那一刻（段的 finished_at / 进化的时刻，ISO）；day = 它的**本地**日（YYYY-MM-DD），
+--                  月份文件与 Den 的筛选都按它
+--   project        项目**短名**（projectShortName）。原始 project_id 是绝对路径，这里刻意不存
+--   input_json     打分输入（health.SegmentInput）：历史与当天聚合从这里重新打分，口径与活的 session 一致
+--   score / pet_score / factors_json / omitted_json / evidence_json  收工那一刻结算的分（收据）
+--   files_json     本段改过的文件名（basename，至多 JOURNAL_MAX_FILES 个）；files_total = 去重后的总数
+--   from_* / to_* / level / health  进化：从哪个形态到哪个形态、在几级、满足门槛的健康分
+--   rendered_at    追加进月份文件的时刻（NULL = 还没写进去：没配目录，或者上次写失败，下次补）
 CREATE TABLE IF NOT EXISTS memories (
   id            INTEGER PRIMARY KEY,
   session_id    INTEGER REFERENCES sessions(id),
-  kind          TEXT NOT NULL,             -- session_finish | achievement | milestone
+  kind          TEXT NOT NULL,             -- session | evolution
   safe_summary  TEXT NOT NULL,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  idem_key      TEXT,
+  occurred_at   TEXT,
+  day           TEXT,
+  agent         TEXT,
+  agent_session_id TEXT,
+  segment       INTEGER,
+  project       TEXT,
+  started_at    TEXT,
+  finished_at   TEXT,
+  duration_ms   INTEGER,
+  outcome       TEXT,
+  score         REAL,
+  pet_score     REAL,
+  factors_json  TEXT,
+  omitted_json  TEXT,
+  evidence_json TEXT,
+  input_json    TEXT,
+  files_json    TEXT,
+  files_total   INTEGER,
+  from_type_id  INTEGER,
+  to_type_id    INTEGER,
+  from_form     TEXT,
+  to_form       TEXT,
+  level         INTEGER,
+  health        REAL,
+  rendered_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -299,6 +340,44 @@ const ADDED_COLUMNS: Array<{
                END
                WHERE resolved_at IS NULL`,
   },
+  // 日志（U12）。memories 在这之前是一张没人写的表（G21），老行一律没有这些列 —— 不回填：
+  // 没有 idem_key 的老行不参与幂等，也不进历史（它们本来就不存在）
+  { table: "memories", column: "idem_key", ddl: "TEXT" },
+  { table: "memories", column: "occurred_at", ddl: "TEXT" },
+  { table: "memories", column: "day", ddl: "TEXT" },
+  { table: "memories", column: "agent", ddl: "TEXT" },
+  { table: "memories", column: "agent_session_id", ddl: "TEXT" },
+  { table: "memories", column: "segment", ddl: "INTEGER" },
+  { table: "memories", column: "project", ddl: "TEXT" },
+  { table: "memories", column: "started_at", ddl: "TEXT" },
+  { table: "memories", column: "finished_at", ddl: "TEXT" },
+  { table: "memories", column: "duration_ms", ddl: "INTEGER" },
+  { table: "memories", column: "outcome", ddl: "TEXT" },
+  { table: "memories", column: "score", ddl: "REAL" },
+  { table: "memories", column: "pet_score", ddl: "REAL" },
+  { table: "memories", column: "factors_json", ddl: "TEXT" },
+  { table: "memories", column: "omitted_json", ddl: "TEXT" },
+  { table: "memories", column: "evidence_json", ddl: "TEXT" },
+  { table: "memories", column: "input_json", ddl: "TEXT" },
+  { table: "memories", column: "files_json", ddl: "TEXT" },
+  { table: "memories", column: "files_total", ddl: "INTEGER" },
+  { table: "memories", column: "from_type_id", ddl: "INTEGER" },
+  { table: "memories", column: "to_type_id", ddl: "INTEGER" },
+  { table: "memories", column: "from_form", ddl: "TEXT" },
+  { table: "memories", column: "to_form", ddl: "TEXT" },
+  { table: "memories", column: "level", ddl: "INTEGER" },
+  { table: "memories", column: "health", ddl: "REAL" },
+  { table: "memories", column: "rendered_at", ddl: "TEXT" },
+];
+
+/**
+ * 建在「后补的列」上的索引。不能写进 SCHEMA_SQL：那一段在补列**之前**跑，老库上这一列还不存在，
+ * CREATE INDEX 会直接抛错、Core 起不来。所以在 addMissingColumns 之后再建（IF NOT EXISTS，幂等）。
+ */
+const INDEXES_AFTER_COLUMNS = [
+  // 幂等的依据（R23）：同一段收工只能有一行。NULL 不互相冲突 —— 老行不受影响
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_idem ON memories(idem_key)",
+  "CREATE INDEX IF NOT EXISTS idx_memories_day ON memories(kind, day)",
 ];
 
 interface MigrateDb {
@@ -322,6 +401,7 @@ function addMissingColumns(db: MigrateDb): void {
 export function applySchema(db: MigrateDb): number {
   db.exec(SCHEMA_SQL);
   addMissingColumns(db);
+  for (const sql of INDEXES_AFTER_COLUMNS) db.exec(sql);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   return SCHEMA_VERSION;
 }

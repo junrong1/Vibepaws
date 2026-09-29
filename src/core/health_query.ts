@@ -9,8 +9,8 @@
  *            session_error。events 只有 Core 的 received_at（SQLite 的 'YYYY-MM-DD HH:MM:SS'，
  *            秒级、UTC），与 ISO 时间戳都交给 julianday() 比较；起点放宽一秒吸收秒级截断
  *
- * 已知的缺口：一行 session 只记得**最近一段**的测量值。同一天里 clear 过的 session，
- * 前面几段在 session_finished 那一刻由日志（U12）取走；在那之前，当天聚合只看得到每行的最后一段。
+ * 一行 session 只记得**最近一段**的测量值；前面几段在 session_finished 那一刻由日志（core/journal.ts）
+ * 取走。所以「活的」读 sessions（loadSegmentInput / inputsForRows），「历史」读日志行（loadHistorySegments）。
  */
 import type Database from "better-sqlite3";
 import {
@@ -93,55 +93,50 @@ export function loadSegmentInput(db: Database.Database, agent: string, agentSess
   return row ? inputsForRows(db, [row])[0]! : null;
 }
 
-/**
- * 在 `since`（ISO）之后结算的段。被回收的也会返回（它们有 finished_at）—— 打分那一层负责
- * 把它们排除（R10），这里不替它做判断。
- */
-export function loadSettledSegments(db: Database.Database, since: string): SegmentInput[] {
-  const rows = db
-    .prepare(
-      `SELECT ${SEGMENT_COLUMNS} FROM sessions
-       WHERE is_active=0 AND finished_at IS NOT NULL AND julianday(finished_at) >= julianday(?)
-       ORDER BY finished_at`,
-    )
-    .all(since) as SegmentRowWithKey[];
-  return inputsForRows(db, rows);
-}
-
-/** 一段历史：打分输入 + 它是谁的。project_id 是原始绝对路径，出这一层之前必须换成短名 */
+/** 一段历史：打分输入 + 它是谁的。project 已经是短名 —— 原始 project_id 根本没进日志行 */
 export interface HistorySegment {
   agent: string;
   sessionId: string;
   segment: number;
-  projectId: string;
+  project: string;
   input: SegmentInput;
 }
 
 /**
- * 历史的**唯一来源**：`since`（ISO）之后结算的段。Den（U13）、周卡（U14）、/api/session_health
- * 都从这里取，别处不许自己再查 sessions 拼历史。
+ * 历史的**唯一来源**：`since`（ISO）之后收工的段。Den（U13）、周卡（U14）、/api/session_health、
+ * 当天聚合（todayHealth）都从这里取，别处不许自己再查 sessions 拼历史。
  *
- * 今天的来源是 sessions 表 —— 一行只记得最近一段，所以同一个 session clear 过、或者收工后又开了
- * 新的一段，前面那段就从历史里消失了（新段在跑的时候，这一行根本不是「已结算」）。
- * U12 把每段收工写进 memories 之后，把这个函数的函数体换成读日志行即可：签名不变，
- * 调用方一行不用改。被回收的段照样返回，排除它们是打分那一层的事（R10）。
+ * 来源是日志行（memories kind='session'，U12）：每一段在 session_finished 那一刻写一行，
+ * 所以 clear 过、resume 过的 session，前面那几段也都还在 —— sessions 表一行只记得最近一段。
+ * 行里存的是收工那一刻的打分**输入**（input_json），这里重新打分：口径与活的 session 永远是同一份
+ * health.ts。被回收的段根本不会写进日志（R10），打分那一层照旧会再排除一遍。
  */
 export function loadHistorySegments(db: Database.Database, since: string): HistorySegment[] {
   const rows = db
     .prepare(
-      `SELECT ${SEGMENT_COLUMNS}, project_id FROM sessions
-       WHERE is_active=0 AND finished_at IS NOT NULL AND julianday(finished_at) >= julianday(?)
-       ORDER BY finished_at`,
+      `SELECT agent, agent_session_id, segment, project, input_json FROM memories
+       WHERE kind='session' AND input_json IS NOT NULL AND julianday(occurred_at) >= julianday(?)
+       ORDER BY occurred_at, id`,
     )
-    .all(since) as Array<SegmentRowWithKey & { project_id: string }>;
-  const inputs = inputsForRows(db, rows);
-  return rows.map((r, i) => ({
-    agent: r.agent,
-    sessionId: r.agent_session_id,
-    segment: r.segment,
-    projectId: r.project_id,
-    input: inputs[i]!,
-  }));
+    .all(since) as Array<{ agent: string; agent_session_id: string; segment: number; project: string | null; input_json: string }>;
+  const out: HistorySegment[] = [];
+  for (const r of rows) {
+    const input = parseSegmentInput(r.input_json);
+    if (!input) continue; // 一行坏掉的 JSON 不该让整份历史 500
+    out.push({ agent: r.agent, sessionId: r.agent_session_id, segment: r.segment, project: r.project ?? "", input });
+  }
+  return out;
+}
+
+/** input_json → SegmentInput；形状不对 → null */
+function parseSegmentInput(raw: string): SegmentInput | null {
+  try {
+    const v = JSON.parse(raw) as SegmentInput;
+    if (!v || typeof v !== "object" || !Array.isArray(v.waits)) return null;
+    return v;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -173,7 +168,8 @@ export interface DayHealth {
 
 /** 今天的聚合：宠物健康（exp.ts healthScore）与状态推送（U4）共用这一份 */
 export function todayHealth(db: Database.Database, now: Date = new Date()): DayHealth {
-  const segs = loadSettledSegments(db, localDayStart(now));
+  // 读日志而不是 sessions：同一个 session 今天 clear 过三次，三段都算（sessions 只剩最后一段）
+  const segs = loadHistorySegments(db, localDayStart(now)).map((h) => h.input);
   const mean = dayMean(segs);
   const counted = segs.filter((s) => !isReclaimed(s.outcome)).length;
   return { mean, health: petHealthFromMean(mean), segments: mean === null ? 0 : counted };

@@ -15,6 +15,7 @@ import {
   sessionHealthHistory,
 } from "./health_history.ts";
 import { localDayKey } from "./health_query.ts";
+import { recordFinish } from "./journal.ts";
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
@@ -46,6 +47,8 @@ function put(
     o.start.toISOString(),
     o.edits ?? 0,
   );
+  // 历史读的是日志行（U12）：像 server 的事件链那样在收工那一刻记一笔（没结算 / 被回收的它不写）
+  recordFinish(db, "claude_code", id);
 }
 
 // 固定的「现在」：本地时间 2026-09-29 15:00

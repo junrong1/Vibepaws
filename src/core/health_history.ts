@@ -4,11 +4,10 @@
  * 这一层只做两件事：把 health_query.loadHistorySegments 取出来的段打分、换成线上的样子；
  * 按**本地**日历日分桶聚合。打分规则在 health.ts，取哪些行在 health_query.ts。
  *
- * 线上永远不出现原始 project_id（绝对路径）：一律 projectShortName()。周卡是要被截图发出去的，
- * 路径里的用户名、公司目录名不该跟着出去（R26）。
+ * 线上永远不出现原始 project_id（绝对路径）：日志行里存的就只有 projectShortName() 的短名。
+ * 周卡是要被截图发出去的，路径里的用户名、公司目录名不该跟着出去（R26）。
  *
- * 单独成一个文件而不是放进 health_query.ts：短名来自 registry.ts，而 registry 为了给 SessionView
- * 打分已经 import 了 health_query —— 反过来再 import 就成环了。
+ * 来源是日志行（source: "journal"，U12）：clear / resume 过的 session，前面那几段也在。
  */
 import type Database from "better-sqlite3";
 import {
@@ -20,7 +19,6 @@ import {
   type SegmentInput,
 } from "./health.ts";
 import { loadHistorySegments, localDayKey, localDayStart, type DayHealth } from "./health_query.ts";
-import { projectShortName } from "./registry.ts";
 import type {
   DayHealthView,
   SessionHealthDay,
@@ -73,7 +71,7 @@ export function sessionHealthHistory(
       agent: h.agent,
       session_id: h.sessionId,
       segment: h.segment,
-      project: projectShortName(h.projectId),
+      project: h.project,
       day,
       started_at: h.input.startedAt,
       finished_at: h.input.finishedAt,
@@ -103,5 +101,5 @@ export function sessionHealthHistory(
     });
   }
 
-  return { source: "sessions", days, since, until: now.toISOString(), segments, daily };
+  return { source: "journal", days, since, until: now.toISOString(), segments, daily };
 }

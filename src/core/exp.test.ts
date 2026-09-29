@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
 import { ExpEngine, contextMultiplier, topicMultiplier, outcomeBonus, levelExpRequired, rarityWeight, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
+import { recordFinish } from "./journal.ts";
 import type { CoreEvent } from "./events.ts";
 
 function makeDb(): Database.Database {
@@ -234,6 +235,7 @@ function settledSegment(
   db: Database.Database,
   id: string,
   seg: { endMsAgo: number; durationMs: number; peak: number; edits: number; outcome: string },
+  opts: { journal?: boolean } = {},
 ): void {
   const end = new Date(Date.now() - seg.endMsAgo);
   const start = new Date(end.getTime() - seg.durationMs).toISOString();
@@ -242,6 +244,8 @@ function settledSegment(
        context_peak, context_reported_at, repeat_edit_count)
      VALUES('claude_code', ?, '/p', 0, ?, ?, ?, ?, ?, ?)`,
   ).run(id, start, end.toISOString(), seg.outcome, seg.peak, start, seg.edits);
+  // 健康读的是日志行（U12）：收工那一刻 server 的事件链会记一笔，这里照做
+  if (opts.journal ?? true) recordFinish(db, "claude_code", id);
 }
 
 function selfGrowthLogs(db: Database.Database): number {
@@ -290,12 +294,15 @@ test("今天打得很差：健康分掉到 0.7 以下，自成长暂停，pets.h
 test("Response 不喂宠物：一段等了半小时才答、其余都好的 session，宠物照样满格", () => {
   const db = makeDb();
   const exp = new ExpEngine(db);
-  settledSegment(db, "slow", { endMsAgo: 60_000, durationMs: 2 * 3_600_000, peak: 50, edits: 0, outcome: "success" });
+  // 等待要在「收工」之前就在账本里，日志行才带得上它 —— 所以先不记，插完等待再记
+  settledSegment(db, "slow", { endMsAgo: 60_000, durationMs: 2 * 3_600_000, peak: 50, edits: 0, outcome: "success" }, { journal: false });
   const start = new Date(Date.now() - 2 * 3_600_000).toISOString();
   db.prepare(
     `INSERT INTO needs_input_waits(agent, session_id, segment, kind, started_at, received_at, cleared_at, resolution)
      VALUES('claude_code', 'slow', 1, 'permission', ?, ?, ?, 'inferred')`,
   ).run(start, start, new Date(Date.parse(start) + 40 * 60_000).toISOString());
+  const entry = recordFinish(db, "claude_code", "slow")!;
+  assert.equal(entry.factors!.response, 7, "Response 确实打得很低（40 分钟 → 7）");
   assert.equal(exp.getPetSnapshot().health_score, 1);
 });
 

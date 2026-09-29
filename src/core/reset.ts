@@ -7,14 +7,18 @@
  * 在库里做，做完顺手把内存里的状态一起清干净。
  *
  * 两个 scope，是两件不同的事，不要合并：
- *   · pet  —— 换一只新宠物：宠物、EXP 流水、memories。session 列表与设置留着。
+ *   · pet  —— 换一只新宠物：宠物、EXP 流水、日志（memories + 日志文件）。session 列表与设置留着。
  *   · data —— 全部本地数据：连 session / 事件 / 通知 / 设置一起，回到首次启动的样子。
+ *
+ * 日志文件（<data>/journal/YYYY-MM.md，见 core/journal.ts）两个 scope 都删：它是 memories 的导出，
+ * 行删了文件还在，等于给一只刚被清空的宠物留下一整本散文历史。只删我们起的那种文件名。
  *
  * 唯一被刻意保留的东西是 `api_token`：删掉它，正在跑的 hook 与 UI server 会在
  * 下一次请求上 401，而用户刚才点的是「删除数据」，不是「把采集通道弄坏」。
  */
 import type Database from "better-sqlite3";
 import { statSync } from "node:fs";
+import { clearJournalFiles } from "./journal.ts";
 
 export type ResetScope = "pet" | "data";
 
@@ -81,6 +85,11 @@ export interface ResetResult {
   deleted: Record<string, number>;
   /** VACUUM 成功与否：失败不算重置失败，但「文件没变小」需要有个解释 */
   vacuumed: boolean;
+  /**
+   * 删掉了几个日志文件。不放进 `deleted`：界面把 deleted 里的数加起来说「清掉了多少行」，
+   * 文件不是行
+   */
+  journal_files: number;
 }
 
 /**
@@ -96,7 +105,11 @@ export interface ResetResult {
  * 4.2MB，两边都还带着那些被删掉的原文。真正把它们扔掉的是紧跟着的
  * TRUNCATE checkpoint（同一份数据实测降到 90KB）。
  */
-export function resetLocalData(db: Database.Database, scope: ResetScope): ResetResult {
+export function resetLocalData(
+  db: Database.Database,
+  scope: ResetScope,
+  opts: { journalDir?: string | null } = {},
+): ResetResult {
   const tables = TABLES[scope];
   const deleted: Record<string, number> = {};
 
@@ -117,6 +130,10 @@ export function resetLocalData(db: Database.Database, scope: ResetScope): ResetR
     }
   })();
 
+  // 行先删（事务提交之后），文件后删：反过来的话，删文件成功、事务回滚，就只剩一份没有导出的行 ——
+  // 下一次写日志时 flushJournal 也不会把它们补回来（它们早就 rendered 过了）
+  const journal_files = TABLES[scope].includes("memories") ? clearJournalFiles(opts.journalDir ?? null) : 0;
+
   let vacuumed = false;
   try {
     db.exec("VACUUM");
@@ -125,5 +142,5 @@ export function resetLocalData(db: Database.Database, scope: ResetScope): ResetR
   } catch {
     // WAL 里还有别的读者、或磁盘不够：数据已经删了，只是文件没缩
   }
-  return { scope, deleted, vacuumed };
+  return { scope, deleted, vacuumed, journal_files };
 }
