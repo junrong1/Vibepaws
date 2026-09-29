@@ -7,6 +7,9 @@ import * as petRegistry from "./pets/registry.js";
 import { BLEND_MS, MOTION, motionAt } from "./pets/motion.js";
 import { stickyBubbleStale } from "./health/bubbles.js";
 import { PIP_CELLS, PIP_GAP_AFTER, nameplateStrip, healthSurfaces } from "./health/pips.js";
+import {
+  FACTOR_MAX, rowHealth, sortSessions, panelSignature, factorBreakdown, weakestFactor, rowKey,
+} from "./health/rows.js";
 // 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
 import { t as translate, normalizeLocale } from "/i18n.js";
 
@@ -644,26 +647,29 @@ function emptyPanelKey() {
   return "ui.panel.empty";
 }
 
+/** 展开着因子明细的行（rowKey）。只活在这个窗口里：重开 App 全部收起 */
+const expandedRows = new Set();
+
 function renderPanel() {
   const container = $("sessions");
-  const rank = { "needs-you": 0, warning: 1, juggling: 2, delegating: 3, working: 4, ready: 5, idle: 6, finished: 7 };
-  const sorted = [...state.sessions].sort((a, b) => (rank[a.state] ?? 5) - (rank[b.state] ?? 5));
+  // 分数显示在浮层里吗（R30）。关掉时排序也不看分数 —— 顺序本身就会泄露它
+  const showHealth = healthSurfaces(state.healthVisibility).flyout;
+  // needs-you 永远最前，其余按分数从差到好（排序、指纹、最弱因子都在 ui/health/rows.js）
+  const sorted = sortSessions(state.sessions, { byScore: showHealth });
   // 有 session 在等你时，「等了多久」要继续走表 —— 让指纹每分钟变一次，
   // 其余时候完全不重建（不然焦点每 5 秒被清一次）。
   const waitTick = sorted.some((s) => s.needs_input_since) ? Math.floor(Date.now() / 60_000) : 0;
-  const signature = JSON.stringify([
-    coreReachable(),
-    state.adapters === null ? null : state.adapters.length,
+  // 不在推送里的行，展开状态也不留（不然一个消失又回来的 session 会莫名其妙地是展开的）
+  for (const k of expandedRows) if (!sorted.some((x) => rowKey(x) === k)) expandedRows.delete(k);
+  // 指纹里的每一项为什么要在（outcome、subagent_count、分数……）见 rows.js 的 sessionSignature
+  const signature = panelSignature({
+    reachable: coreReachable(),
+    adapters: state.adapters === null ? null : state.adapters.length,
     waitTick,
-    // outcome 要进指纹：一个 session 被回收时 is_active 与 outcome 一起变，
-    // 但只看 is_active 的话「进程没了」那行小字永远画不出来
-    sorted.map((s) => [
-      s.agent, s.session_id, s.state, s.is_active, s.token_used, s.needs_input_since, s.title, s.outcome,
-      // 计数要进指纹：2 → 3 个分身时 state 仍然是 juggling，只有「×3」那个数字变了。
-      // 少了这一项，升档在列表里就是静默的（clawd #862 的另一半）。
-      s.subagent_count,
-    ]),
-  ]);
+    sessions: sorted,
+    showHealth,
+    expanded: expandedRows,
+  });
   if (signature === lastPanelSignature) return;
   lastPanelSignature = signature;
   container.replaceChildren();
@@ -682,7 +688,7 @@ function renderPanel() {
     return;
   }
 
-  for (const s of list) container.appendChild(sessionRow(s));
+  for (const s of list) container.appendChild(sessionItem(s, showHealth));
   if (hidden > 0) {
     const more = document.createElement("div");
     more.id = "panel-more";
@@ -712,6 +718,128 @@ function reclaimedSession(s) {
 const SESSION_STATES = [
   "idle", "working", "delegating", "juggling", "needs-you", "warning", "ready", "finished",
 ];
+
+/**
+ * 列表里的一项 = 原来那一行（点它复制 resume 命令）+ 右侧的分数按钮（点它展开四个因子）。
+ * 分数按钮是行的**兄弟**而不是孩子：role=button 里再套一个 button，读屏和键盘都说不清按的是哪个。
+ */
+function sessionItem(s, showHealth) {
+  const item = document.createElement("div");
+  item.className = "session-item";
+  item.appendChild(sessionRow(s));
+  const rh = showHealth ? rowHealth(s) : null;
+  // null = 被回收 / 没有 health：不画分数也不画 pip —— 它没有分数，不是 0 分
+  if (!rh) return item;
+  const key = rowKey(s);
+  const open = expandedRows.has(key);
+  item.appendChild(scoreToggle(s, rh, key, open));
+  if (open) item.appendChild(factorDetails(s.health, rh));
+  return item;
+}
+
+/** 分数 + 一条 4px 高的 pip 条。浮层里数字按色带着色：这是读的地方，不是余光扫的地方 */
+function scoreToggle(s, rh, key, open) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "s-health";
+  btn.dataset.rowKey = key;
+  btn.setAttribute("aria-expanded", String(open));
+
+  const num = document.createElement("span");
+  num.className = "s-num";
+  const pips = document.createElement("span");
+  buildPipCells(pips, "pip");
+  if (rh.kind === "score") {
+    num.textContent = String(rh.shown);
+    num.classList.add(`band-${rh.band}`);
+    pips.className = `pips s-pips band-${rh.band}`;
+    rh.strip.cells.forEach((on, i) => pips.children[i].classList.toggle("on", on));
+    if (rh.provisional) btn.classList.add("provisional");
+    btn.title = rh.provisional ? t("ui.health.provisional") : t("ui.health.settled");
+    btn.setAttribute(
+      "aria-label",
+      t(rh.provisional ? "ui.health.aria.provisional" : "ui.health.aria", { score: rh.shown }),
+    );
+  } else {
+    // 一个因子都没测到：说不知道，画空心格 —— 不是 0 分
+    num.textContent = "—";
+    pips.className = "pips s-pips empty";
+    btn.title = t("ui.health.unknown");
+    btn.setAttribute("aria-label", t("ui.health.unknown"));
+  }
+  btn.append(num, pips);
+
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (expandedRows.has(key)) expandedRows.delete(key);
+    else expandedRows.add(key);
+    renderPanel();
+    // 整张列表按指纹重建了：把焦点还给同一行的按钮，键盘用户不会被甩回开头
+    for (const el of $("sessions").querySelectorAll(".s-health")) {
+      if (el.dataset.rowKey === key) el.focus({ preventScroll: true });
+    }
+  };
+  return btn;
+}
+
+/**
+ * 展开后的四个因子：名字、槽、分数、证据。
+ * 省略的因子写「没测到」而不画一个 0；没结算的 Outcome 画虚线槽。
+ * 最弱的那个（rows.js 的 weakestFactor：只在有分的因子里挑）会被点名。
+ */
+function factorDetails(h, rh) {
+  const box = document.createElement("div");
+  box.className = "s-factors";
+  const weakest = weakestFactor(h);
+  if (weakest) box.appendChild(line("f-weakest", t("ui.health.weakest", { factor: t(`ui.health.factor.${weakest}`) })));
+
+  for (const f of factorBreakdown(h)) {
+    const row = document.createElement("div");
+    row.className = `f-row ${f.status}${f.name === weakest ? " weakest" : ""}`;
+
+    const name = document.createElement("span");
+    name.className = "f-name";
+    name.textContent = t(`ui.health.factor.${f.name}`);
+
+    const track = document.createElement("span");
+    track.className = "f-track";
+    if (f.status === "scored") {
+      const fill = document.createElement("span");
+      fill.className = "f-fill";
+      fill.style.width = `${Math.round(f.ratio * 100)}%`;
+      track.appendChild(fill);
+    }
+
+    const pts = document.createElement("span");
+    pts.className = "f-pts";
+    pts.textContent = f.status === "scored" ? `${f.points}/${FACTOR_MAX}` : "—";
+
+    const ev = document.createElement("span");
+    ev.className = "f-ev";
+    ev.textContent = factorEvidence(f, h.evidence ?? {});
+
+    row.append(name, track, pts, ev);
+    box.appendChild(row);
+  }
+  if (rh.kind === "score" && rh.provisional) box.appendChild(line("f-note", t("ui.health.provisional")));
+  return box;
+}
+
+/** 每个因子「为什么是这个分」的那半句 */
+function factorEvidence(f, ev) {
+  if (f.status === "omitted") return t(`ui.health.omitted.${f.name}`);
+  if (f.status === "pending") return t("ui.health.pending");
+  if (f.name === "context") return t("ui.health.ev.context", { pct: Math.round(ev.context_peak ?? 0) });
+  if (f.name === "focus") return t("ui.health.ev.focus", { n: ev.repeat_edits ?? 0 });
+  if (f.name === "response") {
+    return t("ui.health.ev.response", {
+      time: fmtDuration(ev.response_median_ms ?? 0),
+      n: ev.response_samples ?? 0,
+    });
+  }
+  const outcome = localizedOr(`ui.health.outcome.${ev.outcome}`, ev.outcome ?? "");
+  return ev.error_count > 0 ? t("ui.health.ev.outcome.errors", { outcome, n: ev.error_count }) : outcome;
+}
 
 function sessionRow(s) {
   const row = document.createElement("div");

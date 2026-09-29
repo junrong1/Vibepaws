@@ -256,20 +256,30 @@ body.dragging #pet { filter: none; }
 #panel-empty { color: var(--dim); padding: 6px; }
 #panel-more { color: var(--dim); padding: 4px 6px; font-size: 9px; }
 
-.session-row {
+/* 一项 = 行（点它复制 resume 命令）+ 分数按钮（点它展开因子）+ 展开后的因子明细。
+ * 边框挂在项上：分数按钮是行的兄弟，不是孩子（见 app.js 的 sessionItem）。 */
+.session-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   margin-bottom: 6px;
-  cursor: pointer;
   background: rgba(255,255,255,0.02);
 }
-.session-row:hover { border-color: var(--accent); }
+.session-item:hover { border-color: var(--accent); }
+.session-row {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
 .session-row:focus-visible, #panel-actions button:focus-visible, #panel-close:focus-visible,
-#pet:focus-visible, #mute-badge:focus-visible {
+#pet:focus-visible, #mute-badge:focus-visible, .s-health:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -307,6 +317,60 @@ body.dragging #pet { filter: none; }
 .s-meta { font-size: 9px; color: var(--dim); flex-shrink: 0; }
 @keyframes pulse { 50% { opacity: 0.3; } }
 
+/* ---- 浮层里的分数（R13）：数字按色带着色 + 一条 4px 高的 pip 条 ----
+ * 名牌上 ≥70 是中性灰（余光里不该喊），浮层里 ≥70 是绿：这里是读的地方。 */
+.s-health {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 4px 8px 4px 2px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--dim);
+  font-family: var(--pixel);
+  cursor: pointer;
+}
+.s-num { font-size: 10px; font-weight: 700; line-height: 10px; }
+.s-num.band-neutral { color: var(--ok); }
+.s-num.band-amber { color: var(--warn); }
+.s-num.band-red { color: var(--danger); }
+.s-pips, .s-pips .pip { height: 4px; }
+.s-pips.band-neutral .pip.on { background: var(--ok); }
+/* 临时分（没结算）：数字带虚下划线、pip 半透明 —— 看得出它还会变 */
+.s-health.provisional .s-num { text-decoration: underline dashed; text-underline-offset: 2px; font-style: italic; }
+.s-health.provisional .s-pips .pip.on { opacity: 0.55; }
+
+.s-factors {
+  flex-basis: 100%;
+  padding: 2px 8px 6px 25px;
+  border-top: 1px dashed var(--border);
+  font-size: 9px;
+  color: var(--dim);
+}
+.f-weakest { color: var(--text); margin: 4px 0 2px; }
+.f-row {
+  display: grid;
+  grid-template-columns: 50px 40px 30px 1fr;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 0;
+}
+.f-row.weakest .f-name { color: var(--warn); }
+.f-name { color: var(--text); }
+.f-track { height: 4px; border-radius: 2px; background: #30363d; overflow: hidden; }
+.f-fill { display: block; height: 100%; background: var(--dim); transition: width 0.3s ease; }
+.f-row.weakest .f-fill { background: var(--warn); }
+/* 没结算的 Outcome：虚线空槽，不是一条画着 0 的实槽 */
+.f-row.pending .f-track { background: transparent; border: 1px dashed #6e7681; height: 5px; }
+/* 没测到：连槽都不画，文字说「没测到」 */
+.f-row.omitted .f-track { visibility: hidden; }
+.f-pts { text-align: right; }
+.f-ev { min-width: 0; line-height: 11px; }
+.f-note { margin-top: 3px; font-style: italic; }
+
 #panel-actions { display: flex; gap: 6px; margin-top: 8px; }
 #panel-actions button {
   flex: 1;
@@ -343,7 +407,7 @@ body.dragging #pet { filter: none; }
  * 会闪的状态点（needs-you、conn-degraded）不在其中：那两处的闪烁本身就是信息，
  * 而且只改透明度、不产生位移。宠物本体的持续起伏在 app.js 里按同一条媒体查询停掉。 */
 @media (prefers-reduced-motion: reduce) {
-  .pip { transition: none; }
+  .pip, .f-fill { transition: none; }
   #panel { animation: none; }
   #expfill { transition: none; }
 }
