@@ -22,6 +22,9 @@
  *                          X-Vibepaws-Grant —— 只有桌面壳手里有它（KTD13，见 core/rules.ts），
  *                          UI server 不转发这个头，也不代理这条路由
  *   POST /api/rules/revoke 撤销一条授予（{id, confirm}）。收回权限只要 token
+ *   GET  /api/coaching     辅导规则目录（条件 / 建议动作 / 现在的阈值 / 能不能调）+ 每条规则每周的误报率
+ *   POST /api/coaching     把一条规则的阈值恢复默认（{reset: rule}）—— 「没用」只会越调越安静，得有回来的路
+ *   POST /api/action       气泡动作：mute / unmute / dismiss / actioned / not_useful（{id, ids}：记理由 + 调阈值）
  *
  * 后台循环：僵尸 session 回收（G10，见 core/reclaim.ts）—— 启动时一次 + 60s 一轮。
  */
@@ -69,6 +72,7 @@ import {
   revokeGrant,
 } from "./rules.ts";
 import { projectShortName } from "./registry.ts";
+import { coachingRule, coachingSnapshot, resetThreshold, tuneRule, type CoachingRuleId, type TuneResult } from "./coaching.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
@@ -330,6 +334,12 @@ export class VibepawsServer {
             this.handleRevoke(req, res);
             return;
           }
+          // 辅导规则目录与误报率（U10 / R22）。只读 + 一个「恢复默认」
+          if (url === "/api/coaching") {
+            if (req.method === "POST") this.handleCoachingReset(req, res);
+            else sendJson(res, 200, coachingSnapshot(this.db));
+            return;
+          }
           res.writeHead(404, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "not found" }));
         } catch (err) {
@@ -448,8 +458,12 @@ export class VibepawsServer {
         this.exp.renamePet(parsed.pet_name);
         changed.push("pet_name");
       }
-      // 改完阈值/预算要重新武装闩锁，否则新设置要等下一个 session 才看得见效果
-      if (changed.includes("context_warn_pcts")) this.notifications.resetLatches("context");
+      // 改完阈值/预算要重新武装闩锁，否则新设置要等下一个 session 才看得见效果。
+      // context 是重新**对齐**而不是清空（U10）：清空的话，在 88% 上把 85 挪到 90，
+      // 几秒后下一条 context_update 就按新的 90 再报一次 —— 用户刚嫌吵，它立刻又响
+      if (changed.includes("context_warn_pcts")) {
+        this.notifications.relatch("context", readSettings(this.db).context_warn_pcts);
+      }
       if (changed.includes("budget_tokens")) this.notifications.resetLatches("budget");
       // 静默阈值同理：刚从 15 分钟调到 2 分钟的用户，等的是「现在就把那个僵尸收掉」，
       // 而不是「下一轮 sweep 也许会」。
@@ -623,6 +637,34 @@ export class VibepawsServer {
     });
   }
 
+  /** 把一条规则的阈值恢复默认。context 走的是同一个 context_warn_pcts，闩锁照设置窗口的规矩重新对齐 */
+  private handleCoachingReset(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const { reset } = (body ?? {}) as { reset?: unknown };
+      const rule = typeof reset === "string" ? coachingRule(reset) : null;
+      if (!rule || !rule.tunable) {
+        sendJson(res, 400, { error: "unknown or untunable rule" });
+        return;
+      }
+      const threshold = resetThreshold(this.db, rule.id);
+      if (rule.id === "context") this.notifications.relatch("context", threshold);
+      sendJson(res, 200, { ok: true, rule: rule.id, threshold, ...coachingSnapshot(this.db) });
+    });
+  }
+
+  /**
+   * 「没用」（U10）：记理由、结束气泡、把那条规则往安静的方向挪一档，并把**这个** session
+   * 闩在新的那一档上 —— 调阈值不能变成「刚说完没用，它马上换个数字又说一次」（R21）。
+   */
+  private notUseful(ids: number[]): { tuning: TuneResult | null } {
+    const r = this.notifications.notUseful(ids);
+    this.broadcastResolved(r.resolved);
+    if (!r.fired) return { tuning: null };
+    const tuning = tuneRule(this.db, r.fired.rule_id as CoachingRuleId, r.fired.tier);
+    this.notifications.silenceAfterTuning(tuning.rule, r.fired.agent, r.fired.session_id, tuning.silencedAt);
+    return { tuning };
+  }
+
   /** 「接上你的 agent」那张卡的数据：每个 agent 在不在这台机器上、Vibepaws 装没装。 */
   adaptersSnapshot(): { agents: ReturnType<typeof detectAgents>; installable: InstallAgent[] } {
     return {
@@ -699,13 +741,15 @@ export class VibepawsServer {
   /** UI 浮层动作：mute / unmute / dismiss / actioned */
   private handleAction(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
     readJsonBody(req, res, "bad body", (parsed) => {
-      const { action, minutes, project_id, session_id, id } = (parsed ?? {}) as {
+      const { action, minutes, project_id, session_id, id, ids } = (parsed ?? {}) as {
         action?: string;
         minutes?: number;
         project_id?: string;
         session_id?: string;
         id?: number;
+        ids?: unknown;
       };
+      let extra: Record<string, unknown> = {};
       // 时长必须收敛到合理区间：脏值不该变成「静音到下个世纪」或「静音 -5 分钟」
       const m = clampMinutes(minutes);
       const bad = (reason: string): void => {
@@ -748,12 +792,22 @@ export class VibepawsServer {
           if (r) this.broadcastResolved([r]);
           break;
         }
+        // 辅导气泡上的「没用」。ids = 这条气泡原地合并过的全部行（界面的 b.ids），id = 用户看着的最新那行
+        case "not_useful": {
+          const list = [
+            ...(Number.isInteger(id) ? [id as number] : []),
+            ...(Array.isArray(ids) ? ids.filter((x): x is number => Number.isInteger(x)).slice(0, 50) : []),
+          ];
+          if (list.length === 0) return bad("id required");
+          extra = this.notUseful(list);
+          break;
+        }
         default:
           return bad("unknown action");
       }
       // 静音状态是 pet_state 的一部分：改完立刻推给界面，按钮不用等下一次轮询
       this.broadcastState();
-      sendJson(res, 200, { ok: true, ...this.notifications.muteStatus() });
+      sendJson(res, 200, { ok: true, ...extra, ...this.notifications.muteStatus() });
     });
   }
 

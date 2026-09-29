@@ -88,6 +88,11 @@ export const MESSAGES = {
     "ui.bubble.always": "Always allow {rule} in {project}",
     "ui.toast.granted": "Won't ask again for {rule} in {project} — answer this one in your terminal",
     "ui.toast.grantfailed": "Couldn't save the rule — nothing was written",
+    // ---- 「没用」（U10）：记下理由、调安静一档，而且说出调成了什么 ----
+    "ui.bubble.notuseful": "Not useful",
+    "ui.toast.tuned": "Noted — {rule} warnings are now {threshold}",
+    "ui.toast.quietest": "Noted — {rule} warnings are already as quiet as they go. Turn them off in Settings.",
+    "ui.toast.noted": "Noted — thanks",
     "ui.toast.muted30": "🔕 Muted everything for 30 minutes",
     "ui.toast.muted2h": "😴 Muted everything for 2 hours",
     "ui.toast.unmuted": "🔔 Notifications are back on",
@@ -264,6 +269,26 @@ export const MESSAGES = {
     "settings.rules.external.item": "{rule} · {project}",
     "settings.rules.problem": "{project}: .claude/settings.local.json can't be read — Vibepaws won't touch it until it's fixed",
 
+    // ---- 辅导规则（U10 / R21 / R22）----
+    "settings.section.coaching": "Warnings",
+    "settings.coaching.hint":
+      "Each warning comes with a suggested next step. Pressing Not useful on a bubble makes that warning one step quieter — and it won't fire again for the same session at its new level. The weekly share of Not useful presses is how we tell a good warning from noise.",
+    "settings.coaching.rule.context": "Context",
+    "settings.coaching.rule.repeat_edit": "Repeat edits",
+    "settings.coaching.rule.error": "Tool failures",
+    "settings.coaching.rule.milestone": "Budget milestones",
+    "settings.coaching.rule.drift": "Topic drift",
+    "settings.coaching.threshold.context": "at {list}%",
+    "settings.coaching.threshold.repeat_edit": "after {n} repeat edits",
+    "settings.coaching.threshold.error": "every {n} failures",
+    "settings.coaching.threshold.error.one": "every failure",
+    "settings.coaching.threshold.milestone": "at {list}% of budget",
+    "settings.coaching.shadow": "Recording only — no bubble yet ({n} this week)",
+    "settings.coaching.fp": "Not useful this week: {pct}% of {shown}",
+    "settings.coaching.fp.none": "Not shown this week",
+    "settings.coaching.reset": "Reset",
+    "settings.coaching.reset.done": "{rule} warnings are back to the default",
+
     // ---- 接 agent（app 里那张卡；从前只有 CLI 一条路）----
     "settings.section.connect": "Connect your agent",
     "settings.connect.hint":
@@ -391,6 +416,15 @@ export const MESSAGES = {
     "notif.drift.body": "This task may have drifted off goal — consider a new session",
     "notif.milestone.title": "{pct}% of budget used",
     "notif.milestone.body": "{used}k tokens · budget {budget}k",
+    // ---- 重复编辑（Focus 的警告，U10）----
+    "notif.repeat_edit.title": "Same file edited again ×{n}",
+    "notif.repeat_edit.body": "The agent keeps reworking the same file within seconds",
+    // ---- 辅导规则的建议动作（U10 / R21）：每条警告都要回答「那我该做什么」----
+    "coach.context.action": "Wrap up this step, or /compact before it fills",
+    "coach.repeat_edit.action": "Pause it — restate what you want, or point at the right place",
+    "coach.error.action": "Look at the failing tool before letting it retry",
+    "coach.milestone.action": "Check the budget — raise it or wrap up",
+    "coach.drift.action": "Restate the session goal, or start a new session",
 
     // ---- adapter 安装器 CLI ----
     "cli.install.header": "[vibepaws] adapter install — agent={agent}{dry} scope={scope} repo={repo}",
@@ -501,6 +535,10 @@ export const MESSAGES = {
     "ui.bubble.always": "在 {project} 里永远允许 {rule}",
     "ui.toast.granted": "{project} 里的 {rule} 以后不再问 — 眼前这一次请在终端里答",
     "ui.toast.grantfailed": "规则没存上 — 什么都没写",
+    "ui.bubble.notuseful": "没用",
+    "ui.toast.tuned": "记下了 — {rule} 警告现在是 {threshold}",
+    "ui.toast.quietest": "记下了 — {rule} 警告已经是最安静的一档了，要关掉请去设置",
+    "ui.toast.noted": "记下了 — 谢谢",
     "ui.toast.muted30": "🔕 已安静 30 分钟",
     "ui.toast.muted2h": "😴 已安静 2 小时",
     "ui.toast.unmuted": "🔔 通知已恢复",
@@ -669,6 +707,25 @@ export const MESSAGES = {
     "settings.rules.external.item": "{rule} · {project}",
     "settings.rules.problem": "{project}：.claude/settings.local.json 读不了 — 修好之前 Vibepaws 不会碰它",
 
+    "settings.section.coaching": "警告",
+    "settings.coaching.hint":
+      "每条警告都带一个建议的下一步。在气泡上按「没用」，那条警告就安静一档 — 同一个 session 不会在新的那一档上再响一次。每周「没用」占多少，是分辨好警告和噪音的依据。",
+    "settings.coaching.rule.context": "Context",
+    "settings.coaching.rule.repeat_edit": "重复编辑",
+    "settings.coaching.rule.error": "工具失败",
+    "settings.coaching.rule.milestone": "预算里程碑",
+    "settings.coaching.rule.drift": "主题漂移",
+    "settings.coaching.threshold.context": "在 {list}%",
+    "settings.coaching.threshold.repeat_edit": "重复编辑 {n} 次之后",
+    "settings.coaching.threshold.error": "每 {n} 次失败",
+    "settings.coaching.threshold.error.one": "每次失败",
+    "settings.coaching.threshold.milestone": "预算的 {list}%",
+    "settings.coaching.shadow": "只记录 — 暂不弹气泡（本周 {n} 次）",
+    "settings.coaching.fp": "本周「没用」：{shown} 条里占 {pct}%",
+    "settings.coaching.fp.none": "本周没弹出过",
+    "settings.coaching.reset": "恢复默认",
+    "settings.coaching.reset.done": "{rule} 警告已恢复默认",
+
     "settings.section.connect": "接上你的 agent",
     "settings.connect.hint":
       "把 Vibepaws 装进你的 agent 配置里，它才报得出自己在干什么。配置里其他东西一样不动，原文件会在旁边留一份备份。",
@@ -786,6 +843,13 @@ export const MESSAGES = {
     "notif.drift.body": "任务可能偏离目标，建议新开一个会话",
     "notif.milestone.title": "已用 {pct}% 预算",
     "notif.milestone.body": "{used}k tokens · 预算 {budget}k",
+    "notif.repeat_edit.title": "同一个文件又改了 ×{n}",
+    "notif.repeat_edit.body": "agent 在几秒之内反复改同一个文件",
+    "coach.context.action": "先收尾这一步，或者趁满之前 /compact",
+    "coach.repeat_edit.action": "先停一下 — 重说一遍要什么，或者指给它对的地方",
+    "coach.error.action": "先看看是哪个工具在失败，再让它重试",
+    "coach.milestone.action": "看一眼预算 — 调高，或者收尾",
+    "coach.drift.action": "重申这个 session 的目标，或者新开一个",
 
     // ---- adapter 安装器 CLI ----
     "cli.install.header": "[vibepaws] adapter install — agent={agent}{dry} scope={scope} repo={repo}",

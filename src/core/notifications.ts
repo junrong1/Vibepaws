@@ -22,6 +22,8 @@ import {
   MUTE_SESSION_PREFIX,
 } from "./settings.ts";
 import { t, DEFAULT_LOCALE } from "../i18n/messages.js";
+import { DEFAULT_MILESTONE_TIERS, coachingRule, ruleForType, ruleThreshold, type CoachingRuleId } from "./coaching.ts";
+import { isEditTool } from "./events.ts";
 
 /** 文案定位：渲染层用它出字，Core 用它渲染英文落库。 */
 export interface I18nText {
@@ -55,6 +57,11 @@ export interface Notification {
    * 这是给人看的预览，不是授予的依据：授予时 Core 按 id 从库里重新推一遍。
    */
   grant?: { rule: string; project: string };
+  /**
+   * 辅导类气泡是哪条规则发的（U10）：建议动作的文案 key，以及能不能按「没用」去调它。
+   * decision / permission / ready 不是辅导，没有这个字段。
+   */
+  coach?: { rule: CoachingRuleId; action: string; tunable: boolean };
 }
 
 /** 判定结果：只带 key/params，title/body 在落库前统一渲染成英文 */
@@ -66,6 +73,10 @@ type Draft = Omit<Notification, "id" | "status" | "shown_at" | "title" | "body" 
    * 于是 72%→88%→96% 连着来时只出一条 72%，更高的两档永远不再出声。
    */
   latch?: { key: string; tier: number };
+  /** 跨的是哪一档（context 的百分比 / 里程碑的比例 / 次数）—— 落进 notifications.tier，「没用」据此调阈值 */
+  tier?: number;
+  /** 影子模式（drift）：判定照常、照常落库，但不弹气泡（KTD11） */
+  shadow?: boolean;
 };
 
 function render(text: I18nText): string {
@@ -81,7 +92,7 @@ const DEDUP_MS = 60_000; // 同 session 同类型 60s 合并
  */
 export const CONTEXT_WARN_PCTS = DEFAULT_CONTEXT_WARN_PCTS;
 /** token 里程碑（README 6.3 usage 提醒） */
-export const TOKEN_MILESTONES = [0.25, 0.5, 0.75, 0.9] as const;
+export const TOKEN_MILESTONES = DEFAULT_MILESTONE_TIERS;
 
 export interface NotificationOptions {
   /** 去重窗口（毫秒）。测试里设 0 才能单独验证阈值闩锁的行为。 */
@@ -103,6 +114,8 @@ export class NotificationEngine {
    * （issue #7）。现在只有跨进**更高**一档才出声，回落到最低档以下则重新武装。
    */
   private latched = new Map<string, number>();
+  /** 每个 session 攒了几次工具失败（error 规则「每第 N 次才说」的计数）；按「没用」后清零 */
+  private errorCounts = new Map<string, number>();
 
   constructor(db: Database.Database, opts: NotificationOptions = {}) {
     this.db = db;
@@ -169,6 +182,7 @@ export class NotificationEngine {
           ...base,
           type: "context",
           latch,
+          tier: latch.tier,
           i18n: {
             title: { key: "notif.context.title", params: { pct: Math.round(pct) } },
             body: { key: `notif.context.body.${severity}` },
@@ -177,12 +191,36 @@ export class NotificationEngine {
       }
       case "session_error": {
         const kind = ev.payload.error_kind;
+        // 「每第 N 次失败才说」（N 默认 1 = 每次都说）。N 由「没用」往上调，见 coaching.ts
+        const countKey = `${ev.agent}:${ev.session_id}`;
+        const count = (this.errorCounts.get(countKey) ?? 0) + 1;
+        this.errorCounts.set(countKey, count);
+        const every = ruleThreshold(this.db, "error")[0] ?? 1;
+        if (count % every !== 0) return null;
         return {
           ...base,
           type: "error",
+          tier: every,
           i18n: {
             title: { key: "notif.error.title", params: { agent } },
             body: kind ? { key: "notif.error.body_kind", params: { kind } } : { key: "notif.error.body" },
+          },
+        };
+      }
+      case "agent_working": {
+        // 重复编辑（Focus 的警告）：registry 已经先处理过这条事件、把 repeat_edit_count 记好了
+        if (!ev.payload.file || !isEditTool(ev.payload.tool_name)) return null;
+        const count = this.repeatEditCount(ev.agent, ev.session_id);
+        const latch = this.pendingThreshold("repeat", ev, count, ruleThreshold(this.db, "repeat_edit"));
+        if (!latch) return null;
+        return {
+          ...base,
+          type: "repeat_edit",
+          latch,
+          tier: latch.tier,
+          i18n: {
+            title: { key: "notif.repeat_edit.title", params: { n: count } },
+            body: { key: "notif.repeat_edit.body" },
           },
         };
       }
@@ -190,6 +228,8 @@ export class NotificationEngine {
         return {
           ...base,
           type: "drift",
+          // 影子模式：记下来、不出声（KTD11 / G18）。误报率够低之前它不配占一条气泡
+          shadow: coachingRule("drift")!.shadow,
           i18n: { title: { key: "notif.drift.title" }, body: { key: "notif.drift.body" } },
         };
       }
@@ -201,12 +241,14 @@ export class NotificationEngine {
         const budget = this.getBudget(ev.agent, ev.session_id);
         if (budget <= 0) return null;
         const ratio = tokens / budget;
-        const latch = this.pendingThreshold("budget", ev, ratio, TOKEN_MILESTONES);
+        // 档位由「没用」从低往高摘（coaching.ts）；默认就是 TOKEN_MILESTONES
+        const latch = this.pendingThreshold("budget", ev, ratio, ruleThreshold(this.db, "milestone"));
         if (!latch) return null;
         return {
           ...base,
           type: "milestone",
           latch,
+          tier: latch.tier,
           i18n: {
             title: { key: "notif.milestone.title", params: { pct: Math.round(ratio * 100) } },
             body: {
@@ -226,7 +268,7 @@ export class NotificationEngine {
    * 值回落到最低档以下（compact / clear / 新 session）→ 立刻清掉闩锁重新武装。
    */
   private pendingThreshold(
-    kind: "context" | "budget",
+    kind: LatchKind,
     ev: CoreEvent,
     value: number,
     thresholds: readonly number[],
@@ -249,11 +291,46 @@ export class NotificationEngine {
    * 这个 session 已经烧掉的量却一条里程碑都不会报 —— 从界面上看就是「填了没用」。
    * 不传 agent/session 就是全清。
    */
-  resetLatches(kind: "context" | "budget", agent?: string, sessionId?: string): void {
+  resetLatches(kind: LatchKind, agent?: string, sessionId?: string): void {
     const prefix = agent && sessionId ? `${kind}:${agent}:${sessionId}` : `${kind}:`;
     for (const key of [...this.latched.keys()]) {
       if (key === prefix || key.startsWith(prefix)) this.latched.delete(key);
     }
+  }
+
+  /**
+   * 阈值变了之后**重新对齐**闩锁，而不是清掉（U10 的闩锁修正）。
+   *
+   * 从前改 context_warn_pcts 会清空全部 context 闩锁 —— 于是在 88% 上把 85 挪到 90，
+   * 几秒后的下一条 context_update 就按「新的一档」再报一次：用户刚说了这条没用，它立刻又响。
+   * 现在每个闩锁落到「不高于它原来那一档的最高新档」：已经报过的高度不再重报，
+   * 比它更高的新档照常会响；新阈值里没有不高于它的档 → 清掉，从头开始。
+   */
+  relatch(kind: LatchKind, thresholds: readonly number[]): void {
+    const prefix = `${kind}:`;
+    for (const [key, tier] of [...this.latched]) {
+      if (!key.startsWith(prefix)) continue;
+      const floor = [...thresholds].reverse().find((t) => t <= tier);
+      if (floor === undefined) this.latched.delete(key);
+      else this.latched.set(key, floor);
+    }
+  }
+
+  /**
+   * 用户在这个 session 上按了「没用」、阈值已经挪过了：把它闩在新的那一档上，
+   * 这个 session 不会因为「挪到了 90」而在 91% 时又说一次（R21）。只往高处闩，不往低处拉。
+   */
+  silenceAfterTuning(rule: CoachingRuleId, agent: string, sessionId: string, tier: number | null): void {
+    if (rule === "error") {
+      // 「每第 N 次」从头数：刚嫌过吵，就别让下一次失败立刻凑满新的 N
+      this.errorCounts.delete(`${agent}:${sessionId}`);
+      return;
+    }
+    if (tier === null) return;
+    const kind: LatchKind | null = rule === "context" ? "context" : rule === "milestone" ? "budget" : rule === "repeat_edit" ? "repeat" : null;
+    if (!kind) return;
+    const key = `${kind}:${agent}:${sessionId}`;
+    this.latched.set(key, Math.max(this.latched.get(key) ?? 0, tier));
   }
 
   /**
@@ -264,6 +341,7 @@ export class NotificationEngine {
   forgetAll(): void {
     this.latched.clear();
     this.lastShown.clear();
+    this.errorCounts.clear();
   }
 
   /** session 结束：清掉它的去重/闩锁记录，别让长期运行的 Core 无限攒 key */
@@ -274,13 +352,35 @@ export class NotificationEngine {
     for (const key of [...this.lastShown.keys()]) {
       if (key.startsWith(`${agent}:${sessionId}:`)) this.lastShown.delete(key);
     }
+    this.errorCounts.delete(`${agent}:${sessionId}`);
+  }
+
+  private repeatEditCount(agent: string, sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT repeat_edit_count FROM sessions WHERE agent=? AND agent_session_id=?")
+      .get(agent, sessionId) as { repeat_edit_count: number } | undefined;
+    return row?.repeat_edit_count ?? 0;
   }
 
   /** 去重 + mute + 落库 */
   private persist(draft: Draft): Notification | null {
     // 落库与兜底用英文渲染；用户看到的语言由渲染层按 i18n 决定
-    const { latch, ...rest } = draft;
+    const { latch, tier, shadow, ...rest } = draft;
     const n = { ...rest, title: render(draft.i18n.title), body: render(draft.i18n.body) };
+    const rule = ruleForType(n.type);
+    const ruleId = rule?.id ?? null;
+    // 影子模式：判定命中了，记一行（误报率查询靠它攒「本来会响几次」），但它一出生就结束、不弹出来
+    if (shadow) {
+      const at = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO notifications(event_id, agent, session_id, type, title, body, status, shown_at,
+                                     resolution, resolved_at, rule_id, tier, shadow)
+           VALUES(?, ?, ?, ?, ?, ?, 'muted', ?, 'muted', ?, ?, ?, 1)`,
+        )
+        .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, at, at, ruleId, tier ?? null);
+      return null;
+    }
     // mute 检查
     const muted = this.isMuted(n.session_id, n.type);
     if (muted) {
@@ -289,10 +389,10 @@ export class NotificationEngine {
       this.db
         .prepare(
           `INSERT INTO notifications(event_id, agent, session_id, type, title, body, status, shown_at,
-                                     resolution, resolved_at)
-           VALUES(?, ?, ?, ?, ?, ?, 'muted', ?, 'muted', ?)`,
+                                     resolution, resolved_at, rule_id, tier)
+           VALUES(?, ?, ?, ?, ?, ?, 'muted', ?, 'muted', ?, ?, ?)`,
         )
-        .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, at, at);
+        .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, at, at, ruleId, tier ?? null);
       return null;
     }
     // 去重：同 session 同类型 60s。**升档除外** —— 去重是为了压住「同一件事重复说」，
@@ -309,12 +409,13 @@ export class NotificationEngine {
     const shownAt = new Date().toISOString();
     const info = this.db
       .prepare(
-        `INSERT INTO notifications(event_id, agent, session_id, type, title, body, status, shown_at)
-         VALUES(?, ?, ?, ?, ?, ?, 'shown', ?)`,
+        `INSERT INTO notifications(event_id, agent, session_id, type, title, body, status, shown_at, rule_id, tier)
+         VALUES(?, ?, ?, ?, ?, ?, 'shown', ?, ?, ?)`,
       )
-      .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, shownAt);
+      .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, shownAt, ruleId, tier ?? null);
+    const coach = rule ? { coach: { rule: rule.id, action: rule.actionKey, tunable: rule.tunable } } : {};
     // lastInsertRowid 是 number | bigint；行 id 不可能超出安全整数，Number() 之后 JSON 才序列化得了
-    return { ...n, id: Number(info.lastInsertRowid), status: "shown", shown_at: shownAt };
+    return { ...n, ...coach, id: Number(info.lastInsertRowid), status: "shown", shown_at: shownAt };
   }
 
   // ---- mute 管理 ----
@@ -414,6 +515,8 @@ export class NotificationEngine {
    */
   dismiss(notificationId: number): NotificationResolvedPush | null {
     const at = new Date().toISOString();
+    // 理由与结局分开记（R22）：就算这一行早被回收 / 推断结束过，用户叉掉它这件事本身也是一个评价
+    this.db.prepare("UPDATE notifications SET dismiss_reason='dismissed' WHERE id=? AND dismiss_reason IS NULL").run(notificationId);
     const row = this.db
       .prepare(
         `UPDATE notifications SET status='dismissed', resolution='dismissed', resolved_at=?
@@ -450,6 +553,42 @@ export class NotificationEngine {
       )
       .all(new Date().toISOString(), agent, sessionId) as NotificationResolvedPush[];
   }
+  /**
+   * 「没用」（U10 / R22）。一条原地合并过的辅导气泡代表好几行（界面的 b.ids）：每一行都记上理由，
+   * 还挂着的顺带结束成 dismissed。理由写进 dismiss_reason，**不碰** resolution ——
+   * resolution 是「第一次结束」，被回收过的行照旧是 timeout，理由是另一件事。
+   * 返回被结束的那些（推 notification_resolved 用）与最新那一行的规则 / 档位（调阈值用）。
+   */
+  notUseful(ids: number[]): {
+    resolved: NotificationResolvedPush[];
+    fired: { rule_id: CoachingRuleId; tier: number | null; agent: string; session_id: string } | null;
+  } {
+    const unique = [...new Set(ids.filter((x) => Number.isInteger(x)))];
+    if (unique.length === 0) return { resolved: [], fired: null };
+    const at = new Date().toISOString();
+    const marks = unique.map(() => "?").join(",");
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(`UPDATE notifications SET dismiss_reason='not_useful' WHERE id IN (${marks}) AND rule_id IS NOT NULL`)
+        .run(...unique);
+      const resolved = this.db
+        .prepare(
+          `UPDATE notifications SET status='dismissed', resolution='dismissed', resolved_at=?
+            WHERE id IN (${marks}) AND rule_id IS NOT NULL AND resolution IS NULL
+            RETURNING id, agent, session_id, type, resolution, resolved_at`,
+        )
+        .all(at, ...unique) as NotificationResolvedPush[];
+      const fired = this.db
+        .prepare(
+          `SELECT rule_id, tier, agent, session_id FROM notifications
+            WHERE id IN (${marks}) AND rule_id IS NOT NULL ORDER BY id DESC LIMIT 1`,
+        )
+        .get(...unique) as { rule_id: CoachingRuleId; tier: number | null; agent: string; session_id: string } | undefined;
+      return { resolved, fired: fired ?? null };
+    });
+    return tx();
+  }
+
   history(limit = 50): Notification[] {
     return this.db
       .prepare("SELECT * FROM notifications ORDER BY shown_at DESC LIMIT ?")
@@ -466,6 +605,9 @@ export class NotificationEngine {
     return rows;
   }
 }
+
+/** 闩锁的三种：context 阈值、预算里程碑、重复编辑次数 */
+type LatchKind = "context" | "budget" | "repeat";
 
 export function shortAgent(agent: string): string {
   return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : agent === "pi" ? "Pi" : agent === "dsh" ? "DeepSeek" : agent;

@@ -5,7 +5,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -140,7 +140,17 @@ CREATE TABLE IF NOT EXISTS notifications (
   -- 说不出「用户在宠物里点的」和「agent 自己往下走了、我们推断用户在终端答了」的区别 ——
   -- 而 Response 因子要的正是前者的时间戳。取值见 core/events.ts 的 NOTIFICATION_RESOLUTIONS。
   resolution    TEXT CHECK (resolution IN ('user_actioned','inferred','timeout','dismissed','muted')),
-  resolved_at   TEXT
+  resolved_at   TEXT,
+  -- ---- 辅导规则（U10 / R22）：误报率是一条查询，不是一句断言 ----
+  -- rule_id        发它的那条辅导规则（core/coaching.ts 的 COACHING_RULES；decision / permission / ready 为 NULL）
+  -- tier           跨的是哪一档（context 百分比 / 里程碑比例 / 次数）。「没用」按它挪阈值
+  -- dismiss_reason 用户怎么评价它：dismissed（普通叉掉）/ not_useful。与 resolution 分开存 ——
+  --                resolution 是「第一次结束」，被回收过的行照旧是 timeout，评价是另一件事
+  -- shadow         影子模式下命中、但没有弹出来（drift）：status/resolution = muted，靠这一列区分
+  rule_id       TEXT,
+  tier          REAL,
+  dismiss_reason TEXT CHECK (dismiss_reason IN ('dismissed','not_useful')),
+  shadow        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, shown_at);
 
@@ -259,6 +269,12 @@ const ADDED_COLUMNS: Array<{
   },
   { table: "sessions", column: "repeat_edit_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "permission_mode", ddl: "TEXT" },
+  // 辅导规则（U10）。老行一律 NULL / 0：它们发出来的时候还没有规则目录，按类型回填 rule_id 会把
+  // 「从没被评价过」的老气泡算进误报率的分母，而那些周里根本没有「没用」这个按钮
+  { table: "notifications", column: "rule_id", ddl: "TEXT" },
+  { table: "notifications", column: "tier", ddl: "REAL" },
+  { table: "notifications", column: "dismiss_reason", ddl: "TEXT CHECK (dismiss_reason IN ('dismissed','not_useful'))" },
+  { table: "notifications", column: "shadow", ddl: "INTEGER NOT NULL DEFAULT 0" },
   {
     table: "notifications",
     column: "resolution",

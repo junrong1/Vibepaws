@@ -226,6 +226,9 @@ body.dragging #pet { filter: none; }
 .bubble .b-count { color: var(--dim); margin-left: auto; margin-right: 14px; }
 .bubble .b-factor[hidden], .bubble .b-count[hidden], .bubble .b-note[hidden] { display: none; }
 .bubble .b-note { font-size: 9px; color: var(--warn); margin-top: 3px; }
+/* 建议动作（U10）：比正文淡一档，只在展开的那条上出现 —— 单行里放不下「那我该做什么」 */
+.bubble .b-advice { font-size: 9px; color: var(--dim); margin-top: 3px; }
+.bubble .b-advice[hidden], .bubble.stub .b-advice { display: none; }
 .bubble .b-actions { display: none; position: relative; gap: 5px; margin-top: 6px; padding-bottom: 3px; }
 .bubble.top .b-actions { display: flex; }
 .bubble .b-act {

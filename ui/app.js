@@ -8,7 +8,7 @@ import { BLEND_MS, MOTION, motionAt } from "./pets/motion.js";
 import {
   stickyBubbleStale, bubbleKey, isActionable, collapseTarget, sortBubbles, layoutBubbles, pickEvictions,
   bubbleFactor, bubbleActions, actionsLabel, MAX_STUBS, DWELL_MS,
-  guardFocus, guardTop, guardContent, guardResnap, decideKey, decideClick,
+  guardFocus, guardTop, guardContent, guardResnap, decideKey, decideClick, coachingThresholdLabel,
 } from "./health/bubbles.js";
 import { PIP_CELLS, PIP_GAP_AFTER, nameplateStrip, healthSurfaces } from "./health/pips.js";
 import {
@@ -526,6 +526,28 @@ const BUBBLE_ACTIONS = {
     removeBubble(b);
     flash(t("ui.toast.granted", { rule: r.rule ?? b.n.grant?.rule ?? "", project: r.project ?? b.n.grant?.project ?? "" }));
   },
+  /**
+   * 没用（U10）。把这条气泡代表过的**每一行**都交上去（辅导类原地合并时 b.ids 攒了好几个），
+   * id 是用户正看着的最新那行 —— Core 按它挪阈值。说出调成了什么：一个悄悄变安静的警告
+   * 和一个坏掉的警告，从外面看不出区别。
+   */
+  async not_useful(b) {
+    if (b.id === null) return;
+    removeBubble(b);
+    const res = await postAction("not_useful", { id: b.id, ids: b.ids });
+    if (!res) {
+      flash(t("ui.toast.actionfailed"), { error: true });
+      return;
+    }
+    const tuning = res.tuning;
+    if (!tuning) flash(t("ui.toast.noted"));
+    else {
+      const rule = t(`settings.coaching.rule.${tuning.rule}`);
+      flash(tuning.changed
+        ? t("ui.toast.tuned", { rule, threshold: coachingThresholdLabel(tuning.rule, tuning.after, t) })
+        : t("ui.toast.quietest", { rule }));
+    }
+  },
 };
 
 function pushBubble(n) {
@@ -619,6 +641,10 @@ function buildBubble(b) {
   const body = line("b-body", "");
   body.id = `${b.uid}-body`;
   el.appendChild(body);
+  // 建议动作（U10 / R21）：每条辅导警告都回答「那我该做什么」
+  const advice = line("b-advice", "");
+  advice.hidden = true;
+  el.appendChild(advice);
   el.appendChild(line("b-meta", `${shortAgent(b.agent)} · ${shortId(b.session)}`));
   const note = line("b-note", t("ui.bubble.changed"));
   note.hidden = true;
@@ -663,6 +689,10 @@ function buildBubble(b) {
 function fillBubble(b, el = b.el) {
   el.querySelector(".b-title").textContent = notifText(b.n, "title");
   el.querySelector(".b-body").textContent = notifText(b.n, "body");
+  const advice = el.querySelector(".b-advice");
+  const action = b.n.coach?.action;
+  advice.hidden = !action;
+  advice.textContent = action ? t(action) : "";
 }
 
 /**

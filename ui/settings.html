@@ -70,6 +70,14 @@
       <p class="hint" data-i18n="settings.cap.hint"></p>
     </section>
 
+    <!-- 警告（辅导规则，U10）。紧跟在预算与 context 阈值后面：这是同一件事的另一半 ——
+         上面设「什么时候提醒」，这里看「提醒得对不对」（本周「没用」的比例）。由 settings.js 从 /api/coaching 填。 -->
+    <section class="card" id="coaching-card">
+      <h2 data-i18n="settings.section.coaching"></h2>
+      <p class="hint" data-i18n="settings.coaching.hint"></p>
+      <div id="coaching"></div>
+    </section>
+
     <!-- Token 与开销（landscape 0.12 / clawd #102）。紧跟在预算那张卡后面是刻意的：
          用户刚读完「token 预算」，正是他想问「那你自己花不花我的 token」的时刻。
          数字由 /api/settings 的轮询带过来（settings.js 的 renderCost）。 -->

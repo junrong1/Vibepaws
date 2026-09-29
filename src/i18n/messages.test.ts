@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
 import { NotificationEngine } from "../core/notifications.ts";
+import { COACHING_RULES } from "../core/coaching.ts";
 import type { CoreEvent } from "../core/events.ts";
 import { MESSAGES, SUPPORTED_LOCALES, DEFAULT_LOCALE, normalizeLocale, detectNodeLocale, t } from "./messages.js";
 
@@ -83,6 +84,10 @@ test("每种通知的 key 都在目录里，且两种语言都渲染得出完整
   db.prepare(
     "INSERT INTO sessions(agent, agent_session_id, project_id, budget_tokens) VALUES('claude_code','s-budget','/Users/x/my-app', 100000)",
   ).run();
+  // 重复编辑的气泡读的是 registry 记好的计数：这里直接摆一个已经数到阈值的 session
+  db.prepare(
+    "INSERT INTO sessions(agent, agent_session_id, project_id, repeat_edit_count) VALUES('claude_code','s-repeat','/Users/x/my-app', 3)",
+  ).run();
   const engine = new NotificationEngine(db);
 
   const cases: CoreEvent[] = [
@@ -96,14 +101,22 @@ test("每种通知的 key 都在目录里，且两种语言都渲染得出完整
     ev({ event_type: "context_update", payload: { context_pct: 97 } }),
     ev({ event_type: "session_error", payload: { error_kind: "tool_failed" } }),
     ev({ event_type: "session_error", payload: {} }),
-    ev({ event_type: "topic_drift_warning", payload: {} }),
     ev({ event_type: "token_update", session_id: "s-budget", payload: { tokens: 26000 } }),
+    ev({ event_type: "agent_working", session_id: "s-repeat", payload: { tool_name: "Write", file: "a.ts" } }),
   ];
 
+  const producedTypes = new Set<string>();
   for (const e of cases) {
     const n = engine.getForEvent(e);
     assert.ok(n, `${e.event_type} 应产出通知`);
+    producedTypes.add(n.type);
     assert.ok(n.i18n, `${e.event_type} 的通知必须带 i18n（渲染层靠它出字）`);
+    // 辅导类还带一条建议动作（U10）：它也是渲染层要出字的 key
+    if (n.coach) {
+      for (const locale of SUPPORTED_LOCALES) {
+        assert.ok(MESSAGES[locale][n.coach.action], `${locale} 缺建议动作文案: ${n.coach.action}`);
+      }
+    }
     for (const slot of ["title", "body"] as const) {
       const spec = n.i18n[slot];
       assert.ok(MESSAGES[DEFAULT_LOCALE][spec.key], `${e.event_type}.${slot} 的 key 不在目录里: ${spec.key}`);
@@ -113,6 +126,23 @@ test("每种通知的 key 都在目录里，且两种语言都渲染得出完整
         assert.ok(!/\{\w+\}/.test(rendered), `${locale} / ${spec.key} 有未替换的占位符: ${rendered}`);
       }
     }
+  }
+  // 目录里每一条能弹气泡的规则都必须在上面有一个 case —— 新加一条规则而忘了这里，在这里失败
+  for (const rule of COACHING_RULES) {
+    if (rule.shadow) continue;
+    assert.ok(producedTypes.has(rule.type), `辅导规则 ${rule.id} 能弹气泡，却不在 cases 里`);
+  }
+  // 影子模式的规则（drift）不弹气泡：它的文案只用于落库那一行的英文 title/body
+  assert.equal(engine.getForEvent(ev({ event_type: "topic_drift_warning", payload: {} })), null);
+});
+
+test("辅导规则目录：每一条都有非空的建议动作，且两种语言都有这条文案", () => {
+  for (const rule of COACHING_RULES) {
+    for (const locale of SUPPORTED_LOCALES) {
+      const text = MESSAGES[locale][rule.actionKey];
+      assert.ok(text && text.trim().length > 0, `${locale} / ${rule.actionKey}`);
+    }
+    assert.ok(MESSAGES[DEFAULT_LOCALE][`settings.coaching.rule.${rule.id}`], `设置窗口里 ${rule.id} 要有名字`);
   }
 });
 

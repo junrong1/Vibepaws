@@ -26,6 +26,7 @@ import {
   guardResnap,
   decideKey,
   decideClick,
+  coachingThresholdLabel,
 } from "./bubbles.js";
 
 const NOW = 1_800_000_000_000;
@@ -295,4 +296,35 @@ test("点击的快照检查：点到的不是此刻的顶（刚被新请求挤�
   assert.equal(decideClick({ action: always, uid: "b1", topId: null, topSince: 0, now: 10_000 }).kind, "changed");
   const dismiss = { id: "dismiss", safe: true };
   assert.equal(decideClick({ action: dismiss, uid: "b1", topId: "b2", topSince: 9_999, now: 10_000 }).kind, "act");
+});
+
+/* ---------------- 没用（U10） ---------------- */
+const COACH = { rule: "context", action: "coach.context.action", tunable: true };
+
+test("没用：只在 Core 说能调的辅导气泡上出现，排在叉掉之后；等你的气泡永远没有它", () => {
+  const acts = bubbleActions(notif("context", { id: 1, coach: COACH }), undefined, { canGrant: true });
+  assert.deepEqual(acts.map((a) => [a.id, a.key, a.safe]), [["dismiss", "1", true], ["not_useful", "2", false]]);
+  // 不能调 / 没带规则的（ready、老 Core）：不出现
+  assert.ok(!bubbleActions(notif("context", { id: 1, coach: { ...COACH, tunable: false } })).some((a) => a.id === "not_useful"));
+  assert.ok(!bubbleActions(notif("ready", { id: 1 })).some((a) => a.id === "not_useful"));
+  // 权限请求上就算硬塞一个 coach 也不给：「这个请求没用」不是一个评价
+  const perm = bubbleActions(notif("permission", { id: 1, coach: COACH, grant: GRANT }), undefined, { canGrant: true });
+  assert.deepEqual(perm.map((a) => a.id), ["dismiss", "always_allow"]);
+});
+
+test("没用也不是安全动作：Enter 不落在它身上，点击要过停留护栏", () => {
+  const actions = bubbleActions(notif("context", { id: 1, coach: COACH }));
+  const g = { focusedAt: 0, snapshotId: "b1", armedAt: 0 };
+  assert.equal(decideKey(g, { key: "Enter", repeat: false, now: DWELL_MS + 1, topId: "b1", actions }).action.id, "dismiss");
+  const nu = actions.find((a) => a.id === "not_useful");
+  assert.equal(decideClick({ action: nu, uid: "b1", topId: "b1", topSince: 0, now: DWELL_MS - 1 }).kind, "dwell");
+});
+
+test("阈值怎么读：context 与里程碑是一组档位（里程碑换成百分比），次数类是一个数，失败 N=1 是「每次」", () => {
+  const tr = (k, p) => `${k}|${JSON.stringify(p ?? {})}`;
+  assert.equal(coachingThresholdLabel("context", [70, 90, 95], tr), 'settings.coaching.threshold.context|{"list":"70 / 90 / 95"}');
+  assert.equal(coachingThresholdLabel("milestone", [0.5, 0.9], tr), 'settings.coaching.threshold.milestone|{"list":"50 / 90"}');
+  assert.equal(coachingThresholdLabel("repeat_edit", [4], tr), 'settings.coaching.threshold.repeat_edit|{"n":4}');
+  assert.equal(coachingThresholdLabel("error", [1], tr), "settings.coaching.threshold.error.one|{}");
+  assert.equal(coachingThresholdLabel("error", [3], tr), 'settings.coaching.threshold.error|{"n":3}');
 });

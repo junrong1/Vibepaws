@@ -193,6 +193,16 @@ export const ACTION_SPECS = Object.freeze([
     applies: (n, ctx) => n.type === "permission" && Boolean(ctx?.canGrant) && typeof n.grant?.rule === "string",
     params: (n) => ({ rule: n.grant.rule, project: n.grant.project ?? "" }),
   },
+  /**
+   * 没用（U10）。辅导类、且 Core 说这条规则能调（n.coach.tunable）才有：记下理由，
+   * 把那条规则往安静的方向挪一档，同一个 session 不在新的那一档上再响。
+   * 可操作的（等你的）气泡永远没有它 —— 「这个权限请求没用」不是一个有意义的评价。
+   */
+  {
+    id: "not_useful",
+    labelKey: "ui.bubble.notuseful",
+    applies: (n) => !isActionable(n.type) && n.coach?.tunable === true,
+  },
 ]);
 
 /**
@@ -319,4 +329,30 @@ export function decideClick({ action, uid, topId, topSince, now }) {
   const remaining = topSince + DWELL_MS - now;
   if (remaining > 0) return { kind: "dwell", remaining };
   return { kind: "act" };
+}
+
+/**
+ * 一条辅导规则的阈值怎么读（「没用」之后的 toast、设置窗口的规则列表共用）。
+ * context 与里程碑是一组档位，重复编辑与工具失败是一个次数。
+ *
+ * @param {string} rule 规则 id（core/coaching.ts 的 COACHING_RULES）
+ * @param {number[]} threshold
+ * @param {(key: string, params?: Record<string, string|number>) => string} tr
+ */
+export function coachingThresholdLabel(rule, threshold, tr) {
+  const list = (xs) => xs.map((x) => String(Math.round(x))).join(" / ");
+  switch (rule) {
+    case "context":
+      return tr("settings.coaching.threshold.context", { list: list(threshold) });
+    case "milestone":
+      return tr("settings.coaching.threshold.milestone", { list: list(threshold.map((x) => x * 100)) });
+    case "repeat_edit":
+      return tr("settings.coaching.threshold.repeat_edit", { n: threshold[0] ?? 0 });
+    case "error":
+      return (threshold[0] ?? 1) <= 1
+        ? tr("settings.coaching.threshold.error.one")
+        : tr("settings.coaching.threshold.error", { n: threshold[0] });
+    default:
+      return list(threshold);
+  }
 }

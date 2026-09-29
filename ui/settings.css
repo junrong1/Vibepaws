@@ -237,6 +237,7 @@ button:hover:enabled { border-color: var(--accent); color: var(--accent); }
 .r-btn.armed { border-color: var(--danger); color: var(--danger); font-weight: 700; }
 .r-meta { grid-column: 1 / -1; font-size: 10px; color: var(--dim); overflow-wrap: anywhere; }
 .r-meta.warn { color: var(--warn); }
+.c-name { font-size: 11px; }
 .rules-empty { color: var(--dim); padding: 2px 0 8px; }
 .rules-external { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
 .rules-external h3 { font-size: 11px; color: var(--warn); margin: 0 0 4px; }

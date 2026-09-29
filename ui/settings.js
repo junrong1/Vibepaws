@@ -13,6 +13,7 @@
  * 而不是留着一个用户以为生效了的数字。
  */
 import { t as translate, normalizeLocale } from "/i18n.js";
+import { coachingThresholdLabel } from "./health/bubbles.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -595,6 +596,83 @@ async function loadAgents() {
   if (view && !armedAgent) renderAgents(view);
 }
 
+/* ---------------- 警告（辅导规则，U10 / R21 / R22） ----------------
+ * 每条规则一行：现在的阈值、本周「没用」占多少、影子模式攒了几次。「没用」只会越调越安静，
+ * 所以可调的规则在偏离默认时给一个「恢复默认」。context 的阈值与上面那个下拉是同一份。 */
+let coachingView = null;
+
+/** 本周（UTC 周一起算，与 Core 的 falsePositiveRates 同一个切法） */
+function thisWeek() {
+  const d = new Date();
+  const day = (d.getUTCDay() + 6) % 7;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day)).toISOString().slice(0, 10);
+}
+
+function renderCoaching(view) {
+  coachingView = view;
+  const host = $("coaching");
+  if (!host || !view) return;
+  host.replaceChildren();
+  const week = thisWeek();
+  for (const r of view.rules ?? []) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    const name = document.createElement("span");
+    name.className = "c-name";
+    name.textContent = t(`settings.coaching.rule.${r.id}`);
+    row.appendChild(name);
+    const threshold = document.createElement("span");
+    threshold.className = "r-uses";
+    // 影子模式的规则没有「什么时候响」可言 —— 它根本不响
+    threshold.textContent = r.shadow ? "" : coachingThresholdLabel(r.id, r.threshold ?? [], t);
+    row.appendChild(threshold);
+    const changed = JSON.stringify(r.threshold) !== JSON.stringify(r.defaults);
+    if (r.tunable && changed) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "r-btn";
+      btn.textContent = t("settings.coaching.reset");
+      btn.addEventListener("click", () => resetCoaching(r.id, btn));
+      row.appendChild(btn);
+    } else {
+      row.appendChild(document.createElement("span"));
+    }
+    const meta = document.createElement("div");
+    meta.className = "r-meta";
+    const fp = (view.false_positive ?? []).find((x) => x.rule === r.id && x.week === week);
+    meta.textContent = r.shadow
+      ? t("settings.coaching.shadow", { n: fp?.shadow ?? 0 })
+      : fp?.shown
+        ? t("settings.coaching.fp", { pct: Math.round((fp.ratio ?? 0) * 100), shown: fp.shown })
+        : t("settings.coaching.fp.none");
+    row.appendChild(meta);
+    const action = document.createElement("div");
+    action.className = "r-meta";
+    action.textContent = t(r.action_key);
+    row.appendChild(action);
+    host.appendChild(row);
+  }
+}
+
+async function resetCoaching(id, btn) {
+  btn.disabled = true;
+  const res = await postJson("/api/coaching", { reset: id });
+  if (!res.ok) {
+    status(t("settings.status.failed"), "err");
+    await loadCoaching();
+    return;
+  }
+  status(t("settings.coaching.reset.done", { rule: t(`settings.coaching.rule.${id}`) }), "ok");
+  renderCoaching(res.data);
+  // context 的阈值也是上面那个下拉：让它当场跟上
+  if (id === "context") void load();
+}
+
+async function loadCoaching() {
+  const view = await getJson("/api/coaching");
+  if (view) renderCoaching(view);
+}
+
 /* ---------------- 永远允许的规则（U9 / R20） ----------------
  * 列表与撤销走普通的 /api/rules（token 由 UI server 盖）—— 收回权限不需要更高的门槛。
  * 这里**没有**授予：那只能在宠物气泡上按，由壳带着它自己的 grant secret 去问 Core（KTD13）。 */
@@ -1083,6 +1161,7 @@ initShell();
 load();
 loadAgents();
 loadRules();
+loadCoaching();
 loadDanger();
 setInterval(() => {
   load();
@@ -1092,4 +1171,6 @@ setInterval(() => {
   void loadAgents();
   // 规则文件可能被手改、被 agent 改 —— 来历不明的那一条要尽快亮出来
   void loadRules();
+  // 气泡上按了「没用」，阈值就在这里变了
+  void loadCoaching();
 }, POLL_MS);
