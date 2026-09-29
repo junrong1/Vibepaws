@@ -595,6 +595,131 @@ async function loadAgents() {
   if (view && !armedAgent) renderAgents(view);
 }
 
+/* ---------------- 永远允许的规则（U9 / R20） ----------------
+ * 列表与撤销走普通的 /api/rules（token 由 UI server 盖）—— 收回权限不需要更高的门槛。
+ * 这里**没有**授予：那只能在宠物气泡上按，由壳带着它自己的 grant secret 去问 Core（KTD13）。 */
+let rulesView = null;
+/** 正在武装的那条规则（两段式撤销，同一时刻只有一条） */
+let armedRule = null;
+let ruleArmTimer = null;
+
+function disarmRules() {
+  if (ruleArmTimer) clearTimeout(ruleArmTimer);
+  ruleArmTimer = null;
+  armedRule = null;
+  renderRules(rulesView);
+}
+
+function localDateTime(iso) {
+  const d = new Date(iso ?? "");
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+function renderRules(view) {
+  rulesView = view;
+  const host = $("rules");
+  if (!host) return;
+  host.replaceChildren();
+  const rules = view?.rules ?? [];
+  if (view && rules.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "rules-empty";
+    empty.textContent = t("settings.rules.empty");
+    host.appendChild(empty);
+  }
+  for (const r of rules) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    const rule = document.createElement("span");
+    rule.className = "r-rule";
+    rule.textContent = r.rule;
+    row.appendChild(rule);
+    const uses = document.createElement("span");
+    uses.className = "r-uses";
+    uses.textContent = t("settings.rules.uses", { n: r.use_count ?? 0 });
+    row.appendChild(uses);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "r-btn";
+    if (armedRule === r.id) {
+      btn.textContent = t("settings.rules.revoke.confirm");
+      btn.classList.add("armed");
+    } else {
+      btn.textContent = t("settings.rules.revoke");
+    }
+    btn.addEventListener("click", () => onRevokeClick(r, btn));
+    row.appendChild(btn);
+    const meta = document.createElement("div");
+    meta.className = "r-meta";
+    meta.textContent = t("settings.rules.meta", {
+      project: r.project,
+      bubble: r.notification_id ?? "—",
+      time: localDateTime(r.created_at),
+    });
+    row.appendChild(meta);
+    if (!r.in_file) {
+      const gone = document.createElement("div");
+      gone.className = "r-meta warn";
+      gone.textContent = t("settings.rules.notinfile");
+      row.appendChild(gone);
+    }
+    host.appendChild(row);
+  }
+
+  // 文件里有、表里没有：说清楚「这不是你在 Vibepaws 里批准的」，并且不给撤销按钮 ——
+  // 撤销的语义是「收回我给过的」，而这一条 Vibepaws 从没给过
+  const external = view?.external ?? [];
+  $("rules-external").hidden = external.length === 0;
+  const list = $("rules-external-list");
+  list.replaceChildren();
+  for (const e of external) {
+    const item = document.createElement("div");
+    item.className = "r-rule";
+    item.textContent = t("settings.rules.external.item", { rule: e.rule, project: e.project });
+    list.appendChild(item);
+  }
+  const problems = $("rules-problems");
+  problems.replaceChildren();
+  for (const p of view?.problems ?? []) {
+    const item = document.createElement("div");
+    item.className = "rule-problem";
+    item.textContent = t("settings.rules.problem", { project: p.project });
+    problems.appendChild(item);
+  }
+}
+
+function onRevokeClick(r, btn) {
+  if (armedRule !== r.id) {
+    disarmRules();
+    armedRule = r.id;
+    renderRules(rulesView);
+    ruleArmTimer = setTimeout(disarmRules, ARM_MS);
+    return;
+  }
+  if (ruleArmTimer) clearTimeout(ruleArmTimer);
+  ruleArmTimer = null;
+  armedRule = null;
+  void revokeRule(r, btn);
+}
+
+async function revokeRule(r, btn) {
+  btn.disabled = true;
+  const res = await postJson("/api/rules/revoke", { id: r.id, confirm: true });
+  if (!res.ok || !res.data?.ok) {
+    status(t("settings.rules.revoke.failed", { rule: r.rule }), "err");
+    await loadRules();
+    return;
+  }
+  status(t("settings.rules.revoked", { rule: r.rule }), "ok");
+  renderRules(res.data);
+}
+
+async function loadRules() {
+  const view = await getJson("/api/rules");
+  // 武装到一半时别重画：会把用户刚点亮的确认按钮抹回去
+  if (view && armedRule === null) renderRules(view);
+}
+
 /* ---------------- 壳设定（窗口 / 语言） ---------------- */
 function renderLanguageOptions(prefs) {
   const el = $("language");
@@ -957,6 +1082,7 @@ disarm(); // 顺带给三个危险按钮写上初始标签（它们的文案由�
 initShell();
 load();
 loadAgents();
+loadRules();
 loadDanger();
 setInterval(() => {
   load();
@@ -964,4 +1090,6 @@ setInterval(() => {
   void refreshShellFacts();
   // agent 可能是刚在别处装上/卸掉的（CLI、另一扇设置窗口）
   void loadAgents();
+  // 规则文件可能被手改、被 agent 改 —— 来历不明的那一条要尽快亮出来
+  void loadRules();
 }, POLL_MS);

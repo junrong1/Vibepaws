@@ -3,7 +3,7 @@
  * 职责：校验 token → 白名单过滤 payload → event_id 去重 → 写 events 表 → 回调分发。
  */
 import type Database from "better-sqlite3";
-import { fileBasename, isPermissionMode } from "./events.ts";
+import { fileBasename, isCommandPrefix, isPermissionMode } from "./events.ts";
 import type { CoreEvent, EventPayload } from "./events.ts";
 
 /** payload 白名单：仅允许这些字段进入 Core（与 events.ts 的 EventPayload 对齐） */
@@ -29,6 +29,7 @@ const PAYLOAD_WHITELIST: Record<keyof EventPayload, true> = {
   pid: true,
   hook_ms: true,
   permission_mode: true,
+  command_prefix: true,
 };
 
 /**
@@ -40,6 +41,8 @@ const SHAPED: Partial<Record<keyof EventPayload, (v: unknown) => unknown>> = {
   // 只剩文件名：绝对路径 / Windows 路径 / 相对路径一律削掉目录
   file: fileBasename,
   permission_mode: (v) => (isPermissionMode(v) ? v : undefined),
+  // 「永远允许」的收窄依据（U9）：只能是前缀的形状，一条完整命令塞进来也进不了库
+  command_prefix: (v) => (isCommandPrefix(v) ? v : undefined),
 };
 
 const SEVERITIES = new Set(["low", "medium", "high"]);

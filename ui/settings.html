@@ -96,6 +96,22 @@
       <p class="hint" data-i18n="settings.zombie.hint"></p>
     </section>
 
+    <!-- 永远允许的规则（U9 / R20）。表是权威、文件是镜像：列出来的只有经由气泡授予的那些，
+         文件里来历不明的条目单独列成警告（agent 可能自己写了一条）—— 不当作授予，也不给撤销。
+         在浏览器预览里同样能看、能撤销；只有「授予」必须在桌面壳里按。内容由 settings.js 填。 -->
+    <section class="card" id="rules-card">
+      <h2 data-i18n="settings.section.rules"></h2>
+      <p class="hint" data-i18n="settings.rules.hint"></p>
+      <div id="rules"></div>
+      <p class="hint" data-i18n="settings.rules.uses.hint"></p>
+      <div id="rules-external" class="rules-external" hidden>
+        <h3 data-i18n="settings.rules.external.title"></h3>
+        <p class="hint" data-i18n="settings.rules.external.hint"></p>
+        <div id="rules-external-list"></div>
+      </div>
+      <div id="rules-problems"></div>
+    </section>
+
     <!-- 接 agent（0.5）。位置在「运行中的 session」**之前**是刻意的：没接上 agent 就
          永远不会有 session，这张卡回答的是用户此刻真正的问题。
          列表由 settings.js 从 Core 的 /api/adapters 拉，每个 agent 一行 + 一个两段式按钮。 -->

@@ -242,6 +242,9 @@ body.dragging #pet { filter: none; }
   cursor: pointer;
 }
 .bubble .b-act:hover { border-color: var(--accent); }
+/* 永远允许的文案里带着整条规则（Bash(npm test *) in my-app）：让它占住剩下的宽度并换行，
+ * 而不是把动作行撑出气泡 —— 被截断的规则等于没告诉用户会记住什么 */
+.bubble .b-act[data-action="always_allow"] { flex: 1; min-width: 0; text-align: left; overflow-wrap: anywhere; }
 .bubble .b-act kbd {
   min-width: 13px;
   padding: 0 3px;
@@ -254,7 +257,8 @@ body.dragging #pet { filter: none; }
   color: var(--dim);
 }
 /* 停留护栏看得见：窗口刚拿到焦点 / 这条刚成为顶，动作行底下走一条进度线，
- * 走完数字键亮起来 = 现在按有效。没焦点时既不走线也不亮 —— 数字键此时到不了这里。 */
+ * 走完数字键亮起来 = 现在按有效。没焦点时数字键到不了这里，但带「永远允许」的顶端气泡照样走线：
+ * 点击也过同一道停留护栏（U9，decideClick），线没走完之前那一下点击不算。 */
 .bubble .b-dwell {
   position: absolute;
   left: 0; bottom: 0;

@@ -25,6 +25,7 @@ import {
   guardContent,
   guardResnap,
   decideKey,
+  decideClick,
 } from "./bubbles.js";
 
 const NOW = 1_800_000_000_000;
@@ -253,4 +254,45 @@ test("辅导气泡原地改了正文 → 停留护栏重新上膛，不只是新
   assert.equal(press(g, "1", 5000 + DWELL_MS, 7).kind, "act");
   // 别的气泡改了正文不影响快照那条
   assert.equal(guardContent(g0, 99, 5000), g0);
+});
+
+/* ---------------- 永远允许（U9） ---------------- */
+const GRANT = { rule: "Bash(npm test *)", project: "my-app" };
+
+test("永远允许：只在 permission + Core 给了规则预览 + 这扇窗口在壳里 时出现，排在叉掉之后", () => {
+  const acts = bubbleActions(notif("permission", { id: 1, grant: GRANT }), undefined, { canGrant: true });
+  assert.deepEqual(acts.map((a) => [a.id, a.key, a.safe]), [["dismiss", "1", true], ["always_allow", "2", false]]);
+  assert.deepEqual(acts[1].params, GRANT, "文案里写明会记住的那条规则和项目");
+  // 浏览器预览（没有壳的授予通道）：不出现 —— 授予不能经 UI server 走
+  assert.ok(!bubbleActions(notif("permission", { id: 1, grant: GRANT }), undefined, {}).some((a) => a.id === "always_allow"));
+  // Core 没给预览（危险类 / 推不出参数 / 非 Claude Code / Core 不是壳拉起来的）：不出现
+  assert.ok(!bubbleActions(notif("permission", { id: 1 }), undefined, { canGrant: true }).some((a) => a.id === "always_allow"));
+  // 别的类型带了 grant 也不认
+  for (const type of ["decision", "context", "error"]) {
+    assert.ok(!bubbleActions(notif(type, { id: 1, grant: GRANT }), undefined, { canGrant: true }).some((a) => a.id === "always_allow"), type);
+  }
+});
+
+test("Enter 永远落在叉掉上，不落在永远允许上", () => {
+  const actions = bubbleActions(notif("permission", { id: 1, grant: GRANT }), undefined, { canGrant: true });
+  const g = { focusedAt: 0, snapshotId: "b1", armedAt: 0 };
+  const r = decideKey(g, { key: "Enter", repeat: false, now: DWELL_MS + 1, topId: "b1", actions });
+  assert.equal(r.kind, "act");
+  assert.equal(r.action.id, "dismiss");
+});
+
+test("点击也过停留护栏：非安全动作在成为顶之后 DWELL_MS 内被拦下，之后才认", () => {
+  const always = { id: "always_allow", safe: false };
+  assert.equal(decideClick({ action: always, uid: "b1", topId: "b1", topSince: 1000, now: 1000 + DWELL_MS - 1 }).kind, "dwell");
+  assert.equal(decideClick({ action: always, uid: "b1", topId: "b1", topSince: 1000, now: 1000 + DWELL_MS }).kind, "act");
+  // 从没当过顶（-Infinity 是「还没排过版」，不是「很久以前」）→ 不是顶就是 changed
+  assert.equal(decideClick({ action: always, uid: "b2", topId: "b1", topSince: -Infinity, now: 5000 }).kind, "changed");
+});
+
+test("点击的快照检查：点到的不是此刻的顶（刚被新请求挤下去）→ 拒绝；安全动作不受限", () => {
+  const always = { id: "always_allow", safe: false };
+  assert.equal(decideClick({ action: always, uid: "b1", topId: "b2", topSince: 0, now: 10_000 }).kind, "changed");
+  assert.equal(decideClick({ action: always, uid: "b1", topId: null, topSince: 0, now: 10_000 }).kind, "changed");
+  const dismiss = { id: "dismiss", safe: true };
+  assert.equal(decideClick({ action: dismiss, uid: "b1", topId: "b2", topSince: 9_999, now: 10_000 }).kind, "act");
 });

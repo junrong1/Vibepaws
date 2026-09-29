@@ -1,11 +1,11 @@
 /**
  * Vibepaws SQLite schema — 对应 docs/mvp_architecture.md §4
- * 10 张表：pet_types / pets / agents / sessions / events / notifications /
- *          needs_input_waits / exp_logs / memories / settings
+ * 11 张表：pet_types / pets / agents / sessions / events / notifications /
+ *          needs_input_waits / exp_logs / memories / settings / rules
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -190,6 +190,28 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE TABLE IF NOT EXISTS settings (
   key           TEXT PRIMARY KEY,
   value         TEXT NOT NULL
+);
+
+-- 「永远允许」的授予（U9 / R20）。这张表是权威：Vibepaws 列出的、能撤销的只有这里的行；
+-- <project>/.claude/settings.local.json 里的那一条只是镜像（见 core/rules.ts）。
+--   pattern          Bash 的命令前缀（NULL = 不带参数的工具，如 Edit）
+--   rule             写进文件的那一条原文，例如 Bash(npm test *)
+--   origin           怎么来的。现在只有 bubble —— 授予只能由人在气泡上按出来
+--   notification_id  按出它的那条气泡
+--   use_count        恒为 0：规则进了文件之后 Claude Code 直接放行，不再有事件可数
+-- 不在 reset 的表单里：reset 不碰别的工具的配置文件，删了行，文件里的授予就成了「来历不明」。
+CREATE TABLE IF NOT EXISTS rules (
+  id            INTEGER PRIMARY KEY,
+  agent         TEXT NOT NULL,
+  project_id    TEXT NOT NULL,
+  tool          TEXT NOT NULL,
+  pattern       TEXT,
+  rule          TEXT NOT NULL,
+  origin        TEXT NOT NULL CHECK (origin IN ('bubble')),
+  notification_id INTEGER,
+  use_count     INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL,
+  UNIQUE (agent, project_id, rule)
 );
 `;
 

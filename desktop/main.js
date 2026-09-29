@@ -41,6 +41,7 @@ import {
   scaleFactor,
   scaledSizes,
 } from "./display.js";
+import { GRANT_CHANNEL_ENV, newGrantSecret, readCoreToken, requestGrant } from "./grant.js";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
 function writeLog(prefix, line) {
@@ -274,6 +275,12 @@ let quitting = false;
 /** undefined = 还没找过；null = 找过了，没有够版本的 */
 let nodeBinary = undefined;
 let nodeErrorShown = false;
+/**
+ * 「永远允许」的 grant secret（KTD13，威胁模型见 grant.js）。每拉起一次 Core 现生成一个，
+ * 只在这个变量里：不进 process.env（UI server 子进程继承的就是它）、不进日志、不进任何窗口。
+ * null = 眼前这个 Core 不是我们拉起来的（或者还没起来）—— 那就没有授予这回事。
+ */
+let grantSecret = null;
 
 async function coreRunning() {
   try {
@@ -361,12 +368,17 @@ function spawnCore() {
   }
   const entry = join(resourcesDir(), "src", "core", "server.ts");
   log(`[vibepaws] Core 解释器：${interp.label}`);
+  const secret = newGrantSecret();
   const child = spawn(interp.cmd, ["--experimental-strip-types", entry, "--port", String(CORE_PORT)], {
     cwd: workDir(),
-    stdio: ["ignore", "pipe", "pipe"],
+    // stdin 是 grant secret 的通道：只写一行就关掉。环境变量里只放「去 stdin 读」这个标记，它本身不是秘密
+    stdio: ["pipe", "pipe", "pipe"],
     // ELECTRON_RUN_AS_NODE 只能加不能减：子进程要继承 PATH 之类的一切
-    env: { ...process.env, ...interp.env },
+    env: { ...process.env, ...interp.env, [GRANT_CHANNEL_ENV]: "stdin" },
   });
+  child.stdin?.on("error", () => {}); // Core 起不来时管道会断；那一下不该变成主进程的 uncaught
+  child.stdin?.end(`${secret}\n`);
+  grantSecret = secret;
   coreProc = child;
   coreStartedAt = Date.now();
   child.on("error", (e) => {
@@ -398,6 +410,8 @@ function onCoreExit(child, code, signal) {
   // 上一代进程的迟到讣告：restartCore 已经把 coreProc 换掉了，别拿它去重拉
   if (child !== coreProc) return;
   coreProc = null;
+  // 那个 Core 没了，它的 secret 也跟着作废；下一个 Core 拿的是新的一把
+  grantSecret = null;
   if (quitting) return;
   // 撑过一分钟才崩的，跟启动期那串连崩不是一回事，计数重来
   if (Date.now() - coreStartedAt >= CORE_HEALTHY_MS) coreRestarts = 0;
@@ -1358,6 +1372,21 @@ function prefsPayload() {
 ipcMain.on("vibepaws:open-settings", (e) => {
   if (win && !win.isDestroyed() && e.sender !== win.webContents) return;
   openSettings();
+});
+
+/**
+ * 「永远允许」（U9）。只收宠物窗口的请求、只收一个通知 id；授予由主进程自己直连 Core
+ * （不经 UI server），带上只有这里有的 grant secret —— 为什么必须这样，见 grant.js 的威胁模型。
+ * Core 是 adopted 的（不是我们拉起来的）就不去要：我们手里没有它的 secret。
+ */
+ipcMain.handle("vibepaws:grant-always", async (e, id) => {
+  if (!win || win.isDestroyed() || e.sender !== win.webContents) return { ok: false, reason: "sender" };
+  if (coreState !== "running" || !coreProc) return { ok: false, reason: "unavailable" };
+  const r = await requestGrant({ id, secret: grantSecret, token: readCoreToken(workDir()), corePort: CORE_PORT });
+  // 只回界面要的那几样：规则原文与项目短名（toast 要说「记住了什么」），别的一概不回
+  return r.ok
+    ? { ok: true, rule: r.data?.rule ?? null, project: r.data?.project ?? null }
+    : { ok: false, reason: r.reason ?? "failed", status: r.status };
 });
 
 ipcMain.handle("vibepaws:prefs-get", (e) => {

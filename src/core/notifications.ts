@@ -49,6 +49,12 @@ export interface Notification {
   /** 怎么结束的（NULL = 还挂着），见 events.ts 的 NotificationResolution */
   resolution?: NotificationResolution | null;
   resolved_at?: string | null;
+  /**
+   * 「永远允许」会写下的那条规则（U9）。只在 permission 上、只在 Core 是桌面壳拉起来的
+   * （手里有 grant secret）时才有 —— 没有它，界面就不给这个选项。project 是短名。
+   * 这是给人看的预览，不是授予的依据：授予时 Core 按 id 从库里重新推一遍。
+   */
+  grant?: { rule: string; project: string };
 }
 
 /** 判定结果：只带 key/params，title/body 在落库前统一渲染成英文 */

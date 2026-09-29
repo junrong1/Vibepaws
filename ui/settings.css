@@ -219,6 +219,30 @@ button:hover:enabled { border-color: var(--accent); color: var(--accent); }
   color: var(--dim);
   overflow-wrap: anywhere;
 }
+/* ---- 永远允许的规则（U9） ----
+ * 与 agent 行同一套 grid：规则原文、使用次数、撤销按钮；第二行是项目与来源。
+ * 来历不明的那一段用警告色 —— 它说的是「有人绕过了你改了权限」。 */
+.rule-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rule-row:last-child { border-bottom: none; }
+.r-rule { font-family: ui-monospace, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.r-uses { font-size: 10px; color: var(--dim); white-space: nowrap; }
+.r-btn { margin-top: 0; white-space: nowrap; }
+.r-btn.armed { border-color: var(--danger); color: var(--danger); font-weight: 700; }
+.r-meta { grid-column: 1 / -1; font-size: 10px; color: var(--dim); overflow-wrap: anywhere; }
+.r-meta.warn { color: var(--warn); }
+.rules-empty { color: var(--dim); padding: 2px 0 8px; }
+.rules-external { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.rules-external h3 { font-size: 11px; color: var(--warn); margin: 0 0 4px; }
+.rules-external .r-rule, .rule-problem { color: var(--warn); }
+.rule-problem { font-size: 10px; padding: 3px 0; overflow-wrap: anywhere; }
+
 /* 卸载目标与善后提示：文件路径要能换行，不然长路径把窗口撑宽 */
 .target, .note {
   font-size: 10px;

@@ -75,3 +75,62 @@ test("设置窗口的页面与它的样式表都在同一个 server 上（浏览
     }
   });
 });
+
+/* ---------------- 永远允许（KTD13）：代理绝不是通往授予的一条路 ---------------- */
+
+/** 一个假的 Core：只记下它收到了什么，回 200 */
+async function fakeCore(): Promise<{ port: number; seen: Array<{ url: string; headers: Record<string, unknown> }>; close: () => Promise<void> }> {
+  const { createServer } = await import("node:http");
+  const seen: Array<{ url: string; headers: Record<string, unknown> }> = [];
+  const srv = createServer((req, res) => {
+    seen.push({ url: req.url ?? "", headers: { ...req.headers } });
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const port = (srv.address() as { port: number }).port;
+  return { port, seen, close: () => new Promise((r) => srv.close(() => r())) };
+}
+
+test("代理不转发 X-Vibepaws-Grant：调用方自己带上的也会被丢掉，只剩 token 与 content-type", async () => {
+  const core = await fakeCore();
+  try {
+    await withServer(async (base) => {
+      const r = await fetch(`${base}/api/action`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-vibepaws-grant": "f".repeat(64), authorization: "Bearer forged" },
+        body: JSON.stringify({ action: "dismiss", id: 1 }),
+      });
+      assert.equal(r.status, 200);
+    }, core.port);
+    assert.equal(core.seen.length, 1);
+    const h = core.seen[0]!.headers;
+    assert.equal(h["x-vibepaws-grant"], undefined, "grant 头永远不经过这个代理");
+    assert.equal(h.authorization, undefined);
+    assert.ok("x-vibepaws-token" in h);
+  } finally {
+    await core.close();
+  }
+});
+
+test("代理直接拒绝授予路由（大小写、结尾斜杠、编码过的写法都算），Core 根本收不到这个请求", async () => {
+  const core = await fakeCore();
+  try {
+    await withServer(async (base) => {
+      for (const path of ["/api/rules/grant", "/api/RULES/Grant", "/api/rules/grant/", "/api/rules/%67rant", "/api/rules/grant?x=1"]) {
+        const r = await fetch(base + path, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-vibepaws-grant": "f".repeat(64) },
+          body: JSON.stringify({ id: 1 }),
+        });
+        assert.equal(r.status, 403, path);
+      }
+      // 列表与撤销照常代理：收回权限在浏览器预览里也要能做
+      assert.equal((await fetch(`${base}/api/rules`)).status, 200);
+    }, core.port);
+    assert.deepEqual(core.seen.map((s) => s.url), ["/api/rules"]);
+  } finally {
+    await core.close();
+  }
+});

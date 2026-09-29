@@ -17,6 +17,11 @@
  *   POST /api/reset        重置本地数据（scope=pet|data，需要 confirm）
  *   GET  /api/uninstall    卸载预览（哪些 agent 配置里还留着我们的 hooks）
  *   POST /api/uninstall    移除 adapter hooks（需要 confirm；dry_run 只算不写）
+ *   GET  /api/rules        「永远允许」的授予列表（表里的行 + 文件里来历不明的条目 + 读不成的文件）
+ *   POST /api/rules/grant  创建一条授予（{id} = 那条还挂着的 permission 通知）。token 之外还要
+ *                          X-Vibepaws-Grant —— 只有桌面壳手里有它（KTD13，见 core/rules.ts），
+ *                          UI server 不转发这个头，也不代理这条路由
+ *   POST /api/rules/revoke 撤销一条授予（{id, confirm}）。收回权限只要 token
  *
  * 后台循环：僵尸 session 回收（G10，见 core/reclaim.ts）—— 启动时一次 + 60s 一轮。
  */
@@ -53,6 +58,17 @@ import {
 } from "../adapters/uninstall.ts";
 import { INSTALL_AGENTS, detectAgents, installAdapter, type InstallAgent } from "../adapters/install.ts";
 import { ingestEvent, upsertAgent } from "./ingress.ts";
+import {
+  GRANT_CHANNEL_ENV,
+  GRANT_SECRET_HEADER,
+  createGrant,
+  deriveGrant,
+  grantSecretMatches,
+  isGrantSecret,
+  listRules,
+  revokeGrant,
+} from "./rules.ts";
+import { projectShortName } from "./registry.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
@@ -91,6 +107,11 @@ export interface ServerConfig {
    * 项目级与用户级，只换掉 repoRoot 的测试照样会去卸开发机上真实的全局 hooks。
    */
   home?: string;
+  /**
+   * 创建「永远允许」要的第二道凭证（KTD13）。真实 Core 由桌面壳经 stdin 递进来
+   * （见文件末尾的 CLI 入口）；没有它 = 这个 Core 上没有授予这回事，气泡也不给这个选项。
+   */
+  grantSecret?: string | null;
 }
 
 const DEFAULT_PORT = 17893;
@@ -156,6 +177,8 @@ export class VibepawsServer {
   private stateFlush: ReturnType<typeof setTimeout> | null = null;
   private zombieSweep: ReturnType<typeof setInterval> | null = null;
   private httpServer: import("node:http").Server | null = null;
+  /** 只在内存里；不进日志、不进任何推送、不进库（见 core/rules.ts 的威胁模型） */
+  private grantSecret: string | null = null;
 
   constructor(cfg: ServerConfig = {}) {
     this.port = cfg.port ?? DEFAULT_PORT;
@@ -163,6 +186,7 @@ export class VibepawsServer {
     this.db = cfg.db ?? openDb();
     this.repoRoot = cfg.repoRoot ?? process.cwd();
     this.home = cfg.home ?? homedir();
+    this.setGrantSecret(cfg.grantSecret ?? null);
     this.token = getApiToken(this.db);
     // token 双写（cwd/.vibepaws + ~/.vibepaws），供任意 cwd 的 hook/simulator 读取
     if (cfg.persistToken ?? !cfg.db) {
@@ -186,6 +210,16 @@ export class VibepawsServer {
       this.exp.handle(ev);
       this.broadcastNotification(ev);
     };
+  }
+
+  /** 形状不对的 secret 当作没有：一个空串或短串不该变成一把谁都猜得中的钥匙 */
+  setGrantSecret(secret: string | null): void {
+    this.grantSecret = isGrantSecret(secret) ? secret : null;
+  }
+
+  /** 界面据此决定给不给「永远允许」（只是一个布尔，secret 本身永远不出去） */
+  get grantsAvailable(): boolean {
+    return this.grantSecret !== null;
   }
 
   /** 事件入口（HTTP 与 simulator 共用） */
@@ -281,6 +315,19 @@ export class VibepawsServer {
           if (url === "/api/adapters") {
             if (req.method === "POST") this.handleInstall(req, res);
             else sendJson(res, 200, this.adaptersSnapshot());
+            return;
+          }
+          // 「永远允许」。列表与撤销只要 token；创建另要壳手里那一把（handleGrant）
+          if (url === "/api/rules") {
+            sendJson(res, 200, listRules(this.db));
+            return;
+          }
+          if (url === "/api/rules/grant" && req.method === "POST") {
+            this.handleGrant(req, res);
+            return;
+          }
+          if (url === "/api/rules/revoke" && req.method === "POST") {
+            this.handleRevoke(req, res);
             return;
           }
           res.writeHead(404, { "content-type": "application/json" });
@@ -521,6 +568,61 @@ export class VibepawsServer {
     });
   }
 
+  /**
+   * 创建一条「永远允许」（U9）。
+   *
+   * 门槛比任何别的端点都高，因为它是唯一一个**永久放行**的动作：bearer token 在项目目录里、
+   * agent 读得到；UI server 替任何人盖 token。所以先验 grant secret —— 没有、不对，一律 403，
+   * 一个字节都不写，连 body 都不读。body 里只认一个 id，别的字段就算传了也不看：
+   * 工具、项目、前缀都由 deriveGrant 从库里那一行推出来。
+   */
+  private handleGrant(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+    if (!grantSecretMatches(this.grantSecret, req.headers[GRANT_SECRET_HEADER])) {
+      req.resume();
+      sendJson(res, 403, { error: "grants are only available from the Vibepaws desktop app" });
+      return;
+    }
+    readJsonBody(req, res, "bad body", (body) => {
+      const { id } = (body ?? {}) as { id?: unknown };
+      if (!Number.isInteger(id)) {
+        sendJson(res, 400, { error: "id required" });
+        return;
+      }
+      const r = createGrant(this.db, id as number);
+      if (!r.ok) {
+        // 请求本身合法、但这条通知不该 / 不能授予：409（不是 400 —— 换个 id 也许就行）
+        sendJson(res, r.reason === "not_found" ? 404 : 409, { error: r.reason });
+        return;
+      }
+      // 用户在宠物里处理了这条气泡：记成 user_actioned 并撤掉。眼前这一次调用仍要在终端里答 ——
+      // 规则管的是以后，没有回传通道（U11）之前它答不了正在等的这一个
+      const resolved = this.notifications.actioned(id as number);
+      if (resolved) this.broadcastResolved([resolved]);
+      sendJson(res, 200, { ok: true, id: r.id, rule: r.rule, project: r.project, created: r.created });
+    });
+  }
+
+  /** 撤销一条授予。收回权限不需要壳的那把钥匙，但和别的写操作一样要显式 confirm */
+  private handleRevoke(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+    readJsonBody(req, res, "bad body", (body) => {
+      const { id, confirm } = (body ?? {}) as { id?: unknown; confirm?: unknown };
+      if (confirm !== true) {
+        sendJson(res, 400, { error: "confirmation required" });
+        return;
+      }
+      if (!Number.isInteger(id)) {
+        sendJson(res, 400, { error: "id required" });
+        return;
+      }
+      const r = revokeGrant(this.db, id as number);
+      if (!r.ok) {
+        sendJson(res, r.reason === "not_found" ? 404 : 409, { error: r.reason });
+        return;
+      }
+      sendJson(res, 200, { ok: true, rule: r.rule, ...listRules(this.db) });
+    });
+  }
+
   /** 「接上你的 agent」那张卡的数据：每个 agent 在不在这台机器上、Vibepaws 装没装。 */
   adaptersSnapshot(): { agents: ReturnType<typeof detectAgents>; installable: InstallAgent[] } {
     return {
@@ -725,6 +827,11 @@ export class VibepawsServer {
   private broadcastNotification(ev: CoreEvent): void {
     const notif = this.notifications.getForEvent(ev);
     if (!notif) return; // 没有通知就没必要广播「skip」噪音
+    // 「永远允许」的预览：只有壳拉起来的 Core 才给，只给推得出一条安全规则的请求
+    if (notif.type === "permission" && this.grantSecret && notif.id !== undefined) {
+      const d = deriveGrant(this.db, notif.id);
+      if (d.ok) notif.grant = { rule: d.grant.rule, project: projectShortName(d.grant.project_id) };
+    }
     for (const client of [...this.sseClients]) this.sendSse(client, "notification", notif);
   }
 
@@ -890,5 +997,32 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const portArg = process.argv.findIndex((a) => a === "--port");
   const port = portArg >= 0 ? Number(process.argv[portArg + 1]) : DEFAULT_PORT;
   const server = new VibepawsServer({ port });
+  // 桌面壳经 stdin 递 grant secret（KTD13）。只有壳设了这个标记时才读 stdin ——
+  // `npm run core` 的 stdin 是终端，去读它只会吞掉用户的输入；那种 Core 上本来就没有授予
+  if (process.env[GRANT_CHANNEL_ENV] === "stdin") {
+    readGrantSecret((secret) => server.setGrantSecret(secret));
+  }
   server.start();
+}
+
+/** 读 stdin 的第一行当 grant secret，然后放手。读不到（壳没写 / 管道断了）就当没有 */
+function readGrantSecret(onSecret: (secret: string | null) => void): void {
+  let buf = "";
+  let done = false;
+  const finish = (secret: string | null): void => {
+    if (done) return;
+    done = true;
+    process.stdin.pause();
+    process.stdin.removeAllListeners("data");
+    onSecret(secret);
+  };
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk: string) => {
+    buf += chunk;
+    const nl = buf.indexOf("\n");
+    if (nl >= 0) finish(buf.slice(0, nl).trim());
+    else if (buf.length > 256) finish(null);
+  });
+  process.stdin.on("end", () => finish(buf.trim() || null));
+  process.stdin.on("error", () => finish(null));
 }

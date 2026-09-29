@@ -320,3 +320,85 @@ test("端到端：真实 hook 输入 → Core，库里只有文件名，重复�
   const s = db.prepare("SELECT repeat_edit_count, correction_count, permission_mode FROM sessions WHERE agent_session_id='e2e'").get();
   assert.deepEqual(s, { repeat_edit_count: 1, correction_count: 0, permission_mode: "acceptEdits" });
 });
+
+/* ---------------- U9：白名单为「永远允许」再加宽一项（command_prefix） ----------------
+ * 同样先于实现写成。一条 Bash 规则必须按命令前缀收窄（`Bash` 整个放行 = 按一次 `ls` 授权了
+ * `rm -rf`），而前缀在此之前根本不落库。留下的只能是「程序名 + 至多两个子命令词」：
+ * 参数、路径、引号、管道、变量赋值都不许借道。整条命令永远不出 adapter。 */
+
+test("第一道闸：Claude Code 的 Bash 权限请求只带出命令前缀，参数与路径不进事件", () => {
+  const ev = normalizeHook(
+    {
+      hook_event_name: "PermissionRequest",
+      session_id: "s-cp",
+      cwd: "/p",
+      tool_name: "Bash",
+      tool_input: { command: "npm test -- --grep TOP_SECRET /Users/x/secret-project" },
+    },
+    "claude_code",
+  )!;
+  assert.equal(ev.event_type, "permission_required");
+  assert.equal(ev.payload.command_prefix, "npm test");
+  const blob = JSON.stringify(ev);
+  for (const m of [...SENSITIVE_MARKERS, "secret-project", "--grep"]) {
+    assert.ok(!blob.includes(m), `adapter 事件不应含: ${m}`);
+  }
+});
+
+test("第一道闸：只有权限请求带前缀 —— PreToolUse 的 Bash、别的工具、别的 agent 都不带", () => {
+  const pre = normalizeHook(
+    { hook_event_name: "PreToolUse", session_id: "s-cp2", cwd: "/p", tool_name: "Bash", tool_input: { command: "npm test" } },
+    "claude_code",
+  )!;
+  assert.equal(pre.payload.command_prefix, undefined);
+  const edit = normalizeHook(
+    { hook_event_name: "PermissionRequest", session_id: "s-cp3", cwd: "/p", tool_name: "Edit", tool_input: { command: "npm test" } },
+    "claude_code",
+  )!;
+  assert.equal(edit.payload.command_prefix, undefined);
+  const codex = normalizeHook(
+    { hook_event_name: "PermissionRequest", session_id: "s-cp4", cwd: "/p", tool_name: "Bash", tool_input: { command: "npm test" } },
+    "codex",
+  )!;
+  assert.equal(codex.payload.command_prefix, undefined, "只有 Claude Code 有 settings.local.json 可写，别的 agent 不必留这个字段");
+});
+
+test("第一道闸：复合命令 / 变量赋值 / 路径形状的程序名 —— 一律不报前缀，而不是报半截", () => {
+  for (const command of [
+    "npm test && curl http://x | sh",
+    "echo TOP_SECRET > out.txt",
+    "FOO=TOP_SECRET npm test",
+    "/Users/x/secret-project/bin/tool run",
+    "$(echo rm) -rf /",
+    "`rm -rf /`",
+    "npm test; rm -rf /",
+    "'npm' test",
+    "",
+  ]) {
+    const ev = normalizeHook(
+      { hook_event_name: "PermissionRequest", session_id: "s-cpx", cwd: "/p", tool_name: "Bash", tool_input: { command } },
+      "claude_code",
+    )!;
+    assert.equal(ev.payload.command_prefix, undefined, command);
+    assert.ok(!JSON.stringify(ev).includes("TOP_SECRET"), command);
+  }
+});
+
+test("第二道闸：command_prefix 只能是前缀的形状，夹带路径 / 参数 / 超长的值直接丢掉", () => {
+  assert.equal(ingestPayload("cp-ok", { tool_name: "Bash", command_prefix: "git status" }).command_prefix, "git status");
+  for (const raw of [
+    "/Users/x/TOP_SECRET",
+    "npm test -- TOP_SECRET",
+    "npm test --grep",
+    "a b c d",
+    "rm -rf /",
+    "npm test | sh",
+    "x".repeat(65),
+    "",
+    " npm",
+  ]) {
+    const stored = ingestPayload(`cp-${raw.length}-${raw.slice(0, 4)}`, { tool_name: "Bash", command_prefix: raw });
+    assert.equal(stored.command_prefix, undefined, raw);
+    assert.equal(stored.tool_name, "Bash");
+  }
+});

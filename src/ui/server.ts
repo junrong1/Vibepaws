@@ -44,6 +44,20 @@ const CSP = [
   "form-action 'none'",
 ].join("; ");
 
+/**
+ * 只有桌面壳能走的 Core 路由（KTD13）。大小写与结尾斜杠都要归一：Core 按原样比较路径，
+ * 但「代理拒了 /api/rules/grant、却放过了 /api/rules/grant/」这种漏洞不该靠 Core 碰巧 404 来补。
+ */
+export function isShellOnlyPath(path: string): boolean {
+  let p = path;
+  try {
+    p = decodeURIComponent(path);
+  } catch {
+    return true; // 解不开的路径不代理
+  }
+  return /^\/api\/rules\/grant\/*$/i.test(p);
+}
+
 export interface UiServerOptions {
   uiDir?: string;
   corePort?: number;
@@ -75,6 +89,13 @@ export function startUiServer(
     }
 
     if (url.startsWith("/api/")) {
+      // 「永远允许」的创建只属于桌面壳（KTD13）：这个代理不认调用方是谁、却替它盖上 Core 的 token，
+      // 所以它绝不能是通往授予的一条路。Core 那边还要一个这里永远不转发的头，这一道是纵深防御。
+      if (isShellOnlyPath(url)) {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "grants are only available from the Vibepaws desktop app" }));
+        return;
+      }
       proxyToCore(req, res);
       return;
     }
@@ -135,6 +156,8 @@ export function startUiServer(
     const [path = "/", query] = rawUrl.split("?");
     const targetPath = path === "/api/sse" ? "/sse" : path;
     const target = new URL(targetPath + (query ? `?${query}` : ""), `http://127.0.0.1:${corePort}`);
+    // 只转 content-type，别的请求头一个都不带过去 —— 尤其是 X-Vibepaws-Grant：
+    // 能打到这个端口的任何进程都能伪造它，而 Core 靠「它只从壳来」判断一次授予是人按出来的
     const headers: Record<string, string> = { "x-vibepaws-token": coreToken() };
     if (req.headers["content-type"]) headers["content-type"] = req.headers["content-type"] as string;
 

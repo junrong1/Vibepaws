@@ -68,6 +68,13 @@ export interface EventPayload {
    */
   permission_mode?: string;
   /**
+   * Bash 权限请求的命令前缀（U9 / R20）：程序名 + 至多两个子命令词，例如 `npm test`、`git status`。
+   * 「永远允许」要按它收窄 —— 整个 `Bash` 放行意味着按一次 `ls` 就永久授权了 `rm -rf`。
+   * 只在 Claude Code 的 permission_required 上出现（只有它有 settings.local.json 可写），
+   * 形状由 isCommandPrefix 把关：参数、路径、引号、管道、变量赋值一概进不来，整条命令永远不出 adapter。
+   */
+  command_prefix?: string;
+  /**
    * agent 进程的 pid（僵尸回收 G10）。Core 用它探活：进程没了 = session 死了，
    * 不必干等 15 分钟静默超时。隐私上这是一个本机整数，不携带任何用户内容 ——
    * 它唯一能回答的问题是「这个 session 背后的进程还在不在」。
@@ -110,6 +117,47 @@ export function fileBasename(raw: unknown): string | undefined {
 const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit", "applypatch", "editfile", "writefile", "createfile"]);
 export function isEditTool(name: unknown): boolean {
   return typeof name === "string" && EDIT_TOOLS.has(name.toLowerCase().replace(/[_-]/g, ""));
+}
+
+/* ---------------- Bash 命令前缀（U9） ----------------
+ * adapter（第一道闸）从整条命令里削出前缀，ingress（第二道闸）再按形状验一遍，两处共用这里。 */
+
+/** 程序名：不许有 `/`（路径会把目录带进库）、不许有 `=`（变量赋值）、不许有引号 */
+const PROGRAM_WORD = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
+/** 子命令词：字母开头，不以 `-` 开头（那是参数），不带 `.` 与 `/`（那多半是文件） */
+const SUBCOMMAND_WORD = /^[A-Za-z][A-Za-z0-9:_-]{0,31}$/;
+/** 一出现就说明这是复合命令 / 重定向 / 替换：前缀不再能说明「会跑什么」，干脆不报 */
+const SHELL_OPERATORS = /[;&|<>`$\\\n\r(){}'"*?!#~]/;
+export const COMMAND_PREFIX_MAX = 64;
+
+/**
+ * 整条 Bash 命令 → 前缀（程序名 + 至多两个子命令词）；说不清楚就返回 undefined。
+ * `npm test -- --grep x` → `npm test`；`git log --oneline` → `git log`；`ls -la` → `ls`。
+ * 复合命令（`a && b`、管道、`;`）、替换、重定向、变量赋值前缀、路径形状的程序名一律 undefined ——
+ * 宁可不给「永远允许」这个选项，也不给一条用户读不懂它会放行什么的规则。
+ */
+export function commandPrefix(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const command = raw.trim();
+  if (!command || SHELL_OPERATORS.test(command)) return undefined;
+  const words = command.split(/\s+/);
+  const program = words[0]!;
+  if (!PROGRAM_WORD.test(program)) return undefined;
+  const out = [program];
+  for (const w of words.slice(1, 3)) {
+    if (!SUBCOMMAND_WORD.test(w)) break;
+    out.push(w);
+  }
+  const prefix = out.join(" ");
+  return prefix.length <= COMMAND_PREFIX_MAX ? prefix : undefined;
+}
+
+/** 第二道闸：一个值是不是 commandPrefix 能产出的形状（单空格分隔、1–3 个词、每个词合规） */
+export function isCommandPrefix(raw: unknown): raw is string {
+  if (typeof raw !== "string" || !raw || raw.length > COMMAND_PREFIX_MAX) return false;
+  const words = raw.split(" ");
+  if (words.length > 3 || !PROGRAM_WORD.test(words[0]!)) return false;
+  return words.slice(1).every((w) => SUBCOMMAND_WORD.test(w));
 }
 
 /** 权限模式名的形状：一个 ASCII 单词。不在这个形状里的值一律不报 / 不收 */

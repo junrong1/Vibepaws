@@ -172,22 +172,38 @@ export const MAX_ACTIONS = 3;
  * U9（Always allow）往 permission 上加一项、U10（Not useful）往辅导类上加一项，都只是在这里追加。
  * 没有回传通道之前，这里绝不出现「允许」这一类会放行调用的动作（R19 / KTD7）。
  *
+ * `applies(n, ctx)` 的 ctx 是渲染层的处境：`{ canGrant }` = 这扇窗口有没有壳的授予通道
+ * （preload 的 grantAlways；浏览器预览里没有）。
+ *
  * @type {ReadonlyArray<{ id: string, labelKey: string, safe?: boolean,
- *   applies: (n: { type?: string }) => boolean,
+ *   applies: (n: any, ctx: { canGrant?: boolean }) => boolean,
  *   params?: (n: any) => Record<string, string|number> }>}
  */
 export const ACTION_SPECS = Object.freeze([
   { id: "dismiss", labelKey: "ui.bubble.dismiss", safe: true, applies: () => true },
+  /**
+   * 永远允许（U9）。三个条件缺一不可：是 permission、Core 给出了一条它推得出来的安全规则
+   * （n.grant —— 危险类、推不出参数的工具、非 Claude Code 都不会有）、这扇窗口在壳里。
+   * 文案里写明会记住的那条规则和项目：没有范围选择器，用户读到的就是会写进去的。
+   * 不是 safe：Enter 永远不落在它身上；点击和数字键一样过停留护栏（decideClick）。
+   */
+  {
+    id: "always_allow",
+    labelKey: "ui.bubble.always",
+    applies: (n, ctx) => n.type === "permission" && Boolean(ctx?.canGrant) && typeof n.grant?.rule === "string",
+    params: (n) => ({ rule: n.grant.rule, project: n.grant.project ?? "" }),
+  },
 ]);
 
 /**
  * @param {{ type?: string }} n
  * @param {typeof ACTION_SPECS} [specs]
+ * @param {{ canGrant?: boolean }} [ctx]
  * @returns {Array<{ id: string, key: string, labelKey: string, params?: Record<string, string|number>, safe: boolean }>}
  */
-export function bubbleActions(n, specs = ACTION_SPECS) {
+export function bubbleActions(n, specs = ACTION_SPECS, ctx = {}) {
   return specs
-    .filter((s) => s.applies(n))
+    .filter((s) => s.applies(n, ctx))
     .slice(0, MAX_ACTIONS)
     .map((s, i) => ({
       id: s.id,
@@ -284,4 +300,23 @@ export function decideKey(g, { key, repeat, now, topId, actions }) {
   const remaining = g.armedAt + DWELL_MS - now;
   if (remaining > 0) return { kind: "dwell", remaining };
   return { kind: "act", action };
+}
+
+/**
+ * 一次**点击**怎么处理（U9）。数字键的护栏只管键盘；「永远允许」是一个永久裁决，点击也得过同样两道闸：
+ *   act      安全动作（叉掉）永远直接执行 —— 叉错了代价只是再等一次
+ *   changed  点的不是当前顶上那条（刚被挤下去、DOM 还没来得及换位）→ 不执行
+ *   dwell    它成为顶、或者正文变了之后还不到 DWELL_MS → 不执行，调用方把进度线亮出来
+ * `topSince` 是这条气泡**最近一次**成为顶或改了正文的时刻：鼠标停在按钮上时一条新请求顶上来，
+ * 同一个位置换成了另一条的按钮 —— 这一下点击不能落在一个没读过的请求上。
+ *
+ * @param {{ action: { safe: boolean }, uid: string|number, topId: string|number|null,
+ *   topSince: number, now: number }} e
+ */
+export function decideClick({ action, uid, topId, topSince, now }) {
+  if (action.safe) return { kind: "act" };
+  if (topId === null || topId === undefined || uid !== topId) return { kind: "changed" };
+  const remaining = topSince + DWELL_MS - now;
+  if (remaining > 0) return { kind: "dwell", remaining };
+  return { kind: "act" };
 }

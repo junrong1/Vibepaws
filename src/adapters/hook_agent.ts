@@ -12,7 +12,7 @@ import { join, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readApiToken } from "../core/token.ts";
 import { adapterStatusEvent } from "./hooks.ts";
-import { fileBasename, isEditTool, isPermissionMode } from "../core/events.ts";
+import { commandPrefix, fileBasename, isEditTool, isPermissionMode } from "../core/events.ts";
 import type { CoreEvent, AgentId } from "../core/events.ts";
 
 /** 仓库根（由本文件位置反推），离线兜底缓冲固定写回 Vibepaws 仓库，任意 cwd 下都能被 bridge 找到。 */
@@ -187,6 +187,13 @@ export function normalizeHook(
   // 权限模式（R6 / G13）：bypassPermissions / acceptEdits 下权限事件根本不会来。
   // 只报一个模式名的形状，别的值一律当没有。
   if (isPermissionMode(raw.permission_mode)) payload.permission_mode = raw.permission_mode;
+  // 「永远允许」要按命令前缀收窄（U9）：只在 Claude Code 的 Bash 权限请求上削一个前缀出来，
+  // 整条命令（参数、路径）永远不出这里。别的 agent 没有可写的本地规则文件，不必留这个字段。
+  if (eventType === "permission_required" && agent === "claude_code" && toolName === "Bash") {
+    const input = raw.tool_input as { command?: unknown } | undefined;
+    const prefix = commandPrefix(input?.command);
+    if (prefix) payload.command_prefix = prefix;
+  }
   if (eventType === "decision_required" || eventType === "permission_required") {
     payload.kind = isAskUser ? "question" : (raw.matcher ?? hookEvent);
     if (raw.turn_id) payload.turn_id = String(raw.turn_id);

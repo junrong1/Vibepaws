@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "../db/schema.ts";
@@ -730,4 +730,257 @@ test("文档回归：模块头的端点表里有 /api/session_health", () => {
   const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
   const header = src.slice(0, src.indexOf("*/"));
   assert.match(header, /GET\s+\/api\/session_health/);
+});
+
+/* ---------------- 永远允许（U9 / KTD13）：授予只属于桌面壳 ----------------
+ * bearer token 在项目目录里、agent 读得到；UI server 替任何调用方盖 token。所以「持有 token」
+ * 绝不能等于「能授予」—— 下面几条是这个承诺唯一的执行者。项目目录一律是临时目录：
+ * 一条跑到仓库自己 .claude/settings.local.json 里的授予，就是在开发机上真的放行了一个权限。 */
+
+const GRANT_SECRET = "c".repeat(64);
+
+async function withGrantServer(
+  fn: (server: VibepawsServer, base: string, project: string) => Promise<void>,
+  opts: { secret?: string | null } = {},
+): Promise<void> {
+  const db = new Database(":memory:");
+  applySchema(db);
+  seedPetTypes(db);
+  const server = new VibepawsServer({ db, ...sandbox(), grantSecret: opts.secret === undefined ? GRANT_SECRET : opts.secret });
+  server.port = 0;
+  await server.start();
+  const project = join(mkdtempSync(join(tmpdir(), "vibepaws-grant-")), "my-app");
+  mkdirSync(project);
+  try {
+    await fn(server, `http://127.0.0.1:${server.port}`, project);
+  } finally {
+    await server.close();
+  }
+}
+
+/** 一条还挂着的 Bash 权限请求，走真实的事件链（ingress → 通知引擎），返回通知行 id */
+function raisePermission(server: VibepawsServer, project: string, payload: Record<string, unknown>): number {
+  const session = `grant-${++seq}`;
+  server.handleEvent(ev({ session_id: session, project_id: project, payload: { source: "startup", cwd: project } }));
+  server.handleEvent(ev({ session_id: session, project_id: project, event_type: "permission_required", payload }));
+  const row = server.db
+    .prepare("SELECT id FROM notifications WHERE session_id=? AND type='permission' ORDER BY id DESC LIMIT 1")
+    .get(session) as { id: number };
+  return row.id;
+}
+
+const ruleCount = (server: VibepawsServer): number =>
+  (server.db.prepare("SELECT COUNT(*) AS c FROM rules").get() as { c: number }).c;
+
+test("授予：只带 bearer token → 403，文件与表一个字节都没写；token + 错的 secret 同样 403", async () => {
+  await withGrantServer(async (server, base, project) => {
+    const id = raisePermission(server, project, { tool_name: "Bash", command_prefix: "npm test" });
+    const onlyToken = await post(base, "/api/rules/grant", server.token, { id });
+    assert.equal(onlyToken.status, 403);
+    const wrong = await fetch(`${base}/api/rules/grant`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": "d".repeat(64) },
+      body: JSON.stringify({ id }),
+    });
+    assert.equal(wrong.status, 403);
+    // 没有 token 的，连 secret 对不对都轮不到问
+    const noToken = await fetch(`${base}/api/rules/grant`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vibepaws-grant": GRANT_SECRET },
+      body: JSON.stringify({ id }),
+    });
+    assert.equal(noToken.status, 401);
+    assert.ok(!existsSync(join(project, ".claude")), "被拒的授予不许建目录、不许写文件");
+    assert.equal(ruleCount(server), 0);
+    assert.equal(notifRow(server, id).resolution, null, "被拒的授予也不许把气泡算作处理过了");
+  });
+});
+
+test("授予：Core 不是壳拉起来的（没有 secret）→ 谁来都是 403，通知上也不给「永远允许」的预览", async () => {
+  await withGrantServer(
+    async (server, base, project) => {
+      const sse = await openSse(base, server.token);
+      try {
+        const id = raisePermission(server, project, { tool_name: "Edit" });
+        const n = await sse.next("notification");
+        assert.equal(n.grant, undefined);
+        const r = await fetch(`${base}/api/rules/grant`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": "" },
+          body: JSON.stringify({ id }),
+        });
+        assert.equal(r.status, 403);
+        assert.equal(server.grantsAvailable, false);
+      } finally {
+        sse.close();
+      }
+    },
+    { secret: null },
+  );
+});
+
+test("授予：token + secret → 写进那个项目的 settings.local.json，气泡记成 user_actioned 并推 notification_resolved", async () => {
+  await withGrantServer(async (server, base, project) => {
+    const sse = await openSse(base, server.token);
+    try {
+      const id = raisePermission(server, project, { tool_name: "Bash", command_prefix: "npm test" });
+      const n = await sse.next("notification");
+      assert.deepEqual(n.grant, { rule: "Bash(npm test *)", project: "my-app" }, "界面拿它写「会记住什么」");
+      assert.ok(!JSON.stringify(n).includes(GRANT_SECRET), "secret 永远不进推送");
+      assert.ok(!JSON.stringify(server.stateSnapshot()).includes(GRANT_SECRET));
+
+      // 请求体里的其余字段一概不看：规则由 Core 从库里那一行推出来
+      const r = await fetch(`${base}/api/rules/grant`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": GRANT_SECRET },
+        body: JSON.stringify({ id, tool: "Bash", rule: "Bash(*)", project: "/" }),
+      });
+      assert.equal(r.status, 200);
+      const body = (await r.json()) as { rule: string; project: string };
+      assert.deepEqual([body.rule, body.project], ["Bash(npm test *)", "my-app"]);
+      const file = JSON.parse(readFileSync(join(project, ".claude", "settings.local.json"), "utf-8"));
+      assert.deepEqual(file, { permissions: { allow: ["Bash(npm test *)"] } });
+      assert.equal(notifRow(server, id).resolution, "user_actioned");
+      const resolved = await sse.next("notification_resolved");
+      assert.equal(resolved.id, id);
+
+      // 已经结束的请求再授予一次：拒绝（这一行不再是「还挂着的 permission」）
+      const again = await fetch(`${base}/api/rules/grant`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": GRANT_SECRET },
+        body: JSON.stringify({ id }),
+      });
+      assert.equal(again.status, 409);
+      assert.equal(((await again.json()) as { error: string }).error, "resolved");
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+test("授予：不是 permission 的通知、危险类命令 → 409，什么都不写；危险类的通知上也没有预览", async () => {
+  await withGrantServer(async (server, base, project) => {
+    const sse = await openSse(base, server.token);
+    try {
+      const rm = raisePermission(server, project, { tool_name: "Bash", command_prefix: "rm" });
+      assert.equal((await sse.next("notification")).grant, undefined, "危险类不给这个选项");
+      const session = `grant-${++seq}`;
+      server.handleEvent(ev({ session_id: session, project_id: project, payload: { source: "startup", cwd: project } }));
+      server.handleEvent(ev({ session_id: session, project_id: project, event_type: "session_error", payload: {} }));
+      const err = (server.db.prepare("SELECT id FROM notifications WHERE type='error'").get() as { id: number }).id;
+      for (const [id, reason] of [[rm, "destructive"], [err, "not_permission"]] as const) {
+        const r = await fetch(`${base}/api/rules/grant`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": GRANT_SECRET },
+          body: JSON.stringify({ id }),
+        });
+        assert.equal(r.status, 409);
+        assert.equal(((await r.json()) as { error: string }).error, reason);
+      }
+      assert.ok(!existsSync(join(project, ".claude")));
+      assert.equal(ruleCount(server), 0);
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+test("规则列表要 token；撤销只要 token 但要 confirm，撤完文件和表都清掉", async () => {
+  await withGrantServer(async (server, base, project) => {
+    const id = raisePermission(server, project, { tool_name: "Edit" });
+    const g = await fetch(`${base}/api/rules/grant`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": GRANT_SECRET },
+      body: JSON.stringify({ id }),
+    });
+    const ruleId = ((await g.json()) as { id: number }).id;
+    assert.equal((await fetch(`${base}/api/rules`)).status, 401);
+    const list = (await (await fetch(`${base}/api/rules`, { headers: { "x-vibepaws-token": server.token } })).json()) as {
+      rules: Array<{ id: number; rule: string; notification_id: number }>;
+    };
+    assert.deepEqual(list.rules.map((r) => [r.rule, r.notification_id]), [["Edit", id]]);
+
+    assert.equal((await post(base, "/api/rules/revoke", server.token, { id: ruleId })).status, 400, "没有 confirm 不动");
+    assert.equal(ruleCount(server), 1);
+    const ok = await post(base, "/api/rules/revoke", server.token, { id: ruleId, confirm: true });
+    assert.equal(ok.status, 200);
+    assert.equal(ruleCount(server), 0);
+    const file = JSON.parse(readFileSync(join(project, ".claude", "settings.local.json"), "utf-8"));
+    assert.deepEqual(file, { permissions: { allow: [] } });
+  });
+});
+
+test("文档回归：模块头的端点表里有 /api/rules 三条，并写明创建要壳的那把钥匙", () => {
+  const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+  const header = src.slice(0, src.indexOf("*/"));
+  assert.match(header, /GET\s+\/api\/rules\b/);
+  assert.match(header, /POST\s+\/api\/rules\/grant/);
+  assert.match(header, /POST\s+\/api\/rules\/revoke/);
+  assert.match(header, /X-Vibepaws-Grant/);
+});
+
+/**
+ * 真实的 CLI 入口：secret 经 stdin 进来、不经环境变量、不出现在任何输出里。
+ * HOME 与 cwd 都换成临时目录 —— 真 Core 会把 token 双写到 cwd/.vibepaws 与 ~/.vibepaws。
+ */
+async function spawnCore(env: Record<string, string>, stdin: string | null): Promise<{
+  base: string;
+  token: string;
+  output: () => string;
+  stop: () => void;
+}> {
+  const { spawn } = await import("node:child_process");
+  const sb = mkdtempSync(join(tmpdir(), "vibepaws-cli-"));
+  mkdirSync(join(sb, "home"));
+  mkdirSync(join(sb, "work"));
+  const child = spawn(process.execPath, ["--experimental-strip-types", new URL("./server.ts", import.meta.url).pathname, "--port", "0"], {
+    cwd: join(sb, "work"),
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, HOME: join(sb, "home"), ...env },
+  });
+  if (stdin !== null) child.stdin.end(stdin);
+  let out = "";
+  child.stderr.on("data", (d) => (out += String(d)));
+  const port = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`core did not start: ${out}`)), 8000);
+    child.stdout.on("data", (d) => {
+      out += String(d);
+      const m = /listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
+      if (m) {
+        clearTimeout(timer);
+        resolve(m[1]!);
+      }
+    });
+  });
+  // stdin 是异步读的：给它一拍
+  await new Promise((r) => setTimeout(r, 150));
+  const token = readFileSync(join(sb, "work", ".vibepaws", "api_token"), "utf8").trim();
+  return { base: `http://127.0.0.1:${port}`, token, output: () => out, stop: () => child.kill() };
+}
+
+test("CLI：壳经 stdin 递 grant secret 才有授予；secret 不出现在任何输出里；不带标记就不读 stdin", async () => {
+  const secret = "e".repeat(64);
+  const grant = (core: { base: string; token: string }, h: Record<string, string>): Promise<number> =>
+    fetch(`${core.base}/api/rules/grant`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vibepaws-token": core.token, ...h },
+      body: JSON.stringify({ id: 1 }),
+    }).then((r) => r.status);
+
+  const shell = await spawnCore({ VIBEPAWS_GRANT_CHANNEL: "stdin" }, `${secret}\n`);
+  try {
+    assert.equal(await grant(shell, {}), 403, "只有 token 不够");
+    assert.equal(await grant(shell, { "x-vibepaws-grant": secret }), 404, "secret 对上了，才轮到问那条通知在不在");
+    assert.ok(!shell.output().includes(secret), "secret 不进日志");
+  } finally {
+    shell.stop();
+  }
+
+  // `npm run core`：没有标记。stdin 上就算有东西也不读，那种 Core 上没有授予这回事
+  const plain = await spawnCore({}, `${secret}\n`);
+  try {
+    assert.equal(await grant(plain, { "x-vibepaws-grant": secret }), 403);
+  } finally {
+    plain.stop();
+  }
 });

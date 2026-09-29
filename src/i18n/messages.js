@@ -84,6 +84,10 @@ export const MESSAGES = {
     "ui.bubble.changed": "Request changed — read it, then press again",
     "ui.bubble.more": "+{count} waiting",
     "ui.bubble.factor": "moves {factor}",
+    // ---- 永远允许（U9）：文案里写明会记住的那条规则 —— 没有范围选择器，读到的就是会写进去的 ----
+    "ui.bubble.always": "Always allow {rule} in {project}",
+    "ui.toast.granted": "Won't ask again for {rule} in {project} — answer this one in your terminal",
+    "ui.toast.grantfailed": "Couldn't save the rule — nothing was written",
     "ui.toast.muted30": "🔕 Muted everything for 30 minutes",
     "ui.toast.muted2h": "😴 Muted everything for 2 hours",
     "ui.toast.unmuted": "🔔 Notifications are back on",
@@ -239,6 +243,26 @@ export const MESSAGES = {
     "settings.health.everywhere": "Session list and under the pet",
     "settings.health.hint":
       "Every session gets a 0–100 score from four factors: Context, Focus, Response and Outcome. \"Under the pet\" adds today's score as ten small cells beside its name.",
+
+    // ---- 永远允许的规则列表（U9 / R20）----
+    "settings.section.rules": "Always-allow rules",
+    "settings.rules.hint":
+      "Each rule was granted by pressing Always allow on a permission bubble. It's written to that project's .claude/settings.local.json (not settings.json, which git tracks), so Claude Code stops asking for that tool — and, for Bash, only that command.",
+    "settings.rules.empty": "No rules yet — Always allow appears on permission bubbles in the desktop app.",
+    "settings.rules.meta": "{project} · from bubble #{bubble} · {time}",
+    "settings.rules.uses": "{n} uses seen",
+    "settings.rules.uses.hint":
+      "Use counts stay at 0: once a rule is in the file, Claude Code approves the call without asking, so there is no event for Vibepaws to count.",
+    "settings.rules.notinfile": "Missing from the file — it was removed by hand. Revoke to clear it here too.",
+    "settings.rules.revoke": "Revoke",
+    "settings.rules.revoke.confirm": "Press again to revoke",
+    "settings.rules.revoked": "Revoked {rule} — Claude Code will ask again",
+    "settings.rules.revoke.failed": "Couldn't revoke {rule} — the file wasn't changed",
+    "settings.rules.external.title": "Not granted through Vibepaws",
+    "settings.rules.external.hint":
+      "These are in a project's .claude/settings.local.json, but Vibepaws never granted them — you added them by hand, or your agent wrote them itself. They aren't treated as grants and can't be revoked here; edit the file to remove one.",
+    "settings.rules.external.item": "{rule} · {project}",
+    "settings.rules.problem": "{project}: .claude/settings.local.json can't be read — Vibepaws won't touch it until it's fixed",
 
     // ---- 接 agent（app 里那张卡；从前只有 CLI 一条路）----
     "settings.section.connect": "Connect your agent",
@@ -474,6 +498,9 @@ export const MESSAGES = {
     "ui.bubble.changed": "请求变了 — 先看一眼，再按一次",
     "ui.bubble.more": "后面还有 {count} 条",
     "ui.bubble.factor": "影响 {factor}",
+    "ui.bubble.always": "在 {project} 里永远允许 {rule}",
+    "ui.toast.granted": "{project} 里的 {rule} 以后不再问 — 眼前这一次请在终端里答",
+    "ui.toast.grantfailed": "规则没存上 — 什么都没写",
     "ui.toast.muted30": "🔕 已安静 30 分钟",
     "ui.toast.muted2h": "😴 已安静 2 小时",
     "ui.toast.unmuted": "🔔 通知已恢复",
@@ -623,6 +650,25 @@ export const MESSAGES = {
       "每个 session 都有一个 0–100 的分数，由四个因子组成：Context、Focus、Response、Outcome。选「宠物脚下」会在它的名字旁边用十个小格显示今天的分数。",
 
     // ---- 接 agent ----
+    "settings.section.rules": "永远允许的规则",
+    "settings.rules.hint":
+      "每一条都是在权限气泡上按「永远允许」得来的，写进那个项目的 .claude/settings.local.json（不是 git 跟踪的 settings.json）—— Claude Code 从此不再为这个工具来问；Bash 只限那一条命令。",
+    "settings.rules.empty": "还没有规则 — 桌面版的权限气泡上会有「永远允许」。",
+    "settings.rules.meta": "{project} · 来自气泡 #{bubble} · {time}",
+    "settings.rules.uses": "见到 {n} 次使用",
+    "settings.rules.uses.hint":
+      "使用次数会一直是 0：规则进了文件之后，Claude Code 直接放行、不再来问，Vibepaws 没有事件可数。",
+    "settings.rules.notinfile": "文件里已经没有它了 — 是被手动删掉的。撤销一下，这里也清掉。",
+    "settings.rules.revoke": "撤销",
+    "settings.rules.revoke.confirm": "再按一次撤销",
+    "settings.rules.revoked": "已撤销 {rule} — Claude Code 会重新来问",
+    "settings.rules.revoke.failed": "{rule} 没撤掉 — 文件没有改动",
+    "settings.rules.external.title": "不是经由 Vibepaws 授予的",
+    "settings.rules.external.hint":
+      "这些规则在某个项目的 .claude/settings.local.json 里，但 Vibepaws 从没授予过 — 要么是你手加的，要么是 agent 自己写进去的。它们不被当作授予，这里也撤销不了；要去掉就直接改那个文件。",
+    "settings.rules.external.item": "{rule} · {project}",
+    "settings.rules.problem": "{project}：.claude/settings.local.json 读不了 — 修好之前 Vibepaws 不会碰它",
+
     "settings.section.connect": "接上你的 agent",
     "settings.connect.hint":
       "把 Vibepaws 装进你的 agent 配置里，它才报得出自己在干什么。配置里其他东西一样不动，原文件会在旁边留一份备份。",

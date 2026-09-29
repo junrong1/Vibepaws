@@ -8,7 +8,7 @@ import { BLEND_MS, MOTION, motionAt } from "./pets/motion.js";
 import {
   stickyBubbleStale, bubbleKey, isActionable, collapseTarget, sortBubbles, layoutBubbles, pickEvictions,
   bubbleFactor, bubbleActions, actionsLabel, MAX_STUBS, DWELL_MS,
-  guardFocus, guardTop, guardContent, guardResnap, decideKey,
+  guardFocus, guardTop, guardContent, guardResnap, decideKey, decideClick,
 } from "./health/bubbles.js";
 import { PIP_CELLS, PIP_GAP_AFTER, nameplateStrip, healthSurfaces } from "./health/pips.js";
 import {
@@ -49,6 +49,11 @@ const PET_STATE_OVERRIDE = (() => {
 
 /** 壳（Electron preload 暴露的桥）；纯浏览器里为 null */
 const shell = window.vibepaws ?? null;
+/**
+ * 这扇窗口能不能发起「永远允许」（U9）：只有壳的 preload 有这条 IPC。浏览器预览里没有，
+ * 那个选项也就根本不出现 —— 授予不能经 UI server 走（KTD13，见 desktop/grant.js）。
+ */
+const ACTION_CTX = Object.freeze({ canGrant: typeof shell?.grantAlways === "function" });
 
 const POLL_MS = 5000;
 const POLL_TIMEOUT_MS = 4000;
@@ -506,6 +511,21 @@ const BUBBLE_ACTIONS = {
     resolveBubble(b, "dismiss");
     removeBubble(b);
   },
+  /**
+   * 永远允许（U9）。只把行 id 交给壳；壳带着它自己的 grant secret 去问 Core，Core 从库里推规则。
+   * 成功后 Core 会把这条记成 user_actioned 并推 notification_resolved —— 这里先撤掉，
+   * 并说清楚「以后不再问，但眼前这一个还得在终端里答」（还没有回传通道，U11）。
+   */
+  async always_allow(b) {
+    if (!ACTION_CTX.canGrant || b.id === null) return;
+    const r = await shell.grantAlways(b.id).catch(() => null);
+    if (!r?.ok) {
+      flash(t("ui.toast.grantfailed"), { error: true });
+      return;
+    }
+    removeBubble(b);
+    flash(t("ui.toast.granted", { rule: r.rule ?? b.n.grant?.rule ?? "", project: r.project ?? b.n.grant?.project ?? "" }));
+  },
 };
 
 function pushBubble(n) {
@@ -529,6 +549,8 @@ function pushBubble(n) {
     // 正文变了 = 用户读过的那句话已经不在了：停留护栏重新上膛（72% → 95%）
     if (changed) {
       guard = guardContent(guard, existing.uid, now);
+      // 点击的停留护栏同理：正文刚换，按钮下面那句话用户还没读过
+      existing.topSince = now;
       announce(existing);
     }
     renderBubbles();
@@ -550,7 +572,10 @@ function pushBubble(n) {
     ids: Number.isInteger(n.id) ? [n.id] : [],
     createdAt: Date.now(),
     n,
-    actions: bubbleActions(n),
+    actions: bubbleActions(n, undefined, ACTION_CTX),
+    /** 最近一次成为顶 / 改了正文的时刻（点击的停留护栏，见 decideClick）；-Infinity = 还没当过顶 */
+    topSince: -Infinity,
+    wasTop: false,
     timer: null,
     el: null,
   };
@@ -613,7 +638,7 @@ function buildBubble(b) {
     btn.appendChild(document.createTextNode(t(a.labelKey, a.params)));
     btn.onclick = (e) => {
       e.stopPropagation();
-      runAction(b, a.id);
+      clickAction(b, a);
     };
     row.appendChild(btn);
   }
@@ -659,6 +684,9 @@ function renderBubbles() {
     const el = b.el;
     const isTop = b === top;
     el.hidden = !shown.has(b);
+    // 刚成为顶的那一刻起算点击的停留（被挤下去再回来也重新算：它上面那条刚被处理掉，眼睛还没回来）
+    if (isTop && !b.wasTop) b.topSince = performance.now();
+    b.wasTop = isTop;
     el.classList.toggle("top", isTop);
     el.classList.toggle("stub", !isTop && shown.has(b));
     // 因子点名（R14）；分数可见性为 off 时连因子名也不出现
@@ -767,6 +795,21 @@ function runAction(b, actionId) {
 }
 
 /**
+ * 点击一个动作。安全动作直接执行；别的（永远允许）和数字键一样过停留与「是不是顶」两道闸，
+ * 被拦下时把进度线亮出来 —— 画出来，而不是悄悄吞掉这一下。
+ */
+function clickAction(b, a) {
+  const top = topBubble();
+  const r = decideClick({ action: a, uid: b.uid, topId: top?.uid ?? null, topSince: b.topSince, now: performance.now() });
+  if (r.kind === "act") {
+    runAction(b, a.id);
+    return;
+  }
+  if (r.kind === "changed") showChangedNote(b);
+  paintDwell({ clickFor: b });
+}
+
+/**
  * 用户回答了 agent 之后，Core 会把该 session 的 needs-you 撤掉 ——
  * 那条常驻气泡也该自己走，不必用户手动叉掉。session 从列表里消失了也一样
  * （判定见 ui/health/bubbles.js）。
@@ -790,7 +833,7 @@ function syncGuard() {
   paintDwell();
 }
 
-function paintDwell() {
+function paintDwell({ clickFor = null } = {}) {
   if (dwellTimer) clearTimeout(dwellTimer);
   dwellTimer = null;
   const top = topBubble();
@@ -800,16 +843,22 @@ function paintDwell() {
   }
   if (!top) return;
   const el = top.el;
-  // 没有焦点，或者快照不是这条（按下去会被拒）：数字键不亮
-  if (!guard || guard.snapshotId !== top.uid) {
+  // 起算点：有焦点且快照就是这条 → 键盘护栏的 armedAt；刚被一次点击撞上（没有焦点也会点）→
+  // 这条成为顶的时刻；都不是（没焦点，或者快照不是这条，按下去会被拒）→ 数字键不亮
+  const armedAt = guard && guard.snapshotId === top.uid
+    ? guard.armedAt
+    : clickFor === top || (!guard && top.actions.some((x) => !x.safe) && top.topSince + DWELL_MS > performance.now())
+      ? top.topSince
+      : null;
+  if (armedAt === null) {
     el.classList.remove("dwell", "armed");
     return;
   }
-  const remaining = guard.armedAt + DWELL_MS - performance.now();
+  const remaining = armedAt + DWELL_MS - performance.now();
   if (remaining > 0) {
-    if (el._dwellFor !== guard.armedAt) {
+    if (el._dwellFor !== armedAt) {
       // 重新上膛：摘掉再挂上，让进度线从头走（减弱动态下 CSS 不放这段动画，只剩「未亮」→「亮」）
-      el._dwellFor = guard.armedAt;
+      el._dwellFor = armedAt;
       el.classList.remove("dwell");
       void el.offsetWidth;
       el.style.setProperty("--dwell-ms", `${Math.round(remaining)}ms`);
