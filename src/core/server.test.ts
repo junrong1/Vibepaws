@@ -728,10 +728,32 @@ test("HTTP：/api/session_health 要 token；带 token 返回已结算的段（�
   });
 });
 
+test("HTTP：/api/growth 要 token；带 token 返回曲线、一周七格的来源、进化状态", async () => {
+  await withServer(async (server, base) => {
+    assert.equal((await fetch(`${base}/api/growth`)).status, 401);
+    const res = await fetch(`${base}/api/growth`, { headers: { "x-vibepaws-token": server.token } });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      pet: { level: number; next_level_exp: number };
+      curve: Array<{ level: number; required: number }>;
+      week: { days: number; daily: unknown[]; sources: Record<string, number> };
+      level_ups: unknown[];
+      evolution: { state: string };
+    };
+    assert.equal(body.curve[0]!.required, 100);
+    assert.equal(body.pet.next_level_exp, body.curve[body.pet.level - 1]!.required);
+    assert.equal(body.week.days, 7);
+    assert.equal(body.week.daily.length, 7);
+    assert.deepEqual(Object.keys(body.week.sources), ["token", "outcome", "care", "self"]);
+    assert.ok(["final", "level", "health", "ready"].includes(body.evolution.state));
+  });
+});
+
 test("文档回归：模块头的端点表里有 /api/session_health", () => {
   const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
   const header = src.slice(0, src.indexOf("*/"));
   assert.match(header, /GET\s+\/api\/session_health/);
+  assert.match(header, /GET\s+\/api\/growth/);
 });
 
 /* ---------------- 永远允许（U9 / KTD13）：授予只属于桌面壳 ----------------

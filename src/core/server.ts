@@ -11,6 +11,8 @@
  *   GET  /api/journal      日志（?month=YYYY-MM 默认本地这个月，&project=<短名> 可选）：每段收工一条、每次进化一条。
  *                          返回的是**行**（Den 按 locale 渲染），不是 markdown 文件本身；file 只给相对数据目录的路径
  *   GET  /api/exp          宠物 EXP/等级
+ *   GET  /api/growth       Den 的 Growth 标签页：等级曲线、这周 EXP 的来源（按本地日）、升级记录、
+ *                          下一次进化还差哪一条（全部由 exp.ts 的纯函数从现有的行算出来）
  *   GET  /api/hookstats    采集通道开销（字节 / 延迟 / 恒为 0 的模型调用，见 core/hookstats.ts）
  *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
  *   POST /api/settings     改设置（宠物名 / 预算 / 阈值 / 每日上限 / 分数显示在哪）
@@ -79,7 +81,7 @@ import { projectShortName } from "./registry.ts";
 import { coachingRule, coachingSnapshot, resetThreshold, tuneRule, type CoachingRuleId, type TuneResult } from "./coaching.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
-import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
+import { ExpEngine, TIRED_HEALTH_THRESHOLD, growthView } from "./exp.ts";
 import { todayHealth } from "./health_query.ts";
 import { dayHealthView, parseHistoryDays, sessionHealthHistory } from "./health_history.ts";
 import { JOURNAL_DIR_NAME, Journal, journalView, parseJournalMonth } from "./journal.ts";
@@ -316,6 +318,11 @@ export class VibepawsServer {
           if (url === "/api/exp") {
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ...this.exp.getPetSnapshot(), logs: this.exp.expLogs() }));
+            return;
+          }
+          // Den 的 Growth 标签页（U13）。和 /api/exp 分开：那条是浮层 EXP 明细的原始行，这条是算好的视图
+          if (url === "/api/growth") {
+            sendJson(res, 200, growthView(this.db, this.exp.getPetSnapshot()));
             return;
           }
           // 采集通道开销（landscape 0.12）。文案说「自己 curl 一下」，

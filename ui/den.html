@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!--
+  Vibepaws Den（U13 / R25）：Today、Journal、Growth 三个标签页，外加周卡（U14）。
+
+  为什么是第三扇窗口，而不是宠物浮层里的一页：浮层 300×430、无边框、透明、靠命中测试放过桌面点击，
+  它回答的是「此刻先处理哪一个」；Den 回答的是「今天 / 这个月 / 这只宠物怎么样了」—— 要宽度、要滚动、
+  要能选中复制，和设置窗口是同一类窗口（desktop/main.js 的 openDen 就是 openSettings 的近亲）。
+  Today 列的是**已收工**的段（历史），浮层列的是**活着**的 session（分诊），两边永远不回答同一个问题。
+
+  CSP 没有 'unsafe-inline'（src/ui/server.ts）：脚本与样式都是同源外部文件，本文件里一个 style 属性都不能有。
+  文案全部走 i18n（issue #3 / #6）：本文件里不写死任何一句人类可读文本。
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibepaws Den</title>
+<link rel="stylesheet" href="den.css">
+</head>
+<body>
+  <main id="app">
+    <header id="head">
+      <h1 data-i18n="den.title"></h1>
+      <!-- 连接状态：连上时安静，连不上时说出「这是几点的样子」—— 一扇挂着旧数据却不说的窗口是在撒谎 -->
+      <p id="conn" role="status" aria-live="polite"></p>
+    </header>
+
+    <div id="tabs" role="tablist">
+      <button id="tab-today" role="tab" type="button" aria-controls="panel-today" data-tab="today" data-i18n="den.tab.today"></button>
+      <button id="tab-journal" role="tab" type="button" aria-controls="panel-journal" data-tab="journal" data-i18n="den.tab.journal"></button>
+      <button id="tab-growth" role="tab" type="button" aria-controls="panel-growth" data-tab="growth" data-i18n="den.tab.growth"></button>
+    </div>
+
+    <!-- 分数设成「哪都不显示」（R30）时的那一句：Today 与 Journal 共用，Growth 不涉及分数 -->
+    <div id="hidden-note" class="note-bar" hidden>
+      <span data-i18n="den.hidden"></span>
+      <button id="open-settings" type="button" data-i18n="den.open.settings"></button>
+    </div>
+
+    <section id="panel-today" role="tabpanel" aria-labelledby="tab-today" hidden>
+      <div id="today"></div>
+    </section>
+
+    <section id="panel-journal" role="tabpanel" aria-labelledby="tab-journal" hidden>
+      <div class="filters">
+        <label class="filter"><span data-i18n="den.journal.month"></span> <select id="journal-month"></select></label>
+        <label class="filter"><span data-i18n="den.journal.project"></span> <select id="journal-project"></select></label>
+      </div>
+      <div id="journal"></div>
+      <p id="journal-file" class="hint"></p>
+    </section>
+
+    <section id="panel-growth" role="tabpanel" aria-labelledby="tab-growth" hidden>
+      <div id="growth"></div>
+    </section>
+  </main>
+
+  <script type="module" src="den.js"></script>
+</body>
+</html>

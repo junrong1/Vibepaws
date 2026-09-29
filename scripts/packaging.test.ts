@@ -104,3 +104,27 @@ test("Core 的入口仍然随包发出去 —— 签名配置动过 extraResourc
     assert.ok(tos.includes(need), `extraResources 缺少 ${need}/`);
   }
 });
+
+/**
+ * Den（U13）的页面是 UI server 从 ui/ 里读出来的：打包版里它在 Resources/ui 下，不在 asar 里。
+ * extraResources 的 ui 那一条要是哪天加了 filter，新文件漏掉的后果是托盘里点「Den」弹出一张 404 ——
+ * 本地开发永远看不到（dev 直接读仓库里的 ui/）。
+ */
+test("Den 的页面、脚本、样式都随 ui/ 一起发出去", () => {
+  const ui = pkg.build.extraResources.find((r) => r.to === "ui");
+  assert.ok(ui, "extraResources 缺少 ui/");
+  assert.equal(ui.from, "ui");
+  const den = ["den.html", "den.js", "den.css", "health/den.js"];
+  for (const f of den) {
+    assert.ok(existsSync(`ui/${f}`), `ui/${f} 不存在`);
+    for (const rule of ui.filter ?? []) {
+      // 只有排除规则（! 开头）会把它挡在包外；粗查一下它有没有点名 den
+      assert.ok(!(rule.startsWith("!") && rule.includes("den")), `extraResources 的 ui 过滤规则 ${rule} 会漏掉 ${f}`);
+    }
+  }
+  assert.ok(
+    pkg.build.files.includes("desktop/**"),
+    "desktop/preload-den.cjs 靠 build.files 的 desktop/** 进 asar —— 少了它 Den 窗口没有 preload",
+  );
+  assert.ok(existsSync("desktop/preload-den.cjs"), "desktop/preload-den.cjs 不存在");
+});

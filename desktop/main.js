@@ -86,9 +86,12 @@ function sizes() {
 }
 /** 设置窗口：普通有边框窗口，够放下一个表单又不至于铺满屏幕 */
 const SETTINGS_SIZE = { width: 480, height: 660 };
+/** Den（U13）：Today / Journal / Growth 要横着放得下四个因子与一条等级曲线，比设置窗口宽 */
+const DEN_SIZE = { width: 760, height: 640 };
 
 let win = null;
 let settingsWin = null;
+let denWin = null;
 let tray = null;
 let uiServer = null;
 let uiPort = PREFERRED_UI_PORT;
@@ -232,8 +235,8 @@ async function loadI18n() {
 const t = (key, params) => translate(LOCALE, key, params);
 
 /**
- * 切界面语言。不重启进程 —— 三处要一起换，少一处就会混语言（issue #6）：
- * 托盘菜单（主进程出字）、宠物窗口、设置窗口本身（后两个的 locale 是 URL 参数，
+ * 切界面语言。不重启进程 —— 四处要一起换，少一处就会混语言（issue #6）：
+ * 托盘菜单（主进程出字）、宠物窗口、设置窗口本身、Den（后三个的 locale 是 URL 参数，
  * 只能重载才能换）。
  */
 function applyLocalePref(pref) {
@@ -248,6 +251,11 @@ function applyLocalePref(pref) {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.setTitle(t("settings.title"));
     settingsWin.loadURL(settingsUrl());
+  }
+  // Den 开着的时候换了语言：不重载的话它会一直停在旧语言里，而托盘和宠物已经换了
+  if (denWin && !denWin.isDestroyed()) {
+    denWin.setTitle(t("den.title"));
+    denWin.loadURL(denUrl());
   }
 }
 
@@ -1205,6 +1213,10 @@ function settingsUrl() {
   return `http://127.0.0.1:${uiPort}/settings.html?locale=${encodeURIComponent(LOCALE)}`;
 }
 
+function denUrl() {
+  return `http://127.0.0.1:${uiPort}/den.html?locale=${encodeURIComponent(LOCALE)}`;
+}
+
 /**
  * macOS：accessory 档的进程不显示菜单栏，于是 ⌘C/⌘V 这些**键位等价**也无处可依 ——
  * 而设置窗口里有两个文本框，粘贴不了目标和名字是说不过去的。
@@ -1304,6 +1316,69 @@ function fromSettings(e) {
   return Boolean(settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents);
 }
 
+/* ---------------- Den（U13 / R25）：Today、Journal、Growth ----------------
+ * openSettings 的近亲：同样是一扇有框、能聚焦、能复制的普通窗口，同样由 UI server 提供页面
+ * （/den.html —— 所以 `npm run ui` 的浏览器预览里也打得开）。它和设置窗口的差别只有三处：
+ *   · 自己的尺寸（DEN_SIZE）；
+ *   · 自己的 preload（preload-den.cjs）：只有「存周卡」与「打开设置」两个动作，拿不到任何壳偏好；
+ *   · 自己的 partition —— 理由与设置窗口那一段一字不差：缩放按 host 存，而三扇窗口是同一个
+ *     127.0.0.1:port。不分 session，Den 一打开就是宠物的 1.3 倍；在这边按回 1.0 又会把宠物按回去。
+ * 数据全在 Core：页面自己经 UI server 的 /api/* 代理去拿，主进程不转发任何一条。 */
+function openDen() {
+  if (!uiReady) {
+    dialog.showErrorBox(t("tray.startfailed.title"), t("tray.startfailed.body", { error: "ui server not ready" }));
+    return;
+  }
+  if (denWin && !denWin.isDestroyed()) {
+    denWin.show();
+    if (process.platform === "darwin") app.focus({ steal: true });
+    denWin.focus();
+    return;
+  }
+  ensureEditMenu();
+  denWin = new BrowserWindow({
+    ...DEN_SIZE,
+    minWidth: 380,
+    minHeight: 420,
+    title: t("den.title"),
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#0d1117" : "#f6f8fa",
+    webPreferences: {
+      preload: fileURLToPath(new URL("preload-den.cjs", import.meta.url)),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      zoomFactor: 1,
+      // 自己的 session：见上面那一段与 openSettings 里的长注释（Chromium 的缩放表按 host 存）
+      partition: "vibepaws-den",
+    },
+  });
+  denWin.loadURL(denUrl());
+  denWin.once("ready-to-show", () => {
+    if (!denWin || denWin.isDestroyed()) return;
+    log(`[vibepaws] den window opened (${denUrl()})`);
+    denWin.show();
+    // accessory 档的进程默认不会被激活 —— 不 focus 的话窗口出来了却收不到键盘输入
+    if (process.platform === "darwin") app.focus({ steal: true });
+    denWin.focus();
+  });
+  denWin.webContents.on("console-message", (details) => {
+    log(`[den:${details?.level}] ${details?.message} (${details?.sourceId}:${details?.lineNumber})`);
+  });
+  denWin.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    err(`[den] load failed ${code} ${desc} ${url}`);
+  });
+  attachEditContextMenu(denWin);
+  denWin.on("closed", () => {
+    denWin = null;
+  });
+}
+
+/** 只认 Den 自己发来的请求（存周卡） */
+function fromDen(e) {
+  return Boolean(denWin && !denWin.isDestroyed() && e.sender === denWin.webContents);
+}
+
 /* ---------------- 开机自启（0.4） ----------------
  * 真值存在操作系统里，不存在我们的 window-prefs.json 里 —— 用户随时可以在
  * 「系统设置 → 通用 → 登录项」里把它关掉，那一刻任何自己记的一份都会开始撒谎。
@@ -1370,8 +1445,16 @@ function prefsPayload() {
 }
 
 ipcMain.on("vibepaws:open-settings", (e) => {
-  if (win && !win.isDestroyed() && e.sender !== win.webContents) return;
+  // 宠物窗口（浮层里的 ⚙）或 Den（分数关着时那句「打开设置」）。别的发送方一概不理
+  const fromPet = Boolean(win && !win.isDestroyed() && e.sender === win.webContents);
+  if (!fromPet && !fromDen(e)) return;
   openSettings();
+});
+
+/** 打开 Den：只收宠物窗口的（浮层里的 🏠）。托盘那条路直接调 openDen，不经 IPC */
+ipcMain.on("vibepaws:open-den", (e) => {
+  if (!win || win.isDestroyed() || e.sender !== win.webContents) return;
+  openDen();
 });
 
 /**
@@ -1478,6 +1561,7 @@ function updateTrayMenu() {
     { label: t("tray.show"), click: () => ensureWindow()?.show() },
     // 不给 accelerator：托盘菜单里的快捷键在 macOS 上只是显示出来、并不会真的生效，
     // 印一个按了没反应的 ⌘, 比不印更糟
+    { label: t("tray.den"), click: openDen },
     { label: t("tray.settings"), click: openSettings },
     { label: t("tray.reset"), click: resetWindowPosition },
     { label: t("tray.quit"), click: () => app.quit() },

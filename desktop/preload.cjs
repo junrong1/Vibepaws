@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld("vibepaws", {
   setHit: (over) => ipcRenderer.send("vibepaws:hit", Boolean(over)),
   /** 打开设置窗口（浮层里的 ⚙）。宠物窗口本身不该有权改任何设置，所以只给这一个动作。 */
   openSettings: () => ipcRenderer.send("vibepaws:open-settings"),
+  /** 打开 Den（浮层里的 🏠）：Today / Journal / Growth。同样只是一个动作，Den 的数据由它自己去 Core 拿 */
+  openDen: () => ipcRenderer.send("vibepaws:open-den"),
   /**
    * 「永远允许」（U9）：只传通知 id。规则由 Core 从它自己存的那一行推出来，
    * 请求由主进程带着只有壳才有的 grant secret 直连 Core —— 浏览器预览里没有这个方法，也就没有这个选项。

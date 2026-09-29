@@ -14,10 +14,10 @@
  *                     映射到 0.5–1.0（core/health.ts petHealthFromMean）；今天还没有 → 按 1.0
  */
 import type Database from "better-sqlite3";
-import type { CoreEvent, PetState } from "./events.ts";
+import type { CoreEvent, EvolutionStatus, ExpSource, GrowthView, PetState } from "./events.ts";
 import { getDailyExpCap } from "./settings.ts";
-import { todayHealth } from "./health_query.ts";
-import type { EvolutionRecord } from "./journal.ts";
+import { localDayKey, localDayStart, todayHealth } from "./health_query.ts";
+import { EVOLUTION_HEALTH_GATE, type EvolutionRecord } from "./journal.ts";
 
 export interface PetSnapshot {
   id: number;
@@ -445,6 +445,196 @@ export class ExpEngine {
 
 export function levelExpRequired(level: number): number {
   return 100 + (level - 1) * 50; // Lv1→100, Lv2→150, ...
+}
+
+/* ================= Growth（Den 的 Growth 标签页，U13）=================
+ * 下面全是纯函数：输入是库里的行，输出是 GET /api/growth 的一段。
+ * landscape 里 codachi 的头号抱怨是「看不见的进度、不透明的曲线、无声的进化」——
+ * 曲线就是 levelExpRequired，来源就是 exp_logs.category，门槛就是 checkEvolution 那一行；
+ * 这里不发明任何新的数，只是把已经在算的数说出来。 */
+
+/** 会加到宠物身上的 EXP 类别（顺序即界面顺序）。level 是 0 EXP 的升级标记，不在其中 */
+export const EXP_SOURCES: ExpSource[] = ["token", "outcome", "care", "self"];
+/** 曲线至少画到这一级：新宠物（Lv1）也看得出「后面每一级都更长」 */
+const CURVE_MIN_LEVELS = 10;
+/** 曲线画到当前等级之后几级 */
+const CURVE_AHEAD = 5;
+const LEVEL_UPS_MAX = 20;
+
+/**
+ * 等级曲线：Lv1 起到 max(当前 + 5, 10) 级。total = 从 Lv1 的 0 EXP 起、升过这一级累计要多少 ——
+ * 「Lv.7 一共要攒多少」是曲线上用户最想问、却要自己加的那个数。
+ */
+export function levelCurve(level: number): Array<{ level: number; required: number; total: number }> {
+  const current = Number.isInteger(level) && level >= 1 ? level : 1;
+  const last = Math.max(current + CURVE_AHEAD, CURVE_MIN_LEVELS);
+  const out: Array<{ level: number; required: number; total: number }> = [];
+  let total = 0;
+  for (let l = 1; l <= last; l++) {
+    const required = levelExpRequired(l);
+    total += required;
+    out.push({ level: l, required, total });
+  }
+  return out;
+}
+
+/** exp_logs.created_at 是 SQLite 的 datetime('now')：UTC、空格分隔、没有 Z */
+export function sqliteUtc(at: string): Date {
+  return new Date(/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
+}
+
+/** ISO → SQLite datetime 的写法（比较 created_at 用） */
+function toSqliteUtc(iso: string): string {
+  return new Date(iso).toISOString().slice(0, 19).replace("T", " ");
+}
+
+function emptySources(): Record<ExpSource, number> {
+  return { token: 0, outcome: 0, care: 0, self: 0 };
+}
+
+/**
+ * 最近 `days` 个本地日的 EXP 来源。按**本地**日分桶（23:50 的一笔是用户过的那一天）；
+ * 每一天都列出来（没有 EXP 的日子是 0），范围外的行、level 标记、认不出的类别一律不算。
+ */
+export function expSourceBreakdown(
+  rows: ReadonlyArray<{ amount: number; category: string; created_at: string }>,
+  opts: { now?: Date; days?: number } = {},
+): GrowthView["week"] {
+  const now = opts.now ?? new Date();
+  const days = Math.max(1, Math.floor(opts.days ?? 7));
+  const since = localDayStart(now, days - 1);
+  const daily = new Map<string, Record<ExpSource, number>>();
+  for (let back = days - 1; back >= 0; back--) {
+    daily.set(localDayKey(new Date(localDayStart(now, back))), emptySources());
+  }
+  const sources = emptySources();
+  const sinceMs = new Date(since).getTime();
+  for (const r of rows) {
+    if (!(EXP_SOURCES as string[]).includes(r.category)) continue;
+    const amount = Number(r.amount);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const at = sqliteUtc(r.created_at);
+    if (!Number.isFinite(at.getTime()) || at.getTime() < sinceMs || at.getTime() > now.getTime()) continue;
+    const bucket = daily.get(localDayKey(at));
+    if (!bucket) continue;
+    const cat = r.category as ExpSource;
+    bucket[cat] += amount;
+    sources[cat] += amount;
+  }
+  const roundAll = (rec: Record<ExpSource, number>): Record<ExpSource, number> => {
+    const out = emptySources();
+    for (const k of EXP_SOURCES) out[k] = round2(rec[k]);
+    return out;
+  };
+  const sum = (rec: Record<ExpSource, number>): number => round2(EXP_SOURCES.reduce((a, k) => a + rec[k], 0));
+  return {
+    days,
+    since,
+    until: now.toISOString(),
+    total: sum(sources),
+    sources: roundAll(sources),
+    daily: [...daily.entries()].map(([day, rec]) => ({ day, total: sum(rec), sources: roundAll(rec) })),
+  };
+}
+
+type EvolutionRule = { from_level: number; conditions?: string[]; to_stage: string };
+
+/**
+ * 下一次进化还差什么。判定与 checkEvolution 逐字一致：只认带 `health>=0.7` 的规则、
+ * 等级够了才轮到它、健康要过门槛、而且**只在升级那一刻**判定 ——
+ * 所以两样都满足时说的是「下一次升级时」，而不是假装它此刻就该发生。
+ * health = null（今天还不知道）按 R31 读作健康：不挡进化，和引擎一样。
+ */
+export function evolutionStatus(
+  meta: readonly EvolutionRule[],
+  level: number,
+  health: number | null,
+  formName: (typeId: number) => string | null = () => null,
+): EvolutionStatus {
+  const candidates = meta.filter(
+    (m) =>
+      Number.isFinite(m.from_level) &&
+      m.conditions?.includes("health>=0.7") &&
+      Number.isInteger(Number(m.to_stage)),
+  );
+  if (candidates.length === 0) return { state: "final" };
+  // 引擎会挑的那一条（等级已到的第一条）；都没到就是门槛最低的那一条
+  const rule =
+    candidates.find((m) => level >= m.from_level) ??
+    [...candidates].sort((a, b) => a.from_level - b.from_level)[0]!;
+  const toTypeId = Number(rule.to_stage);
+  const state = level < rule.from_level ? "level" : health !== null && health < EVOLUTION_HEALTH_GATE ? "health" : "ready";
+  return {
+    state,
+    to_type_id: toTypeId,
+    to_form: formName(toTypeId),
+    from_level: rule.from_level,
+    level,
+    health_gate: EVOLUTION_HEALTH_GATE,
+    health,
+  };
+}
+
+/** 升级标记（exp_logs category=level，note = "level up to N"）→ { level, at }，从新到旧 */
+export function levelUps(rows: ReadonlyArray<{ note: string | null; created_at: string }>): Array<{ level: number; at: string }> {
+  const out: Array<{ level: number; at: string }> = [];
+  for (const r of rows) {
+    const m = /level up to (\d+)/.exec(r.note ?? "");
+    const at = sqliteUtc(r.created_at);
+    if (!m || !Number.isFinite(at.getTime())) continue;
+    out.push({ level: Number(m[1]), at: at.toISOString() });
+  }
+  return out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : b.level - a.level)).slice(0, LEVEL_UPS_MAX);
+}
+
+/**
+ * GET /api/growth。`pet` 由调用方传进来（ExpEngine.getPetSnapshot）：这里只读库，不碰宠物行。
+ */
+export function growthView(
+  db: Database.Database,
+  pet: PetSnapshot,
+  opts: { now?: Date; days?: number } = {},
+): GrowthView {
+  const now = opts.now ?? new Date();
+  const days = Math.max(1, Math.floor(opts.days ?? 7));
+  const since = toSqliteUtc(localDayStart(now, days - 1));
+  const expRows = db
+    .prepare(
+      `SELECT amount, category, created_at FROM exp_logs
+       WHERE created_at >= ? AND category IN ('token','outcome','care','self')`,
+    )
+    .all(since) as Array<{ amount: number; category: string; created_at: string }>;
+  const levelRows = db
+    .prepare(`SELECT note, created_at FROM exp_logs WHERE category='level' ORDER BY created_at DESC, id DESC LIMIT ?`)
+    .all(LEVEL_UPS_MAX) as Array<{ note: string | null; created_at: string }>;
+  const type = db.prepare("SELECT evolution_meta FROM pet_types WHERE id=?").get(pet.pet_type_id) as
+    | { evolution_meta: string }
+    | undefined;
+  let meta: EvolutionRule[] = [];
+  try {
+    const parsed = JSON.parse(type?.evolution_meta ?? "[]");
+    if (Array.isArray(parsed)) meta = parsed as EvolutionRule[];
+  } catch {
+    meta = [];
+  }
+  const health = todayHealth(db, now).health;
+  const formName = (id: number): string | null =>
+    (db.prepare("SELECT name FROM pet_types WHERE id=?").get(id) as { name: string } | undefined)?.name ?? null;
+  return {
+    pet: {
+      name: pet.name ?? pet.species ?? "vibepaws",
+      species: pet.species,
+      pet_type_id: pet.pet_type_id,
+      level: pet.level,
+      exp: pet.exp,
+      next_level_exp: pet.next_level_exp,
+      health,
+    },
+    curve: levelCurve(pet.level),
+    week: expSourceBreakdown(expRows, { now, days }),
+    level_ups: levelUps(levelRows),
+    evolution: evolutionStatus(meta, pet.level, health, formName),
+  };
 }
 
 function round2(v: number): number {

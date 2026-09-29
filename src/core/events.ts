@@ -440,6 +440,62 @@ export interface JournalView {
   file: string | null;
 }
 
+/** EXP 从哪来（exp_logs.category 里会加到宠物身上的那几类；level 是 0 EXP 的升级标记，不在其中） */
+export type ExpSource = "token" | "outcome" | "care" | "self";
+
+/**
+ * GET /api/growth（Den 的 Growth 标签页，U13）：等级曲线、这周的 EXP 从哪来、下一次进化还差什么。
+ * 全部由 exp.ts 的纯函数从 pets / exp_logs / pet_types 算出来 —— 这里没有一个数是另存的。
+ */
+export interface GrowthView {
+  pet: {
+    name: string;
+    species: string | null;
+    pet_type_id: number;
+    level: number;
+    /** 当前等级里已攒的 EXP（升级时扣掉，不是累计值） */
+    exp: number;
+    next_level_exp: number;
+    /** 今天映射后的宠物健康（0.5–1.0）；null = 今天还没有结算过的段（R31：读作健康） */
+    health: number | null;
+  };
+  /** 等级曲线：每一级升到下一级要多少 EXP（levelExpRequired），total = 从 Lv1 起累计到升过这一级 */
+  curve: Array<{ level: number; required: number; total: number }>;
+  /** 最近 `days` 个本地日（含今天）的 EXP 来源。token 已经乘过 context / focus 倍率、截过每日上限 */
+  week: {
+    days: number;
+    since: string;
+    until: string;
+    total: number;
+    sources: Record<ExpSource, number>;
+    /** 每一个本地日，从早到晚 */
+    daily: Array<{ day: string; total: number; sources: Record<ExpSource, number> }>;
+  };
+  /** 升级记录（exp_logs 里 category=level 的行），从新到旧，至多 20 条。重置宠物会清掉 */
+  level_ups: Array<{ level: number; at: string }>;
+  evolution: EvolutionStatus;
+}
+
+/**
+ * 下一次进化还差什么（exp.ts checkEvolution 的同一套判定，只是说出来）：
+ *   final  —— 这个形态没有下一阶；
+ *   level  —— 等级还没到 from_level；
+ *   health —— 等级到了，但今天的健康低于门槛：下一次升级那一刻要 ≥ 门槛才会进化；
+ *   ready  —— 两样都满足：进化只在升级那一刻判定，所以是「下一次升级时」，不是现在。
+ */
+export type EvolutionStatus =
+  | { state: "final" }
+  | {
+      state: "level" | "health" | "ready";
+      to_type_id: number;
+      to_form: string | null;
+      from_level: number;
+      level: number;
+      health_gate: number;
+      /** null = 今天还不知道（按健康算，不挡进化） */
+      health: number | null;
+    };
+
 export interface AgentCapabilities {
   agent: AgentId;
   adapter_version?: string;

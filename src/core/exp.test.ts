@@ -6,7 +6,20 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
-import { ExpEngine, contextMultiplier, topicMultiplier, outcomeBonus, levelExpRequired, rarityWeight, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
+import {
+  ExpEngine,
+  contextMultiplier,
+  topicMultiplier,
+  outcomeBonus,
+  levelExpRequired,
+  rarityWeight,
+  TIRED_HEALTH_THRESHOLD,
+  levelCurve,
+  expSourceBreakdown,
+  evolutionStatus,
+  levelUps,
+  growthView,
+} from "./exp.ts";
 import { recordFinish } from "./journal.ts";
 import type { CoreEvent } from "./events.ts";
 
@@ -317,4 +330,93 @@ test("进化把满足门槛的健康分写进 pets.health_score（原来写死 1
   const row = db.prepare("SELECT pet_type_id, health_score FROM pets").get() as { pet_type_id: number; health_score: number };
   assert.equal(row.pet_type_id, 30, "0.85 ≥ 0.7：照样进化");
   assert.equal(row.health_score, 0.85);
+});
+
+/* ================= Growth（U13）：曲线、这周的来源、下一次进化 ================= */
+
+test("等级曲线：就是 levelExpRequired；新宠物也画到 Lv10，老宠物画到当前 +5；total 是累计", () => {
+  const fresh = levelCurve(1);
+  assert.equal(fresh.length, 10);
+  assert.deepEqual(fresh.slice(0, 3), [
+    { level: 1, required: 100, total: 100 },
+    { level: 2, required: 150, total: 250 },
+    { level: 3, required: 200, total: 450 },
+  ]);
+  const old = levelCurve(12);
+  assert.equal(old.at(-1)!.level, 17);
+  for (const p of old) assert.equal(p.required, levelExpRequired(p.level));
+  assert.equal(levelCurve(Number.NaN).length, 10, "认不出的等级按 Lv1 画，不抛");
+});
+
+test("这周的 EXP 来源：按本地日分桶、每天都列、level 标记与范围外的行不算", () => {
+  const now = new Date(2026, 8, 29, 12, 0, 0); // 本地 9/29 中午
+  const utc = (d: Date): string => d.toISOString().slice(0, 19).replace("T", " "); // SQLite datetime('now') 的写法
+  const rows = [
+    { amount: 12.5, category: "token", created_at: utc(new Date(2026, 8, 29, 9, 0)) },
+    { amount: 20, category: "outcome", created_at: utc(new Date(2026, 8, 29, 10, 0)) },
+    // 23:50 的一笔落在用户过的那一天（9/28），不是 UTC 的那一天
+    { amount: 5, category: "care", created_at: utc(new Date(2026, 8, 28, 23, 50)) },
+    { amount: 0.1, category: "self", created_at: utc(new Date(2026, 8, 27, 3, 0)) },
+    { amount: 0, category: "level", created_at: utc(new Date(2026, 8, 29, 10, 0)) },
+    { amount: 99, category: "token", created_at: utc(new Date(2026, 8, 20, 10, 0)) }, // 范围外
+    { amount: 7, category: "mystery", created_at: utc(new Date(2026, 8, 29, 10, 0)) },
+  ];
+  const week = expSourceBreakdown(rows, { now, days: 7 });
+  assert.equal(week.daily.length, 7);
+  assert.equal(week.daily.at(-1)!.day, "2026-09-29");
+  assert.equal(week.daily[0]!.day, "2026-09-23");
+  assert.deepEqual(week.sources, { token: 12.5, outcome: 20, care: 5, self: 0.1 });
+  assert.equal(week.total, 37.6);
+  assert.equal(week.daily.find((d) => d.day === "2026-09-28")!.sources.care, 5);
+  assert.equal(week.daily.find((d) => d.day === "2026-09-29")!.total, 32.5);
+  assert.equal(expSourceBreakdown([], { now }).total, 0, "一笔都没有 = 0，不是 NaN");
+});
+
+test("下一次进化：等级没到 / 健康没过 / 都满足（下一次升级时）/ 最终形态", () => {
+  const meta = [{ from_level: 5, conditions: ["health>=0.7"], to_stage: "30" }];
+  const names = (id: number): string | null => (id === 30 ? "Cinderclaw" : null);
+  const lvl = evolutionStatus(meta, 3, 1, names);
+  assert.equal(lvl.state, "level");
+  assert.ok(lvl.from_level === 5 && lvl.to_form === "Cinderclaw" && lvl.health_gate === 0.7);
+  assert.equal(evolutionStatus(meta, 5, 0.6, names).state, "health");
+  assert.equal(evolutionStatus(meta, 5, 0.7, names).state, "ready", "门槛是 ≥，和引擎一样");
+  assert.equal(evolutionStatus(meta, 5, null, names).state, "ready", "今天还不知道 = 读作健康（R31），不挡进化");
+  assert.equal(evolutionStatus([], 5, 1).state, "final");
+  assert.equal(
+    evolutionStatus([{ from_level: 5, conditions: ["mood>=1"], to_stage: "30" }], 9, 1).state,
+    "final",
+    "引擎只认带 health>=0.7 的规则 —— 这里说的必须和它做的一样",
+  );
+});
+
+test("升级记录：从 level 标记里读出等级与时刻，从新到旧", () => {
+  const ups = levelUps([
+    { note: "level up to 2", created_at: "2026-09-27 10:00:00" },
+    { note: "level up to 3", created_at: "2026-09-28 10:00:00" },
+    { note: "garbage", created_at: "2026-09-28 11:00:00" },
+  ]);
+  assert.deepEqual(ups, [
+    { level: 3, at: "2026-09-28T10:00:00.000Z" },
+    { level: 2, at: "2026-09-27T10:00:00.000Z" },
+  ]);
+});
+
+test("growthView：新宠物 = 空的一周、没有升级记录、第一条进化门槛；真的升过级之后都有了", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("UPDATE pets SET pet_type_id=20, level=1, exp=0").run();
+  const first = growthView(db, exp.getPetSnapshot());
+  assert.equal(first.week.total, 0);
+  assert.equal(first.level_ups.length, 0);
+  assert.equal(first.pet.health, null, "今天还没有结算过的段");
+  assert.equal(first.evolution.state, "level");
+  assert.ok(first.evolution.to_form === "Cinderclaw");
+
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  exp.handle(ev({ payload: { tokens: 150_000 } })); // 150 EXP → Lv2
+  const after = growthView(db, exp.getPetSnapshot());
+  assert.equal(after.pet.level, 2);
+  assert.ok(after.week.sources.token > 0);
+  assert.equal(after.level_ups[0]!.level, 2);
+  assert.ok(!JSON.stringify(after).includes("/Users/"), "Growth 里没有项目路径");
 });

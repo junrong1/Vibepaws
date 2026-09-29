@@ -76,6 +76,22 @@ test("设置窗口的页面与它的样式表都在同一个 server 上（浏览
   });
 });
 
+test("Den 的页面与它的脚本、样式都在同一个 server 上，而且页面里没有内联脚本 / 样式（CSP 会挡掉）", async () => {
+  await withServer(async (base) => {
+    const page = await fetch(`${base}/den.html`);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+    const html = await page.text();
+    // script-src 'self' / style-src 'self'，没有 'unsafe-inline'：内联的一行都跑不起来，页面就是一张白纸
+    assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/i.test(html), "den.html 里有内联 <script>");
+    assert.ok(!/<style[\s>]/i.test(html), "den.html 里有内联 <style>");
+    assert.ok(!/\sstyle=/i.test(html), "den.html 里有 style 属性");
+    for (const asset of ["/den.css", "/den.js", "/health/den.js", "/i18n.js"]) {
+      assert.equal((await fetch(base + asset)).status, 200, `${asset} 必须能加载，否则 Den 是一张白纸`);
+    }
+  });
+});
+
 /* ---------------- 永远允许（KTD13）：代理绝不是通往授予的一条路 ---------------- */
 
 /** 一个假的 Core：只记下它收到了什么，回 200 */

@@ -1,0 +1,268 @@
+/* Vibepaws Den（U13）。
+ *
+ * 与设置窗口（settings.css）同一套配色与等宽字体、同样深浅色都给：这也是一扇普通的有框窗口，
+ * 不透明、可滚动、不需要点击穿透。样式各自独立，免得宠物窗口为透明 / 命中测试写的规则漏进来。
+ * CSP 里没有 'unsafe-inline'（见 src/ui/server.ts）：本文件是唯一的样式来源。
+ * 柱子的高度、条的宽度由 den.js 经 CSSOM（el.style.height）写 —— 那不是 style 属性，CSP 放行。
+ *
+ * 中文：没有打包字体、等宽栈里没有 CJK，中文落到系统字体上（计划的 Open Question，这里接受降级渲染）。
+ * 所以凡是可能装中文的格子都允许换行或省略，不按等宽字宽排版。 */
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --accent: #58a6ff;
+  --warn: #f0883e;
+  --danger: #f85149;
+  --ok: #3fb950;
+  --track: #21262d;
+  --pip-off: #30363d;
+  /* EXP 四种来源（顺序与 core/exp.ts 的 EXP_SOURCES 一致）。只做区分，数值写在图例里 */
+  --src-token: #58a6ff;
+  --src-outcome: #3fb950;
+  --src-care: #d29922;
+  --src-self: #a371f7;
+  --input: #0d1117;
+  --pixel: "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --dim: #656d76;
+    --accent: #0969da;
+    --warn: #9a6700;
+    --danger: #cf222e;
+    --ok: #1a7f37;
+    --track: #eaeef2;
+    --pip-off: #d0d7de;
+    --src-token: #0969da;
+    --src-outcome: #1a7f37;
+    --src-care: #9a6700;
+    --src-self: #8250df;
+    --input: #ffffff;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--pixel);
+  font-size: 12px;
+  line-height: 1.5;
+}
+body { padding: 14px; }
+#app { display: flex; flex-direction: column; gap: 12px; max-width: 760px; margin: 0 auto; }
+
+#head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+h1 { font-size: 15px; }
+h2 {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+h3 { font-size: 12px; margin-bottom: 4px; }
+
+/* 连接状态：连上时是一行灰字，连不上时是琥珀色 —— 要看得见，但不是一面红墙（Core 多半几秒后就回来了） */
+#conn { font-size: 10px; color: var(--dim); text-align: right; flex: 1; min-width: 0; }
+#conn.offline { color: var(--warn); }
+
+/* ---- 标签页 ---- */
+#tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+#tabs button {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 6px 14px;
+  font-family: var(--pixel);
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+#tabs button[aria-selected="true"] {
+  color: var(--text);
+  background: var(--card);
+  border-color: var(--border);
+}
+#tabs button:hover { color: var(--text); }
+
+button, select {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-family: var(--pixel);
+  font-size: 11px;
+}
+button { cursor: pointer; }
+button:hover:enabled { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+select { background: var(--input); font-size: 12px; max-width: 100%; }
+button:focus-visible, select:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+[role="tabpanel"] { display: flex; flex-direction: column; gap: 12px; }
+[role="tabpanel"][hidden], [hidden] { display: none !important; }
+#today, #journal, #growth { display: flex; flex-direction: column; gap: 12px; }
+
+.hint { font-size: 10px; color: var(--dim); }
+.dim { color: var(--dim); }
+.note-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* first-run / offline：不是空白，是一句「什么时候会有」 */
+.empty { text-align: left; }
+.empty h3 { margin-bottom: 6px; }
+.empty p { color: var(--dim); max-width: 60ch; }
+.empty.offline h3 { color: var(--warn); }
+/* 连上过、又连不上了：内容照留，但淡一点 —— 和 #conn 那句「这是几点的样子」一起读 */
+body.stale #today, body.stale #journal, body.stale #growth { opacity: 0.6; }
+
+/* ---- 分数 + pip 条（编码见 ui/health/pips.js：十格、七格之后一道宽缝） ---- */
+.score-block { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.score-big { font-size: 34px; font-weight: 700; line-height: 1; }
+.score-big small { font-size: 12px; color: var(--dim); font-weight: 400; }
+.score-big.band-amber { color: var(--warn); }
+.score-big.band-red { color: var(--danger); }
+.score-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.pips { display: inline-flex; align-items: center; gap: 2px; height: 8px; }
+.pip { width: 10px; height: 8px; border-radius: 1px; background: var(--pip-off); }
+.pip.gap { margin-left: 5px; }
+.pips.band-neutral .pip.on { background: var(--ok); }
+.pips.band-amber .pip.on { background: var(--warn); }
+.pips.band-red .pip.on { background: var(--danger); }
+.pips.small { height: 5px; gap: 1px; }
+.pips.small .pip { width: 5px; height: 5px; }
+.pips.small .pip.gap { margin-left: 3px; }
+
+/* ---- 四个因子（与浮层的 f-row 同一套：名字、槽、分数） ---- */
+.factors { display: flex; flex-direction: column; gap: 6px; }
+.f-row { display: grid; grid-template-columns: 90px 1fr 60px; align-items: center; gap: 10px; }
+.f-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f-track { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
+.f-fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width 400ms ease-out; }
+.f-pts { text-align: right; color: var(--dim); font-size: 11px; }
+.f-row.omitted .f-track { background: transparent; border: 1px dashed var(--border); }
+.f-row.omitted .f-pts { font-style: italic; }
+
+/* ---- 段 / 条目列表 ---- */
+.list { display: flex; flex-direction: column; }
+.item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.item:last-child { border-bottom: none; }
+.item-title { font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+.item-meta { grid-column: 1 / -1; font-size: 10px; color: var(--dim); overflow-wrap: anywhere; }
+.item-score { display: flex; align-items: center; gap: 8px; justify-self: end; }
+.item-score b.band-amber { color: var(--warn); }
+.item-score b.band-red { color: var(--danger); }
+.item.evolution .item-title { color: var(--accent); }
+.agent-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  margin-left: 6px;
+  font-weight: 400;
+}
+.day-head { font-size: 10px; color: var(--dim); padding: 10px 0 2px; border-bottom: 1px solid var(--border); }
+.day-head:first-child { padding-top: 0; }
+
+.filters { display: flex; gap: 12px; flex-wrap: wrap; }
+.filter { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
+#journal-file { overflow-wrap: anywhere; }
+
+/* ---- Growth ---- */
+.level-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.level-line b { font-size: 18px; }
+.progress { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; margin: 8px 0 4px; }
+.progress > span { display: block; height: 100%; background: var(--accent); transition: width 400ms ease-out; }
+
+/* 等级曲线：一级一根柱子，高度 = 这一级要多少 EXP。过去的实心、当前的填到进度、将来的空心 */
+.curve { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding-top: 4px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; height: 100%; justify-content: flex-end; }
+.bar {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+}
+.bar > span { display: block; width: 100%; background: var(--dim); transform-origin: bottom; animation: grow 500ms ease-out; }
+.bar.current { border-color: var(--accent); }
+.bar.current > span { background: var(--accent); }
+.bar-label { font-size: 9px; color: var(--dim); text-align: center; white-space: nowrap; overflow: hidden; }
+.bar-label.current { color: var(--accent); font-weight: 700; }
+@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+
+/* EXP 来源：一条堆叠条 + 图例（数值写在图例里，颜色只做区分） */
+.stack { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--track); margin: 6px 0 8px; }
+.stack > span { display: block; height: 100%; transition: width 400ms ease-out; }
+.src-token { background: var(--src-token); }
+.src-outcome { background: var(--src-outcome); }
+.src-care { background: var(--src-care); }
+.src-self { background: var(--src-self); }
+.legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.legend-item .amt { margin-left: auto; color: var(--dim); }
+.week-bars { display: flex; align-items: flex-end; gap: 6px; height: 48px; margin-top: 10px; }
+.week-bars .bar-col .bar { border-color: transparent; background: var(--track); }
+.week-bars .bar > span { background: var(--src-token); }
+
+.conds { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.cond { display: flex; gap: 8px; align-items: baseline; }
+.cond .mark { width: 14px; flex-shrink: 0; text-align: center; }
+.cond.met .mark { color: var(--ok); }
+.cond.unmet .mark { color: var(--warn); }
+.cond .state { font-size: 10px; color: var(--dim); }
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ---- 减弱动态效果（R27）：Den 的柱子入场、条的过渡，一律不动。数值与形状照样在 ---- */
+@media (prefers-reduced-motion: reduce) {
+  .f-fill, .progress > span, .stack > span { transition: none; }
+  .bar > span { animation: none; }
+}
+
+/* 窄窗口：因子行的名字列缩一点，列表的分数换到下一行 */
+@media (max-width: 460px) {
+  .f-row { grid-template-columns: 70px 1fr 48px; gap: 6px; }
+  .item { grid-template-columns: 1fr; }
+  .item-score { justify-self: start; }
+}
