@@ -179,13 +179,31 @@ test("HTTP：/health 免鉴权，其余端点没 token 一律 401", async () => 
 
 test("健康分低且没有活跃 session 时宠物是 tired（README 6.4，不做永久死亡）", () => {
   const server = makeServer();
-  // 最近一天里若干报错 → healthScore 掉到 0.7 以下
+  // 今天结算过的一段打得很差（撞满 context、correction loop、放弃）→ healthScore 掉到 0.7 以下。
+  // 健康分现在来自 Session Health（core/health.ts），不再数 session_error
+  // 收工在两分钟前：避开 60s 的 finished 余晖（那段时间宠物显示 finished 而不是 tired）
+  const end = new Date(Date.now() - 2 * 60_000);
+  const start = new Date(end.getTime() - 60_000).toISOString();
+  server.db
+    .prepare(
+      `INSERT INTO sessions(agent, agent_session_id, project_id, is_active, segment_started_at, finished_at, outcome,
+         context_peak, context_reported_at, repeat_edit_count)
+       VALUES('claude_code', 'gone', '/p', 0, ?, ?, 'abandoned', 98, ?, 7)`,
+    )
+    .run(start, end.toISOString(), start);
+  assert.equal(server.stateSnapshot().pet.state, "tired");
+});
+
+test("今天还没有结算过的段 = 不知道，读作健康：一堆报错也不让宠物 tired（R31）", () => {
+  const server = makeServer();
   for (let i = 0; i < 5; i++) {
     server.db
       .prepare("INSERT INTO events(event_id, agent, session_id, event_type, safe_summary) VALUES(?,?,?,?,?)")
       .run(`err-${i}`, "claude_code", "gone", "session_error", "x");
   }
-  assert.equal(server.stateSnapshot().pet.state, "tired");
+  const snap = server.stateSnapshot();
+  assert.equal(snap.pet.state, "idle");
+  assert.equal(snap.pet.health_score, 1);
 })
 
 /**

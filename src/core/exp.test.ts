@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
-import { ExpEngine, contextMultiplier, topicMultiplier, outcomeBonus, levelExpRequired, rarityWeight } from "./exp.ts";
+import { ExpEngine, contextMultiplier, topicMultiplier, outcomeBonus, levelExpRequired, rarityWeight, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
 import type { CoreEvent } from "./events.ts";
 
 function makeDb(): Database.Database {
@@ -225,4 +225,89 @@ test("首次启动只会分配到可抽的宠物，且 common 明显更常见", 
   // 断言留足余量，不让它变成偶发失败的测试。
   assert.ok(byRarity("common") > byRarity("rare") * 2,
     `加权没生效：common=${byRarity("common")} rare=${byRarity("rare")}`);
+});
+
+/* ---------------- 健康分 = 今天的 Session Health（U3 / R11 / R31） ---------------- */
+
+/** 往 sessions 里放一段已结算的段（本段列直接写，不走 registry） */
+function settledSegment(
+  db: Database.Database,
+  id: string,
+  seg: { endMsAgo: number; durationMs: number; peak: number; edits: number; outcome: string },
+): void {
+  const end = new Date(Date.now() - seg.endMsAgo);
+  const start = new Date(end.getTime() - seg.durationMs).toISOString();
+  db.prepare(
+    `INSERT INTO sessions(agent, agent_session_id, project_id, is_active, segment_started_at, finished_at, outcome,
+       context_peak, context_reported_at, repeat_edit_count)
+     VALUES('claude_code', ?, '/p', 0, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, start, end.toISOString(), seg.outcome, seg.peak, start, seg.edits);
+}
+
+function selfGrowthLogs(db: Database.Database): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM exp_logs WHERE category='self'").get() as { c: number }).c;
+}
+
+/** 让自成长的计时器看起来已经过了一小时（它是私有字段；只有测试这么做） */
+function anHourPassed(exp: ExpEngine): void {
+  (exp as unknown as { lastGrowthAt: number }).lastGrowthAt = Date.now() - 3_600_000;
+}
+
+test("今天一段都没结算 = 不知道：读作 1.0，自成长照常 —— 不知道不是生病", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  assert.equal(exp.getPetSnapshot().health_score, 1);
+  anHourPassed(exp);
+  exp.handle(ev({ event_type: "agent_working", payload: {} }));
+  assert.equal(selfGrowthLogs(db), 1);
+});
+
+test("升级后的第一个早上：昨天打得再差，今天还没收工就是「不知道」，不是失败的一天", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  // 昨天（本地午夜之前）的一段极差的 session
+  const sinceMidnight = Date.now() - new Date(new Date().setHours(0, 0, 0, 0)).getTime();
+  settledSegment(db, "yesterday", { endMsAgo: sinceMidnight + 60 * 60_000, durationMs: 3 * 3_600_000, peak: 99, edits: 9, outcome: "abandoned" });
+  assert.equal(exp.getPetSnapshot().health_score, 1);
+  anHourPassed(exp);
+  exp.handle(ev({ event_type: "agent_working", payload: {} }));
+  assert.equal(selfGrowthLogs(db), 1);
+});
+
+test("今天打得很差：健康分掉到 0.7 以下，自成长暂停，pets.health_score 跟着写回", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  settledSegment(db, "bad", { endMsAgo: 60_000, durationMs: 60_000, peak: 98, edits: 7, outcome: "abandoned" });
+  const pet = exp.getPetSnapshot();
+  assert.ok(pet.health_score < TIRED_HEALTH_THRESHOLD, `health=${pet.health_score}`);
+  const stored = (db.prepare("SELECT health_score FROM pets").get() as { health_score: number }).health_score;
+  assert.equal(stored, pet.health_score);
+  anHourPassed(exp);
+  exp.handle(ev({ event_type: "agent_working", payload: {} }));
+  assert.equal(selfGrowthLogs(db), 0);
+});
+
+test("Response 不喂宠物：一段等了半小时才答、其余都好的 session，宠物照样满格", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  settledSegment(db, "slow", { endMsAgo: 60_000, durationMs: 2 * 3_600_000, peak: 50, edits: 0, outcome: "success" });
+  const start = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  db.prepare(
+    `INSERT INTO needs_input_waits(agent, session_id, segment, kind, started_at, received_at, cleared_at, resolution)
+     VALUES('claude_code', 'slow', 1, 'permission', ?, ?, ?, 'inferred')`,
+  ).run(start, start, new Date(Date.parse(start) + 40 * 60_000).toISOString());
+  assert.equal(exp.getPetSnapshot().health_score, 1);
+});
+
+test("进化把满足门槛的健康分写进 pets.health_score（原来写死 1.0）", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();
+  // 今天一段中等偏下的：峰值 90、重复编辑 3、partial → (12 + 14 + 12) / 75 = 50.7 → 映射后 0.85
+  settledSegment(db, "meh", { endMsAgo: 60_000, durationMs: 60_000, peak: 90, edits: 3, outcome: "partial" });
+  db.prepare("UPDATE pets SET pet_type_id=20, level=4, exp=249").run();
+  exp.handle(ev({ payload: { tokens: 1000 } }));
+  const row = db.prepare("SELECT pet_type_id, health_score FROM pets").get() as { pet_type_id: number; health_score: number };
+  assert.equal(row.pet_type_id, 30, "0.85 ≥ 0.7：照样进化");
+  assert.equal(row.health_score, 0.85);
 });

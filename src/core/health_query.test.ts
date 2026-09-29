@@ -1,0 +1,133 @@
+/**
+ * Session Health 读库那一层（health_query.ts）的单测：哪些行属于「这一段」、「今天」从哪算起。
+ * 打分规则本身在 health.test.ts。
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import Database from "better-sqlite3";
+import { applySchema } from "../db/schema.ts";
+import { seedPetTypes } from "../db/seed.ts";
+import { SessionRegistry } from "./registry.ts";
+import { scoreSegment } from "./health.ts";
+import { loadSegmentInput, loadSettledSegments, localDayStart, todayHealth } from "./health_query.ts";
+import type { CoreEvent } from "./events.ts";
+
+function makeDb(): Database.Database {
+  const db = new Database(":memory:");
+  applySchema(db);
+  seedPetTypes(db);
+  return db;
+}
+
+let seq = 0;
+function ev(at: number, partial: Partial<CoreEvent>): CoreEvent {
+  seq += 1;
+  return {
+    event_id: `hq-${seq}`,
+    seq,
+    agent: "claude_code",
+    session_id: "s1",
+    project_id: "/Users/x/my-app",
+    event_type: "agent_working",
+    severity: "low",
+    safe_summary: "x",
+    timestamp: new Date(at).toISOString(),
+    payload: {},
+    ...partial,
+  };
+}
+
+const MIN = 60_000;
+
+test("端到端：阻塞两分钟 → 答了 → 收工，读出来的这一段能手算出分数", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  // 等待的 received_at 是 Core 此刻的时钟：permission_required 的时间戳得贴着「现在」，
+  // 否则这条会被当成离线缓冲的回放丢掉（那正是 SPOOL_REPLAY_GAP_MS 要做的事）
+  const t0 = Date.now() - 2000;
+  reg.handle(ev(t0, { event_type: "session_started", payload: { source: "startup" } }));
+  reg.handle(ev(t0 + 1000, { event_type: "context_update", payload: { context_pct: 88 } }));
+  reg.handle(ev(t0 + 2000, { event_type: "permission_required", payload: { tool_name: "Bash" } }));
+  reg.handle(ev(t0 + 2000 + 2 * MIN, { event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  reg.handle(ev(t0 + 30 * MIN, { event_type: "session_finished", payload: { outcome: "success" } }));
+
+  const input = loadSegmentInput(db, "claude_code", "s1")!;
+  assert.equal(input.settled, true);
+  assert.equal(input.contextPeak, 88);
+  assert.equal(input.waits.length, 1);
+  const r = scoreSegment(input)!;
+  // 12（88%）+ 25（没重复编辑）+ 20（2 分钟）+ 25（success 无报错）
+  assert.deepEqual(r.factors, { context: 12, focus: 25, response: 20, outcome: 25 });
+  assert.equal(r.score, 82);
+});
+
+test("还在跑的一段读出来是 unsettled；上一段的等待不算进这一段", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  const t0 = Date.now() - 60 * MIN;
+  reg.handle(ev(t0, { event_type: "session_started", payload: { source: "startup" } }));
+  reg.handle(ev(t0 + 1000, { event_type: "permission_required", payload: { tool_name: "Bash" } }));
+  reg.handle(ev(t0 + 20 * MIN, { event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  reg.handle(ev(t0 + 21 * MIN, { event_type: "session_finished", payload: { outcome: "success" } }));
+  // resume → 第二段
+  reg.handle(ev(t0 + 30 * MIN, { event_type: "session_started", payload: { source: "resume" } }));
+
+  const input = loadSegmentInput(db, "claude_code", "s1")!;
+  assert.equal(input.settled, false);
+  assert.equal(input.waits.length, 0, "第一段那 20 分钟的等待属于第一段");
+  const r = scoreSegment(input)!;
+  assert.equal(r.unsettled, true);
+  assert.equal(r.factors.outcome, null);
+  assert.deepEqual(r.omitted, ["context", "response"]);
+});
+
+test("本段时间窗里的 session_error 拆开 success 的两档；窗口外的不算", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  const t0 = Date.parse("2026-09-29T08:00:00.000Z");
+  reg.handle(ev(t0, { event_type: "session_started", payload: { source: "startup" } }));
+  reg.handle(ev(t0 + 10 * MIN, { event_type: "session_finished", payload: { outcome: "success" } }));
+  const insert = db.prepare(
+    "INSERT INTO events(event_id, agent, session_id, event_type, safe_summary, received_at) VALUES(?,?,?,?,?,?)",
+  );
+  insert.run("err-before", "claude_code", "s1", "session_error", "x", "2026-09-29 07:59:00");
+  assert.equal(loadSegmentInput(db, "claude_code", "s1")!.errorCount, 0);
+  insert.run("err-in", "claude_code", "s1", "session_error", "x", "2026-09-29 08:05:00");
+  insert.run("err-other", "codex", "s1", "session_error", "x", "2026-09-29 08:05:00");
+  const input = loadSegmentInput(db, "claude_code", "s1")!;
+  assert.equal(input.errorCount, 1);
+  assert.equal(scoreSegment(input)!.factors.outcome, 20);
+});
+
+test("today：只收今天结算的段；昨天的、还在跑的都不算；一段都没有是 null", () => {
+  const db = makeDb();
+  const now = new Date();
+  assert.deepEqual(todayHealth(db, now), { mean: null, health: null, segments: 0 });
+
+  const put = db.prepare(
+    `INSERT INTO sessions(agent, agent_session_id, project_id, is_active, segment_started_at, finished_at, outcome,
+       context_peak, context_reported_at, repeat_edit_count)
+     VALUES('claude_code', ?, '/p', ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const dayStart = Date.parse(localDayStart(now));
+  const yesterday = new Date(dayStart - 3 * 60 * MIN).toISOString();
+  put.run("old", 0, yesterday, yesterday, "abandoned", 99, yesterday, 9);
+  put.run("live", 1, now.toISOString(), null, null, 99, now.toISOString(), 9);
+  assert.equal(todayHealth(db, now).mean, null, "昨天的与还在跑的都不进今天的聚合");
+
+  const start = new Date(Math.max(dayStart, now.getTime() - 60 * MIN)).toISOString();
+  put.run("good", 0, start, now.toISOString(), "success", 40, start, 0);
+  put.run("gone", 0, start, now.toISOString(), "orphaned", 99, start, 9);
+  assert.equal(loadSettledSegments(db, localDayStart(now)).length, 2);
+  assert.deepEqual(todayHealth(db, now), { mean: 100, health: 1, segments: 1 });
+});
+
+test("本地午夜：localDayStart 落在同一天的 00:00（本地时区）", () => {
+  const now = new Date(2026, 8, 29, 15, 30);
+  const start = new Date(localDayStart(now));
+  assert.equal(start.getFullYear(), 2026);
+  assert.equal(start.getMonth(), 8);
+  assert.equal(start.getDate(), 29);
+  assert.equal(start.getHours(), 0);
+  assert.equal(start.getMinutes(), 0);
+});

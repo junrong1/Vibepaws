@@ -10,10 +10,13 @@
  * daily_care_bonus:   休息后恢复新 session → +5
  * self_growth:        每小时 +0.1 EXP（tired 暂停）
  * 进化: 纯配置 {from_level, conditions, to_stage}
+ * health:             今天已结算段的 Session Health（Context / Focus / Outcome，时长加权）
+ *                     映射到 0.5–1.0（core/health.ts petHealthFromMean）；今天还没有 → 按 1.0
  */
 import type Database from "better-sqlite3";
 import type { CoreEvent, PetState } from "./events.ts";
 import { getDailyExpCap } from "./settings.ts";
+import { todayHealth } from "./health_query.ts";
 
 export interface PetSnapshot {
   id: number;
@@ -197,7 +200,7 @@ export class ExpEngine {
     if (!pet) return;
     // tired 暂停自成长。tired 不落库（它是派生态），所以这里直接看健康分 ——
     // 原来比对 pet.state === "tired" 永远为假，这条规则等于没实现。
-    if (this.healthScore(pet.id) < TIRED_HEALTH_THRESHOLD) return;
+    if (this.healthScore() < TIRED_HEALTH_THRESHOLD) return;
     const hours = elapsed / 3_600_000;
     if (hours > 0.0005) {
       this.addExp(null, hours * SELF_GROWTH_PER_HOUR, "self", "self growth");
@@ -284,27 +287,41 @@ export class ExpEngine {
       const rule = meta.find((candidate) =>
         level >= candidate.from_level && candidate.conditions?.includes("health>=0.7"),
       );
-      if (!rule || this.healthScore(petId) < 0.7) return;
+      const health = this.healthScore();
+      if (!rule || health < 0.7) return;
       const targetId = Number(rule.to_stage);
       if (!Number.isInteger(targetId) || visited.has(targetId)) return;
 
+      // 记下满足门槛的那个健康分（原来写死 1.0）—— 进化日志（R29）要说出「凭什么进化的」
       this.db
         .prepare("UPDATE pets SET pet_type_id=?, health_score=? WHERE id=?")
-        .run(targetId, 1.0, petId);
+        .run(targetId, health, petId);
       console.log(`[vibepaws] 🐣 evolution → ${targetId}`);
     }
   }
 
-  private healthScore(petId: number): number {
-    // 简单健康分：基于近期 context/error 记录（MVP 保守：0.5~1.0）
-    const recent = this.db
-      .prepare(
-        `SELECT COUNT(*) as c FROM events WHERE event_type IN ('session_error','topic_drift_warning')
-         AND received_at > datetime('now','-1 day')`,
-      )
-      .get() as { c: number };
-    const score = Math.max(0.5, 1 - (recent.c ?? 0) * 0.1);
-    return round2(Math.min(1, score));
+  /**
+   * 宠物的健康分（0.5–1.0）。tired、自成长暂停、进化门槛都拿它和 0.7 比 —— 那条线不动。
+   *
+   * 原来的实现：最近 24 小时里每条 session_error / topic_drift_warning −0.1，下限 0.5。
+   * 它说不出为什么（一次 lint 报错和一次崩溃同价），也和 Session Health 是两套互不相干的数 ——
+   * 宠物可能在 pip 条读 82 的时候显示 tired。现在是同一个概念（R11 / KTD5）：
+   *
+   *   1. 取今天（本地午夜起）已结算、没被回收的段，只看 Context / Focus / Outcome
+   *      三个因子（Response 不喂宠物，KTD4），在有数据的因子上归一到 0–100；
+   *   2. 按 max(时长, 5 分钟) 加权取平均（KTD10：一行 claude -p 拉不垮四小时的正事）；
+   *   3. 映射到旧函数的取值范围，而不是直接 ÷100：
+   *        mean ≥ 60 → 1.0 · 30 < mean < 60 → 0.5 + 0.5×(mean−30)/30 · mean ≤ 30 → 0.5
+   *      0.5 的下限取代原来的 `Math.max(0.5, …)`；tired（< 0.7）对应 mean < 42。
+   *      目标 tired 率：普通的一天（60–85）一律满格，与旧函数「没报错的一天 = 1.0」同读数；
+   *      只有一整天都打得差才会累。推导与本机历史回放见 core/health.ts 与 scripts/backfill_health.ts。
+   *
+   * 今天还没有一段结算过（包括升级后的第一个早上）= 不知道（R31）。不知道**当作健康**：
+   * 不渲染 tired、不暂停自成长、不扣进化 —— 所以这里返回 1.0。要区分「不知道」和「满格」的
+   * 界面去读 health_query.todayHealth()（health 为 null）。
+   */
+  private healthScore(): number {
+    return todayHealth(this.db).health ?? 1.0;
   }
 
   // ---- 读取 ----
@@ -334,10 +351,17 @@ export class ExpEngine {
       level: p.level,
       exp: round2(p.exp),
       state,
-      health_score: round2(this.healthScore(p.id)),
+      health_score: this.persistHealth(p.id, p.health_score),
       daily_exp: round2(p.daily_exp),
       next_level_exp: levelExpRequired(p.level),
     };
+  }
+
+  /** 算出当前健康分，和库里的不一样就写回 pets.health_score（这一列要跟得上，不只是进化那一刻） */
+  private persistHealth(petId: number, stored: number): number {
+    const health = round2(this.healthScore());
+    if (health !== stored) this.db.prepare("UPDATE pets SET health_score=? WHERE id=?").run(health, petId);
+    return health;
   }
 
   /**
