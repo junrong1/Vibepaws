@@ -251,6 +251,14 @@ body.stale #today, body.stale #journal, body.stale #growth { opacity: 0.6; }
 .cond.unmet .mark { color: var(--warn); }
 .cond .state { font-size: 10px; color: var(--dim); }
 
+/* ---- 周卡（U14）：canvas 按 1200×630 画，这里只是把它缩到卡片宽度里预览 ---- */
+#card-canvas { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 8px 0; }
+.card-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.check { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; }
+#card-status { font-size: 10px; color: var(--dim); }
+#card-status.ok { color: var(--ok); }
+#card-status.err { color: var(--danger); }
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 

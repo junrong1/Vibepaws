@@ -114,7 +114,7 @@ test("Den 的页面、脚本、样式都随 ui/ 一起发出去", () => {
   const ui = pkg.build.extraResources.find((r) => r.to === "ui");
   assert.ok(ui, "extraResources 缺少 ui/");
   assert.equal(ui.from, "ui");
-  const den = ["den.html", "den.js", "den.css", "health/den.js"];
+  const den = ["den.html", "den.js", "den.css", "health/den.js", "health/card.js"];
   for (const f of den) {
     assert.ok(existsSync(`ui/${f}`), `ui/${f} 不存在`);
     for (const rule of ui.filter ?? []) {

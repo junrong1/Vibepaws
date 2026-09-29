@@ -86,7 +86,7 @@ test("Den 的页面与它的脚本、样式都在同一个 server 上，而且�
     assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/i.test(html), "den.html 里有内联 <script>");
     assert.ok(!/<style[\s>]/i.test(html), "den.html 里有内联 <style>");
     assert.ok(!/\sstyle=/i.test(html), "den.html 里有 style 属性");
-    for (const asset of ["/den.css", "/den.js", "/health/den.js", "/i18n.js"]) {
+    for (const asset of ["/den.css", "/den.js", "/health/den.js", "/health/card.js", "/i18n.js"]) {
       assert.equal((await fetch(base + asset)).status, 200, `${asset} 必须能加载，否则 Den 是一张白纸`);
     }
   });

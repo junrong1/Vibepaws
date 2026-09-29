@@ -42,6 +42,7 @@ import {
   scaledSizes,
 } from "./display.js";
 import { GRANT_CHANNEL_ENV, newGrantSecret, readCoreToken, requestGrant } from "./grant.js";
+import { cardFileName, decodeCardDataUrl } from "./card.js";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
 function writeLog(prefix, line) {
@@ -1378,6 +1379,39 @@ function openDen() {
 function fromDen(e) {
   return Boolean(denWin && !denWin.isDestroyed() && e.sender === denWin.webContents);
 }
+
+/**
+ * 存周卡（U14）。只收 Den 的请求、只收一个验过的 PNG data URL（desktop/card.js），
+ * 存到哪由一个挂在 Den 上的系统保存对话框问用户 —— accessory 档的进程里，页面自己的
+ * `<a download>` 靠不住，也不该悄悄落进下载目录。只回文件名（basename），完整路径不回渲染层。
+ */
+ipcMain.handle("vibepaws:save-card", async (e, dataUrl, suggestedName) => {
+  if (!fromDen(e)) return { ok: false, reason: "sender" };
+  const decoded = decodeCardDataUrl(dataUrl);
+  if (!decoded.ok) {
+    err(`[den] 周卡被拒：${decoded.reason}`);
+    return { ok: false, reason: "invalid" };
+  }
+  let downloads = homedir();
+  try {
+    downloads = app.getPath("downloads");
+  } catch {
+    /* 取不到下载目录就从 home 开始 */
+  }
+  const picked = await dialog.showSaveDialog(denWin, {
+    defaultPath: join(downloads, cardFileName(suggestedName)),
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, reason: "cancelled" };
+  try {
+    writeFileSync(picked.filePath, decoded.bytes);
+  } catch (ex) {
+    err(`[den] 周卡写入失败: ${ex}`);
+    return { ok: false, reason: "write" };
+  }
+  log(`[den] 周卡已保存（${decoded.bytes.length} 字节）`);
+  return { ok: true, file: picked.filePath.split(/[\\/]/).pop() ?? "" };
+});
 
 /* ---------------- 开机自启（0.4） ----------------
  * 真值存在操作系统里，不存在我们的 window-prefs.json 里 —— 用户随时可以在

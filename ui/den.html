@@ -39,6 +39,22 @@
 
     <section id="panel-today" role="tabpanel" aria-labelledby="tab-today" hidden>
       <div id="today"></div>
+      <!-- 周卡（U14）：最近七天画成一张图。预览就是那块 canvas 本身（CSP 没有 blob:，不做 object URL 预览）；
+           导出走 toDataURL()，壳里经 preload 交给主进程弹保存对话框，浏览器预览里退成一个 download 链接 -->
+      <section id="card-section" class="card" hidden>
+        <h2 data-i18n="den.card.title"></h2>
+        <p class="hint" data-i18n="den.card.hint"></p>
+        <p id="card-hidden" class="dim" data-i18n="den.card.hidden" hidden></p>
+        <div id="card-body">
+          <canvas id="card-canvas" width="1200" height="630" role="img"></canvas>
+          <div class="card-actions">
+            <label class="check"><input id="card-names" type="checkbox"> <span data-i18n="den.card.names"></span></label>
+            <button id="card-save" type="button" data-i18n="den.card.save"></button>
+            <span id="card-status" role="status" aria-live="polite"></span>
+          </div>
+          <p class="hint" data-i18n="den.card.names.hint"></p>
+        </div>
+      </section>
     </section>
 
     <section id="panel-journal" role="tabpanel" aria-labelledby="tab-journal" hidden>

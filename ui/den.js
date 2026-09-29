@@ -19,6 +19,7 @@ import { t as translate, normalizeLocale } from "/i18n.js";
 import { todayModel, journalModel, growthModel, signature, denShowsScores, localDay } from "./health/den.js";
 import { PIP_CELLS, PIP_GAP_AFTER } from "./health/pips.js";
 import { FACTOR_MAX } from "./health/rows.js";
+import { weekSummary, layoutCard, paint, cardFileName } from "./health/card.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -210,7 +211,10 @@ function render() {
   renderTabs();
   const showScores = denShowsScores(data.state?.health_visibility);
   $("hidden-note").hidden = !data.state || showScores || activeTab === "growth";
-  if (activeTab === "today") renderToday();
+  if (activeTab === "today") {
+    renderToday();
+    renderCard(showScores);
+  }
   else if (activeTab === "journal") renderJournal(showScores);
   else renderGrowth();
 }
@@ -306,6 +310,107 @@ function sessionItem(s) {
     el("div", "item-meta", t("den.session.when", { start: clock(s.started_at), end: clock(s.finished_at), duration: duration(s.duration_ms) })),
   );
   return item;
+}
+
+/* ---- 周卡（U14）---- */
+const cardShortDay = new Intl.DateTimeFormat(LOCALE, { month: "short", day: "numeric" });
+const cardWeekday = new Intl.DateTimeFormat(LOCALE, { weekday: "short" });
+function keyToDate(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+let cardModel = null;
+let cardKey = null;
+
+/**
+ * 预览就是导出的那一张：同一块 canvas、同一份绘制清单。只在模型变了（新的一段收工、勾了写项目名、
+ * 换了分数可见性）时重画 —— 5 秒一轮的轮询不该让 canvas 每次闪一下。
+ */
+function renderCard(showScores) {
+  const section = $("card-section");
+  if (!data.history || !data.state) {
+    section.hidden = true; // 从来没连上：Today 那一块已经在说「在等 Core」，这里不再重复一张空卡
+    return;
+  }
+  section.hidden = false;
+  // 分数设成「哪都不显示」：一张要发出去的图更不该有分数 —— 整块收起，只留一句怎么打开
+  $("card-hidden").hidden = showScores;
+  $("card-body").hidden = !showScores;
+  if (!showScores) {
+    cardModel = null;
+    cardKey = null;
+    return;
+  }
+  const model = weekSummary(data.history, { now: new Date(), includeProjects: $("card-names").checked });
+  const pet = data.state.pet ? { name: String(data.state.pet.name ?? ""), level: Number(data.state.pet.level) || 1 } : null;
+  const key = JSON.stringify([model, pet, LOCALE]);
+  if (key === cardKey) return;
+  cardKey = key;
+  cardModel = model;
+
+  const canvas = $("card-canvas");
+  const ctx = canvas.getContext("2d");
+  const measure = (text, f) => {
+    ctx.font = f;
+    return ctx.measureText(text).width;
+  };
+  const card = layoutCard(model, {
+    t,
+    measure,
+    dayLabel: (k) => cardShortDay.format(keyToDate(k)),
+    weekday: (k) => cardWeekday.format(keyToDate(k)),
+    duration,
+    pet,
+  });
+  canvas.width = card.width;
+  canvas.height = card.height;
+  paint(ctx, card);
+  // canvas 对读屏器是一块空白：把图上写的几句话原样给它
+  canvas.setAttribute(
+    "aria-label",
+    t("den.card.alt", {
+      summary: card.ops
+        .filter((o) => o.type === "text")
+        .map((o) => o.text)
+        .join(" · "),
+    }),
+  );
+}
+
+function cardStatus(message, tone = "") {
+  const node = $("card-status");
+  node.textContent = message;
+  node.className = tone;
+}
+
+async function saveCard() {
+  if (!cardModel) return;
+  const name = cardFileName(cardModel);
+  // data URL，不是 blob:（CSP 的 img-src 只放 'self' data:）
+  const dataUrl = $("card-canvas").toDataURL("image/png");
+  if (shell?.saveCard) {
+    const btn = $("card-save");
+    btn.disabled = true;
+    try {
+      const r = await shell.saveCard(dataUrl, name);
+      if (r?.ok) cardStatus(t("den.card.saved", { file: r.file ?? name }), "ok");
+      else if (r?.reason === "cancelled") cardStatus(t("den.card.cancelled"));
+      else cardStatus(t("den.card.failed"), "err");
+    } catch {
+      cardStatus(t("den.card.failed"), "err");
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
+  // 浏览器预览（npm run ui）：没有壳，退成一次普通下载
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  cardStatus(t("den.card.saved", { file: name }), "ok");
 }
 
 /* ---- Journal ---- */
@@ -610,6 +715,12 @@ $("journal-project").addEventListener("change", () => {
   drawn.journal = null;
   void refresh();
 });
+
+$("card-names").addEventListener("change", () => {
+  cardStatus("");
+  renderCard(denShowsScores(data.state?.health_visibility));
+});
+$("card-save").addEventListener("click", () => void saveCard());
 
 $("open-settings").addEventListener("click", () => {
   if (shell?.openSettings) shell.openSettings();
