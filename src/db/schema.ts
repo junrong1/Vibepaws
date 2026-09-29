@@ -150,7 +150,11 @@ CREATE TABLE IF NOT EXISTS notifications (
   rule_id       TEXT,
   tier          REAL,
   dismiss_reason TEXT CHECK (dismiss_reason IN ('dismissed','not_useful')),
-  shadow        INTEGER NOT NULL DEFAULT 0
+  shadow        INTEGER NOT NULL DEFAULT 0,
+  -- ---- 「永远允许」的预览钉（U9）：气泡上显示的规则与它要写进的项目（绝对路径，永远不出 Core）----
+  -- 按下去时 createGrant 重推一遍，与这里不同（或这里是空的）就拒 —— 用户读到哪一条，写进去的就只能是哪一条
+  grant_rule    TEXT,
+  grant_project TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, shown_at);
 
@@ -316,6 +320,9 @@ const ADDED_COLUMNS: Array<{
   { table: "notifications", column: "tier", ddl: "REAL" },
   { table: "notifications", column: "dismiss_reason", ddl: "TEXT CHECK (dismiss_reason IN ('dismissed','not_useful'))" },
   { table: "notifications", column: "shadow", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  // 「永远允许」的预览钉（U9）。老行一律 NULL = 没有钉过的预览 → 那些气泡上的「永远允许」按了也会被拒（changed）
+  { table: "notifications", column: "grant_rule", ddl: "TEXT" },
+  { table: "notifications", column: "grant_project", ddl: "TEXT" },
   {
     table: "notifications",
     column: "resolution",

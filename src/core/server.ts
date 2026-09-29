@@ -71,7 +71,7 @@ import {
   GRANT_CHANNEL_ENV,
   GRANT_SECRET_HEADER,
   createGrant,
-  deriveGrant,
+  pinGrantPreview,
   grantSecretMatches,
   isGrantSecret,
   listRules,
@@ -631,7 +631,7 @@ export class VibepawsServer {
    * 门槛比任何别的端点都高，因为它是唯一一个**永久放行**的动作：bearer token 在项目目录里、
    * agent 读得到；UI server 替任何人盖 token。所以先验 grant secret —— 没有、不对，一律 403，
    * 一个字节都不写，连 body 都不读。body 里只认一个 id，别的字段就算传了也不看：
-   * 工具、项目、前缀都由 deriveGrant 从库里那一行推出来。
+   * 工具、项目、前缀都由 deriveGrant 从库里那一行推出来，且必须与气泡上钉住的预览一致（pinGrantPreview）。
    */
   private handleGrant(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
     if (!grantSecretMatches(this.grantSecret, req.headers[GRANT_SECRET_HEADER])) {
@@ -925,9 +925,10 @@ export class VibepawsServer {
     const notif = this.notifications.getForEvent(ev);
     if (!notif) return; // 没有通知就没必要广播「skip」噪音
     // 「永远允许」的预览：只有壳拉起来的 Core 才给，只给推得出一条安全规则的请求
+    // 预览推出来的那一条同时钉在通知行上：按下去时 createGrant 只认它（项目在两次之间变了 → 409 changed）
     if (notif.type === "permission" && this.grantSecret && notif.id !== undefined) {
-      const d = deriveGrant(this.db, notif.id);
-      if (d.ok) notif.grant = { rule: d.grant.rule, project: projectShortName(d.grant.project_id) };
+      const g = pinGrantPreview(this.db, notif.id);
+      if (g) notif.grant = { rule: g.rule, project: projectShortName(g.project_id) };
     }
     for (const client of [...this.sseClients]) this.sendSse(client, "notification", notif);
   }

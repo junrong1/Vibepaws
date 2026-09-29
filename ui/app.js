@@ -517,7 +517,8 @@ const BUBBLE_ACTIONS = {
     try {
       const r = await shell.grantAlways(b.id).catch(() => null);
       if (!r?.ok) {
-        flash(t("ui.toast.grantfailed"), { error: true });
+        // changed：点下去那一刻 Core 重推出来的规则/项目和气泡上写的不一样 —— 让用户重读，而不是笼统说失败
+        flash(t(r?.reason === "changed" ? "ui.bubble.changed" : "ui.toast.grantfailed"), { error: true });
         return;
       }
       removeBubble(b);

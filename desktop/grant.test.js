@@ -70,3 +70,33 @@ test("token 从 Core 的数据目录里读；读不到就是空串", () => {
   assert.equal(seen[0], "/work/.vibepaws/api_token");
   assert.equal(readCoreToken("/work", () => { throw new Error("ENOENT"); }), "");
 });
+
+test("发送方核对：宠物窗口 + 主框架 + 壳给它的那一页（查询串可以不同）才收", async () => {
+  const { grantSenderAllowed } = await import("./grant.js");
+  const expectedUrl = "http://127.0.0.1:5173/?locale=zh";
+  const ok = { isPetContents: true, isMainFrame: true, frameUrl: "http://127.0.0.1:5173/?locale=en", expectedUrl };
+  assert.equal(grantSenderAllowed(ok), true);
+  for (const bad of [
+    { ...ok, isPetContents: false },
+    { ...ok, isMainFrame: false },
+    { ...ok, frameUrl: "http://127.0.0.1:5174/?locale=en" },
+    { ...ok, frameUrl: "http://127.0.0.1:5173/settings.html" },
+    { ...ok, frameUrl: "http://localhost:5173/" },
+    { ...ok, frameUrl: "https://evil.example/" },
+    { ...ok, frameUrl: "file:///tmp/x.html" },
+    { ...ok, frameUrl: "not a url" },
+    { ...ok, frameUrl: undefined },
+  ]) {
+    assert.equal(grantSenderAllowed(bad), false, JSON.stringify(bad));
+  }
+});
+
+test("导航守卫：只许停在壳给的那一页；别的源、别的路径一律拦", async () => {
+  const { navigationAllowed } = await import("./grant.js");
+  const pet = "http://127.0.0.1:5173/?locale=zh";
+  assert.equal(navigationAllowed("http://127.0.0.1:5173/?locale=en", pet), true);
+  for (const target of ["https://evil.example/", "http://127.0.0.1:9999/", "http://127.0.0.1:5173/den.html", "javascript:alert(1)", ""]) {
+    assert.equal(navigationAllowed(target, pet), false, target);
+  }
+  assert.equal(navigationAllowed("http://127.0.0.1:5173/den.html?locale=en", "http://127.0.0.1:5173/den.html?locale=zh"), true);
+});

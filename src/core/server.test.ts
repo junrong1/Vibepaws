@@ -886,7 +886,7 @@ test("授予：不是 permission 的通知、危险类命令 → 409，什么都
   await withGrantServer(async (server, base, project) => {
     const sse = await openSse(base, server.token);
     try {
-      const rm = raisePermission(server, project, { tool_name: "Bash", command_prefix: "rm" });
+      const rm = raisePermission(server, project, { tool_name: "Bash", command_prefix: "git push" });
       assert.equal((await sse.next("notification")).grant, undefined, "危险类不给这个选项");
       const session = `grant-${++seq}`;
       server.handleEvent(ev({ session_id: session, project_id: project, payload: { source: "startup", cwd: project } }));
@@ -909,9 +909,39 @@ test("授予：不是 permission 的通知、危险类命令 → 409，什么都
   });
 });
 
+test("授予：预览之后 session 的项目被改到别处 → 409 changed，两个项目都一个字节没写", async () => {
+  await withGrantServer(async (server, base, project) => {
+    const sse = await openSse(base, server.token);
+    try {
+      const session = `grant-${++seq}`;
+      server.handleEvent(ev({ session_id: session, project_id: project, payload: { source: "startup", cwd: project } }));
+      server.handleEvent(ev({ session_id: session, project_id: project, event_type: "permission_required", payload: { tool_name: "Bash", command_prefix: "npm test" } }));
+      const n = await sse.next("notification");
+      assert.deepEqual(n.grant, { rule: "Bash(npm test *)", project: "my-app" });
+      const elsewhere = join(mkdtempSync(join(tmpdir(), "vibepaws-grant-")), "my-app");
+      mkdirSync(elsewhere);
+      // session 行的 project_id 在预览与按下之间变了（一条 resume 走的是 COALESCE 更新；Claude Code 的 resume
+      // 会顺带把这条气泡结掉，但别的写入路径不一定会 —— 这里直接改行，只验「推出来的与钉住的不一样」这一件事）
+      server.db.prepare("UPDATE sessions SET project_id=? WHERE agent_session_id=?").run(elsewhere, session);
+      const r = await fetch(`${base}/api/rules/grant`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": GRANT_SECRET },
+        body: JSON.stringify({ id: n.id }),
+      });
+      assert.equal(r.status, 409);
+      assert.equal(((await r.json()) as { error: string }).error, "changed");
+      assert.ok(!existsSync(join(project, ".claude")) && !existsSync(join(elsewhere, ".claude")));
+      assert.equal(ruleCount(server), 0);
+      assert.equal(notifRow(server, n.id as number).resolution, null, "被拒的授予不算处理过这条气泡");
+    } finally {
+      sse.close();
+    }
+  });
+});
+
 test("规则列表要 token；撤销只要 token 但要 confirm，撤完文件和表都清掉", async () => {
   await withGrantServer(async (server, base, project) => {
-    const id = raisePermission(server, project, { tool_name: "Edit" });
+    const id = raisePermission(server, project, { tool_name: "Read" });
     const g = await fetch(`${base}/api/rules/grant`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-vibepaws-token": server.token, "x-vibepaws-grant": GRANT_SECRET },
@@ -922,7 +952,7 @@ test("规则列表要 token；撤销只要 token 但要 confirm，撤完文件�
     const list = (await (await fetch(`${base}/api/rules`, { headers: { "x-vibepaws-token": server.token } })).json()) as {
       rules: Array<{ id: number; rule: string; notification_id: number }>;
     };
-    assert.deepEqual(list.rules.map((r) => [r.rule, r.notification_id]), [["Edit", id]]);
+    assert.deepEqual(list.rules.map((r) => [r.rule, r.notification_id]), [["Read", id]]);
 
     assert.equal((await post(base, "/api/rules/revoke", server.token, { id: ruleId })).status, 400, "没有 confirm 不动");
     assert.equal(ruleCount(server), 1);

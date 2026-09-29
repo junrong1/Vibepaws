@@ -2,6 +2,7 @@
  * Vibepaws 标准化事件 schema — 对应 docs/mvp_architecture.md §3
  * 隐私：payload 仅允许白名单字段（第一道闸在 adapter，第二道闸在 ingress）。
  */
+import { retainKnownWords } from "./bash_allowlist.ts";
 
 export type AgentId = "claude_code" | "codex" | "generic" | "pi" | "dsh";
 export type Severity = "low" | "medium" | "high";
@@ -72,6 +73,8 @@ export interface EventPayload {
    * 「永远允许」要按它收窄 —— 整个 `Bash` 放行意味着按一次 `ls` 就永久授权了 `rm -rf`。
    * 只在 Claude Code 的 permission_required 上出现（只有它有 settings.local.json 可写），
    * 形状由 isCommandPrefix 把关：参数、路径、引号、管道、变量赋值一概进不来，整条命令永远不出 adapter。
+   * 而且**只留认得的词**（core/bash_allowlist.ts 的词汇表）：`echo hunter2` 什么都不留，
+   * `npm install internal-pkg` 只留 `npm` —— 形状像子命令的位置参数（包名、分支名）也进不来。
    */
   command_prefix?: string;
   /**
@@ -135,6 +138,7 @@ export const COMMAND_PREFIX_MAX = 64;
  * `npm test -- --grep x` → `npm test`；`git log --oneline` → `git log`；`ls -la` → `ls`。
  * 复合命令（`a && b`、管道、`;`）、替换、重定向、变量赋值前缀、路径形状的程序名一律 undefined ——
  * 宁可不给「永远允许」这个选项，也不给一条用户读不懂它会放行什么的规则。
+ * 形状过关之后再按词汇表削（minimiseCommandPrefix）：认不得的词连同它后面的全部丢掉。
  */
 export function commandPrefix(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
@@ -148,16 +152,29 @@ export function commandPrefix(raw: unknown): string | undefined {
     if (!SUBCOMMAND_WORD.test(w)) break;
     out.push(w);
   }
-  const prefix = out.join(" ");
-  return prefix.length <= COMMAND_PREFIX_MAX ? prefix : undefined;
+  return minimiseCommandPrefix(out.join(" "));
 }
 
-/** 第二道闸：一个值是不是 commandPrefix 能产出的形状（单空格分隔、1–3 个词、每个词合规） */
-export function isCommandPrefix(raw: unknown): raw is string {
+/** 形状：单空格分隔、1–3 个词、每个词合规、不超长 */
+export function hasCommandPrefixShape(raw: unknown): raw is string {
   if (typeof raw !== "string" || !raw || raw.length > COMMAND_PREFIX_MAX) return false;
   const words = raw.split(" ");
   if (words.length > 3 || !PROGRAM_WORD.test(words[0]!)) return false;
   return words.slice(1).every((w) => SUBCOMMAND_WORD.test(w));
+}
+
+/**
+ * 第二道闸用的削法：形状不对 → undefined；形状对 → 只留词汇表认得的那段
+ * （`npm install pkg` → `npm`，`echo x` → undefined）。一个写错了的 adapter 送来的参数也进不了库。
+ */
+export function minimiseCommandPrefix(raw: unknown): string | undefined {
+  if (!hasCommandPrefixShape(raw)) return undefined;
+  return retainKnownWords(raw.split(" "));
+}
+
+/** 一个值是不是 commandPrefix 能产出的东西：形状合规，且每个词都在词汇表里 */
+export function isCommandPrefix(raw: unknown): raw is string {
+  return hasCommandPrefixShape(raw) && minimiseCommandPrefix(raw) === raw;
 }
 
 /** 权限模式名的形状：一个 ASCII 单词。不在这个形状里的值一律不报 / 不收 */

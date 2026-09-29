@@ -66,3 +66,36 @@ export async function requestGrant({ id, secret, token, corePort, fetchImpl = fe
     return { ok: false, status: 0, reason: "core_offline" };
   }
 }
+
+/**
+ * 页面地址比对：同源（协议 + host + 端口）且同一路径才算。查询串不算（locale 会变）。
+ * 解析不了的一律 false。
+ */
+export function samePage(url, expected) {
+  try {
+    const a = new URL(String(url));
+    const b = new URL(String(expected));
+    return a.origin === b.origin && a.pathname === b.pathname;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 「永远允许」IPC 的发送方核对（KTD13）：除了 webContents 是宠物窗口，还要求发请求的是
+ * 那扇窗口的**主框架**、并且此刻加载的正是壳自己给它的那一页。宠物页被导航走了（UI server
+ * 死了、同一个端口换了别人），带着 preload 的那一页就不再是我们的页面，它的请求不收。
+ *
+ * @param {{ isPetContents: boolean, frameUrl: unknown, isMainFrame: boolean, expectedUrl: string }} s
+ */
+export function grantSenderAllowed({ isPetContents, frameUrl, isMainFrame, expectedUrl }) {
+  return Boolean(isPetContents && isMainFrame && samePage(frameUrl, expectedUrl));
+}
+
+/**
+ * 导航守卫：壳的窗口只许停在壳给它的那一页（同源同路径）。别的一律拦 ——
+ * 它们都挂着 preload，被导航到别处的页面会继承这条 IPC 通道。
+ */
+export function navigationAllowed(targetUrl, expectedUrl) {
+  return samePage(targetUrl, expectedUrl);
+}

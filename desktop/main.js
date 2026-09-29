@@ -41,7 +41,7 @@ import {
   scaleFactor,
   scaledSizes,
 } from "./display.js";
-import { GRANT_CHANNEL_ENV, newGrantSecret, readCoreToken, requestGrant } from "./grant.js";
+import { GRANT_CHANNEL_ENV, grantSenderAllowed, navigationAllowed, newGrantSecret, readCoreToken, requestGrant } from "./grant.js";
 import { cardFileName, decodeCardDataUrl } from "./card.js";
 
 // packaged 模式下把日志写到 userData（GUI 启动的 app stdout 不可见）
@@ -768,6 +768,7 @@ function createWindow() {
   });
   // 换语言会重载这扇窗口，而缩放是从 session 里按 host 读的 —— 每次加载后重申一次
   win.webContents.on("did-finish-load", applyZoom);
+  guardNavigation(win, "pet", petUrl);
   win.on("closed", () => {
     stopDrag();
     stopHitRescue();
@@ -1219,6 +1220,25 @@ function denUrl() {
 }
 
 /**
+ * 导航守卫（KTD13）：壳的每扇窗口都挂着 preload，被导航到别处的页面会继承那条 IPC 通道
+ * （宠物窗口的那条能请求「永远允许」）。所以页面自己发起的导航只许停在壳给它的那一页
+ * （同源同路径，查询串随意），新窗口一律不开 —— 页面里的 window.open 只是浏览器预览下的退路，
+ * 壳里有自己的 IPC 打开设置 / Den。主进程自己的 loadURL（换语言）不经过 will-navigate。
+ */
+function guardNavigation(bw, name, expectedUrl) {
+  bw.webContents.on("will-navigate", (e, legacyUrl) => {
+    const url = e?.url ?? legacyUrl;
+    if (navigationAllowed(url, expectedUrl())) return;
+    e.preventDefault();
+    err(`[${name}] blocked navigation to ${url}`);
+  });
+  bw.webContents.setWindowOpenHandler(({ url }) => {
+    log(`[${name}] blocked window.open ${url}`);
+    return { action: "deny" };
+  });
+}
+
+/**
  * macOS：accessory 档的进程不显示菜单栏，于是 ⌘C/⌘V 这些**键位等价**也无处可依 ——
  * 而设置窗口里有两个文本框，粘贴不了目标和名字是说不过去的。
  * 主菜单只在第一次打开设置窗口时装（启动路径一个字节都不动，全屏 Space 那套行为
@@ -1307,6 +1327,7 @@ function openSettings() {
     err(`[settings] load failed ${code} ${desc} ${url}`);
   });
   attachEditContextMenu(settingsWin);
+  guardNavigation(settingsWin, "settings", settingsUrl);
   settingsWin.on("closed", () => {
     settingsWin = null;
   });
@@ -1370,6 +1391,7 @@ function openDen() {
     err(`[den] load failed ${code} ${desc} ${url}`);
   });
   attachEditContextMenu(denWin);
+  guardNavigation(denWin, "den", denUrl);
   denWin.on("closed", () => {
     denWin = null;
   });
@@ -1497,7 +1519,16 @@ ipcMain.on("vibepaws:open-den", (e) => {
  * Core 是 adopted 的（不是我们拉起来的）就不去要：我们手里没有它的 secret。
  */
 ipcMain.handle("vibepaws:grant-always", async (e, id) => {
-  if (!win || win.isDestroyed() || e.sender !== win.webContents) return { ok: false, reason: "sender" };
+  if (!win || win.isDestroyed()) return { ok: false, reason: "sender" };
+  // 不只是「宠物窗口的 webContents」：还得是它的主框架、而且此刻加载的正是壳给它的那一页
+  const frame = e.senderFrame;
+  const allowed = grantSenderAllowed({
+    isPetContents: e.sender === win.webContents,
+    isMainFrame: Boolean(frame) && (frame === e.sender.mainFrame || frame.parent === null),
+    frameUrl: frame?.url,
+    expectedUrl: petUrl(),
+  });
+  if (!allowed) return { ok: false, reason: "sender" };
   if (coreState !== "running" || !coreProc) return { ok: false, reason: "unavailable" };
   const r = await requestGrant({ id, secret: grantSecret, token: readCoreToken(workDir()), corePort: CORE_PORT });
   // 只回界面要的那几样：规则原文与项目短名（toast 要说「记住了什么」），别的一概不回

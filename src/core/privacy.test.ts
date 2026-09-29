@@ -402,3 +402,48 @@ test("第二道闸：command_prefix 只能是前缀的形状，夹带路径 / �
     assert.equal(stored.tool_name, "Bash");
   }
 });
+
+/* ---------------- U9 复审：前缀只留「白名单里认得的子命令词」 ----------------
+ * 同样先于实现写成。形状对了还不够 —— `echo hunter2`、`npm install internal-pkg`、
+ * `git checkout acme-acquisition` 每个词都长得像子命令，但第二个词是用户自己的参数
+ * （密码、包名、分支名）。只有落在可授予命令表（core/bash_allowlist.ts）的词汇里的词才留下；
+ * 程序名不在表里的，连程序名都不留。 */
+
+test("第一道闸：位置参数（包名 / 分支名 / echo 的参数）不进前缀；认得的子命令照留", () => {
+  const cases: Array<[string, string | undefined]> = [
+    ["npm test -- --grep x", "npm test"],
+    ["npm run build", "npm run build"],
+    ["npm run deploy-prod", "npm run"],
+    ["npm install TOP_SECRET-pkg", "npm"],
+    ["git status", "git status"],
+    ["git checkout TOP_SECRET-branch", "git"],
+    ["git push origin TOP_SECRET", "git"],
+    ["ls TOP_SECRET", "ls"],
+    ["echo TOP_SECRET", undefined],
+    ["mytool TOP_SECRET", undefined],
+    ["gh api repos/o/r -X DELETE", undefined],
+  ];
+  for (const [command, want] of cases) {
+    const ev = normalizeHook(
+      { hook_event_name: "PermissionRequest", session_id: "s-min", cwd: "/p", tool_name: "Bash", tool_input: { command } },
+      "claude_code",
+    )!;
+    assert.equal(ev.payload.command_prefix, want, command);
+    assert.ok(!JSON.stringify(ev).includes("TOP_SECRET"), command);
+  }
+});
+
+test("第二道闸：一个写错了的 adapter 送来带参数的前缀 —— ingress 削回认得的那部分，或整个丢掉", () => {
+  const cases: Array<[string, string | undefined]> = [
+    ["npm install TOPSECRET", "npm"],
+    ["echo TOPSECRET", undefined],
+    ["git checkout TOPSECRET", "git"],
+    ["npm run test", "npm run test"],
+    ["cargo test", "cargo test"],
+  ];
+  for (const [raw, want] of cases) {
+    const stored = ingestPayload(`cpm-${raw}`, { tool_name: "Bash", command_prefix: raw });
+    assert.equal(stored.command_prefix, want, raw);
+    assert.ok(!JSON.stringify(stored).includes("TOPSECRET"), raw);
+  }
+});
