@@ -56,6 +56,10 @@ export const MESSAGES = {
     "ui.conn.ok": "Core connected",
     "ui.conn.off": "Core offline",
     "ui.conn.degraded": "Session list is live, but the event stream is down — bubbles won't arrive",
+    // ---- Session Health：名牌上的 pip 条（R12）----
+    "ui.health.today": "Health today {score}/100",
+    "ui.health.today.empty": "Health today: no finished sessions yet",
+    "ui.health.today.offline": "Health today: unknown — can't reach Core",
 
     // ---- 浮层 ----
     "ui.panel.close": "Close",
@@ -198,6 +202,15 @@ export const MESSAGES = {
     "settings.zombie.unit": "minutes",
     "settings.zombie.hint":
       "A crashed agent never says goodbye, so a session that goes quiet this long is closed out — no EXP, no celebration. If the agent's process is gone, that's detected in seconds and this wait doesn't apply.",
+
+    // ---- Session Health 分数显示在哪（R30）----
+    "settings.section.health": "Session Health",
+    "settings.health.label": "Show the score",
+    "settings.health.off": "Nowhere",
+    "settings.health.flyout": "In the session list only",
+    "settings.health.everywhere": "Session list and under the pet",
+    "settings.health.hint":
+      "Every session gets a 0–100 score from four factors: Context, Focus, Response and Outcome. \"Under the pet\" adds today's score as ten small cells beside its name.",
 
     // ---- 接 agent（app 里那张卡；从前只有 CLI 一条路）----
     "settings.section.connect": "Connect your agent",
@@ -405,6 +418,10 @@ export const MESSAGES = {
     "ui.conn.ok": "Core 已连接",
     "ui.conn.off": "Core 未连接",
     "ui.conn.degraded": "session 列表在刷新，但事件流已断 — 气泡不会再来",
+    // ---- Session Health：名牌上的 pip 条 ----
+    "ui.health.today": "今天的健康度 {score}/100",
+    "ui.health.today.empty": "今天的健康度：还没有收工的 session",
+    "ui.health.today.offline": "今天的健康度：不知道 — 连不上 Core",
 
     // ---- 浮层 ----
     "ui.panel.close": "关闭",
@@ -539,6 +556,15 @@ export const MESSAGES = {
     "settings.zombie.unit": "分钟",
     "settings.zombie.hint":
       "崩掉的 agent 不会跟你道别，所以静默超过这个时长的 session 会被收掉 —— 不发 EXP，也不庆祝。如果 agent 进程已经没了，秒级就能发现，不用等这个时长。",
+
+    // ---- Session Health 分数显示在哪 ----
+    "settings.section.health": "Session Health",
+    "settings.health.label": "分数显示在",
+    "settings.health.off": "哪都不显示",
+    "settings.health.flyout": "只在 session 列表里",
+    "settings.health.everywhere": "session 列表 + 宠物脚下",
+    "settings.health.hint":
+      "每个 session 都有一个 0–100 的分数，由四个因子组成：Context、Focus、Response、Outcome。选「宠物脚下」会在它的名字旁边用十个小格显示今天的分数。",
 
     // ---- 接 agent ----
     "settings.section.connect": "接上你的 agent",

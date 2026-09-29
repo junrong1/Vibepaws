@@ -254,6 +254,12 @@ export interface SessionView {
   health: SessionHealthView | null;
 }
 
+/**
+ * 分数显示在哪（R30）：off = 哪都不显示；flyout = 只在浮层里；everywhere = 浮层 + 宠物名牌上的 pip 条。
+ * 默认 flyout（见 core/settings.ts 的 DEFAULT_HEALTH_VISIBILITY）。
+ */
+export type HealthVisibility = "off" | "flyout" | "everywhere";
+
 /** Session Health 的四个因子（顺序即界面顺序，见 core/health.ts 的 FACTOR_NAMES） */
 export type HealthFactorName = "context" | "focus" | "response" | "outcome";
 
@@ -426,6 +432,11 @@ export interface PetStatePush {
    * unknown = 今天还没有一段结算过（包括升级后的第一个早上），不是 0 分（R31）
    */
   health_today: DayHealthView;
+  /**
+   * 分数显示在哪（R30）。跟着状态推送走而不是让宠物窗口去读 /api/settings：
+   * 设置窗口里一改，宠物名牌与浮层下一帧就照做，不必再开一条轮询。
+   */
+  health_visibility: HealthVisibility;
   /** 当前静音状态：界面要能显示「还剩多久」、点亮对应按钮并原地取消（issue #7） */
   mute: { global_until: number | null; global_minutes: number | null };
   needs_you: SessionView[];

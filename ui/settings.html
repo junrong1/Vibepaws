@@ -32,6 +32,17 @@
       <p class="meta" id="pet-meta"></p>
     </section>
 
+    <!-- Session Health 分数显示在哪（R30）。三档之间选一个，默认「只在浮层里」 —— 宠物脚下常驻一个分数
+         应该是用户自己选的。选项文案由 settings.js 填（要跟着语言走）。 -->
+    <section class="card">
+      <h2 data-i18n="settings.section.health"></h2>
+      <div class="row">
+        <label for="health-visibility" data-i18n="settings.health.label"></label>
+        <select id="health-visibility"></select>
+      </div>
+      <p class="hint" data-i18n="settings.health.hint"></p>
+    </section>
+
     <section class="card">
       <h2 data-i18n="settings.section.budget"></h2>
       <div class="row">

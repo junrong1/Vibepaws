@@ -4,8 +4,9 @@
  */
 import { drawPet } from "./pets/render.js";
 import * as petRegistry from "./pets/registry.js";
-import { BLEND_MS, MOTION } from "./pets/motion.js";
+import { BLEND_MS, MOTION, motionAt } from "./pets/motion.js";
 import { stickyBubbleStale } from "./health/bubbles.js";
+import { PIP_CELLS, PIP_GAP_AFTER, nameplateStrip, healthSurfaces } from "./health/pips.js";
 // 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
 import { t as translate, normalizeLocale } from "/i18n.js";
 
@@ -56,6 +57,10 @@ const state = {
    * [] = Core 明确说一个都没有，也就是 hooks 没装上。 */
   adapters: null,
   mute: { global_until: null, global_minutes: null },
+  /** 今天的 Session Health 聚合（PetStatePush.health_today）。null = 老 Core 不发 */
+  healthToday: null,
+  /** 分数显示在哪（R30）：off / flyout / everywhere。老 Core 不发时按默认 flyout */
+  healthVisibility: "flyout",
   /** 事件流是否活着 —— 气泡只从这条流来，它断了就等于提醒功能死了 */
   streamOk: null,
   /** 5s 轮询是否活着 —— 只能证明 session 列表新鲜，证明不了气泡还会来 */
@@ -146,6 +151,8 @@ function applyPush(push) {
   state.sessions = Array.isArray(push.sessions) ? push.sessions : [];
   if (Array.isArray(push.adapters)) state.adapters = push.adapters;
   state.mute = push.mute ?? { global_until: null, global_minutes: null };
+  state.healthToday = push.health_today ?? null;
+  state.healthVisibility = push.health_visibility ?? "flyout";
   render();
   reconcileStickyBubbles();
 }
@@ -177,24 +184,27 @@ function coreReachable() {
   return state.streamOk === true || state.pollOk === true;
 }
 
+/**
+ * 连接状态四选一：unknown（还没连上过）/ ok / degraded / off。
+ * 指示灯与名牌上的 pip 条读同一份 —— 名牌是余光里看的，不能指望用户同时去看右上角那个点。
+ */
+function connState() {
+  if (state.streamOk === null && state.pollOk === null) return "unknown";
+  if (state.streamOk) return "ok";
+  // 半死：状态还在刷新，但气泡（只走 SSE）已经不会来了 —— 必须说出来
+  if (state.pollOk) return "degraded";
+  return "off";
+}
+
+const CONN_TITLES = { unknown: "ui.conn.title", ok: "ui.conn.ok", degraded: "ui.conn.degraded", off: "ui.conn.off" };
+
 function renderConn() {
   const el = $("conn");
-  if (state.streamOk === null && state.pollOk === null) {
-    el.className = "conn-unknown";
-    el.title = t("ui.conn.title");
-    return;
-  }
-  if (state.streamOk) {
-    el.className = "conn-ok";
-    el.title = t("ui.conn.ok");
-  } else if (state.pollOk) {
-    // 半死：状态还在刷新，但气泡（只走 SSE）已经不会来了 —— 必须说出来
-    el.className = "conn-degraded";
-    el.title = t("ui.conn.degraded");
-  } else {
-    el.className = "conn-off";
-    el.title = t("ui.conn.off");
-  }
+  const conn = connState();
+  el.className = `conn-${conn}`;
+  el.title = t(CONN_TITLES[conn]);
+  // 连不上时 pip 条要当场变成「不知道」，而不是挂着断线前的最后一个分数
+  renderNameplate();
 }
 
 /* ---------------- 渲染 ---------------- */
@@ -211,6 +221,22 @@ function render() {
   renderMute();
   renderPanel();
 }
+
+/**
+ * 减弱动态效果（R27）。系统里开了「减弱动态效果」时，宠物不再持续上下起伏：
+ * 每个状态都停在它的中立姿态（相位 0 那一帧 —— 也就是一次性动作放完后停住的那一帧），
+ * 状态切换不插值、直接换；叠加特效同样停在相位 0。状态本身照样看得出来 ——
+ * 立绘、染色、特效的形状都还在，只是不动。
+ * 一次性动作（finished / level-up）仍按真实时长计时，放够时长就照常回落，不会被钉在庆祝帧上。
+ * 画面不动就不必每帧重画：只在画面该变的时候（状态 / 宠物 / 分身数）和每秒一次兜底时画。
+ */
+const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
+/** 减弱动态下上一帧画的是什么；null = 下一帧必须画 */
+let stillKey = null;
+let stillDrawnAt = 0;
+reducedMotion?.addEventListener?.("change", () => {
+  stillKey = null;
+});
 
 let frameHandle = null;
 function startPetLoop() {
@@ -279,6 +305,7 @@ function drawPetFrame(now) {
     // 先复位：drawPet 留下的是一个 dpr 变换，照着它按设备像素清会算错范围
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
+    stillKey = null;
     return;
   }
 
@@ -288,6 +315,11 @@ function drawPetFrame(now) {
     blendStart = now;
     cur = { state: want, since: now, done: false };
   }
+  if (reducedMotion?.matches) {
+    drawStillFrame(now, petTypeId);
+    return;
+  }
+  stillKey = null;
   const blend = prevAnim ? Math.min(1, (now - blendStart) / BLEND_MS) : 1;
 
   const { done } = drawPet($("pet"), petTypeId, {
@@ -300,6 +332,23 @@ function drawPetFrame(now) {
 
   if (blend >= 1) prevAnim = null;
   if (done && !cur.done) {
+    cur.done = true;
+    if (ONE_SHOT.has(cur.state)) consumed = cur.state;
+  }
+}
+
+/** 减弱动态下的一帧：中立姿态、不插值；只在画面该变时重画 */
+function drawStillFrame(now, petTypeId) {
+  prevAnim = null;
+  const subagents = liveSubagents();
+  const key = `${petTypeId}:${cur.state}:${subagents}`;
+  if (key !== stillKey || now - stillDrawnAt > 1000) {
+    drawPet($("pet"), petTypeId, { state: cur.state, elapsed: 0, prev: null, blend: 1, subagents });
+    stillKey = key;
+    stillDrawnAt = now;
+  }
+  // done 与画面无关，只看时长：精灵高度不影响它，传什么都一样
+  if (!cur.done && motionAt(cur.state, now - cur.since, 0).done) {
     cur.done = true;
     if (ONE_SHOT.has(cur.state)) consumed = cur.state;
   }
@@ -325,8 +374,43 @@ function renderExpBar() {
   $("exptext").textContent = need ? `Lv.${level} ${exp}/${need}` : `Lv.${level} ${exp}`;
 }
 
+/**
+ * 名牌 = 宠物名 + （可见性为 everywhere 时）今天的 pip 条（R12 / R30）。
+ * 读的是今天的聚合 health_today.mean，和宠物 health_score 是同一个数的两种读法 ——
+ * 活着的 session 的临时分只在浮层里出现，名牌上不画一个还会变的数。
+ * 条的宽度是固定的（见 style.css 的 #pips），名字过长时名字省略，名牌永远不宽过 EXP 条。
+ */
 function renderNameplate() {
-  $("nameplate").textContent = state.pet?.name ?? "…";
+  const name = state.pet?.name ?? "…";
+  $("pet-name").textContent = name;
+  const pips = $("pips");
+  const show = healthSurfaces(state.healthVisibility).nameplate;
+  pips.hidden = !show;
+  if (!show) {
+    $("nameplate").title = name;
+    return;
+  }
+  const strip = nameplateStrip(state.healthToday, connState());
+  if (pips.children.length !== PIP_CELLS) buildPipCells(pips, "pip");
+  // kind / band 都来自 pips.js 的有限几个值，可以直接拼进 class
+  pips.className = `pips ${strip.kind}${strip.band ? ` band-${strip.band}` : ""}`;
+  strip.cells.forEach((on, i) => pips.children[i].classList.toggle("on", on));
+  const label =
+    strip.kind === "score" ? t("ui.health.today", { score: Math.floor(strip.score) })
+    : strip.kind === "empty" ? t("ui.health.today.empty")
+    : t("ui.health.today.offline");
+  pips.setAttribute("aria-label", label);
+  $("nameplate").title = `${name} · ${label}`;
+}
+
+/** 十个格子，第七格之后那一格带 gap class（宽缝画在它左边） */
+function buildPipCells(box, cls) {
+  box.replaceChildren();
+  for (let i = 0; i < PIP_CELLS; i++) {
+    const cell = document.createElement("span");
+    cell.className = i === PIP_GAP_AFTER ? `${cls} gap` : cls;
+    box.appendChild(cell);
+  }
 }
 
 /* ---------------- 静音状态（issue #7） ---------------- */

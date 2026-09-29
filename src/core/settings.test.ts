@@ -22,6 +22,9 @@ import {
   getZombieTimeoutMin,
   DEFAULT_ZOMBIE_TIMEOUT_MIN,
   normalizeText,
+  normalizeHealthVisibility,
+  getHealthVisibility,
+  DEFAULT_HEALTH_VISIBILITY,
   parseSettingsPatch,
   readSettings,
   getContextWarnPcts,
@@ -360,4 +363,43 @@ test("静默阈值：脏值与缺 key 都回默认（读不出来不该让回收
 test("静默阈值也守原子性：同一份 patch 里有非法值时一个字段都不落库", () => {
   const parsed = parseSettingsPatch({ zombie_timeout_min: "abc", daily_exp_cap: 50 });
   assert.deepEqual(parsed.invalid, ["zombie_timeout_min"]);
+});
+
+/* ---------------- 分数显示在哪（R30） ---------------- */
+
+test("分数可见性：只认 off / flyout / everywhere，别的判非法而不是悄悄回默认", () => {
+  for (const v of ["off", "flyout", "everywhere"]) {
+    assert.deepEqual(normalizeHealthVisibility(v), { ok: true, value: v, clamped: false });
+  }
+  assert.deepEqual(normalizeHealthVisibility(" everywhere "), { ok: true, value: "everywhere", clamped: false });
+  for (const bad of ["on", "", null, 1, {}]) assert.deepEqual(normalizeHealthVisibility(bad), { ok: false });
+});
+
+test("分数可见性：默认 flyout；缺 key 与脏值都回默认", () => {
+  assert.equal(DEFAULT_HEALTH_VISIBILITY, "flyout");
+  const db = new Database(":memory:");
+  applySchema(db);
+  assert.equal(getHealthVisibility(db), "flyout");
+  db.prepare("INSERT INTO settings(key, value) VALUES('health_visibility', 'nonsense')").run();
+  assert.equal(getHealthVisibility(db), "flyout");
+  db.prepare("UPDATE settings SET value='off' WHERE key='health_visibility'").run();
+  assert.equal(readSettings(db).health_visibility, "off");
+});
+
+test("改分数可见性：落库、报 changed，并且下一帧状态推送就带着新值", async () => {
+  await withServer(async ({ server, base }) => {
+    assert.equal(server.stateSnapshot().health_visibility, "flyout");
+    const r = await fetch(`${base}/api/settings`, authed(server, { health_visibility: "everywhere" }));
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { changed: string[]; settings: { health_visibility: string }; defaults: Record<string, unknown> };
+    assert.ok(body.changed.includes("health_visibility"));
+    assert.equal(body.settings.health_visibility, "everywhere");
+    assert.equal(body.defaults.health_visibility, "flyout");
+    assert.equal(server.stateSnapshot().health_visibility, "everywhere");
+
+    const bad = await fetch(`${base}/api/settings`, authed(server, { health_visibility: "loud", daily_exp_cap: 50 }));
+    assert.equal(bad.status, 400);
+    assert.equal(readSettings(server.db).health_visibility, "everywhere", "非法 patch 一个字段都不写");
+    assert.equal(readSettings(server.db).daily_exp_cap, 200);
+  });
 });

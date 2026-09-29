@@ -94,15 +94,43 @@ body.dragging #pet { filter: none; }
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
   font-weight: 700;
 }
+/* 名牌不许宽过 EXP 条（120px）：宠物的整体轮廓和 main.js 的 PET_BOX 都按这个宽度算。
+ * pip 条宽度固定，名字过长时是名字省略（完整名字在 title 里），不是名牌变宽。 */
 #nameplate {
   margin-top: 3px;
   padding: 1px 8px;
+  max-width: 120px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   background: rgba(13,17,23,0.85);
   border: 1px solid var(--border);
   border-radius: 8px;
   font-size: 10px;
   color: var(--dim);
 }
+#pet-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Session Health pip 条（R12，编码见 ui/health/pips.js） ----
+ * 十格：七格、一道宽缝、三格。亮了几格就是分数，颜色只是冗余：
+ * ≥70 中性灰，<70 琥珀，<50 红。名牌版 3×6px 一格，总宽 41px，固定不变。 */
+.pips { display: inline-flex; align-items: center; gap: 1px; flex-shrink: 0; height: 6px; }
+.pips[hidden] { display: none; }
+.pip {
+  width: 3px;
+  height: 6px;
+  border-radius: 1px;
+  background: #30363d;           /* 暗格：有分数、这一格没亮 */
+  transition: background-color 0.3s ease, height 0.3s ease;
+}
+.pip.gap { margin-left: 3px; }  /* 宽缝在第八格左边：亮着的一串碰到它 = 70 */
+.pips.band-neutral .pip.on { background: var(--dim); }
+.pips.band-amber .pip.on { background: var(--warn); }
+.pips.band-red .pip.on { background: var(--danger); }
+/* 没样本（今天还没有结算过的段）：十个空心格 —— 不是 0 分，是还不知道 */
+.pips.empty .pip { background: transparent; box-shadow: inset 0 0 0 1px #57606a; }
+/* 连不上 Core：压成一条平线。形状和空心格不一样，关掉颜色也分得开 */
+.pips.offline .pip { height: 1px; background: #57606a; }
 
 /* 连接状态点 */
 #conn {
@@ -309,6 +337,16 @@ body.dragging #pet { filter: none; }
 #explog .cost { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }
 #explog .cost-claim { color: var(--text); }
 #explog .cost-meter { color: var(--dim); }
+
+/* ---- 减弱动态效果（R27） ----
+ * 这里只收本计划加的过渡（pip 条、分数行）和两处纯装饰的入场/进度动画。
+ * 会闪的状态点（needs-you、conn-degraded）不在其中：那两处的闪烁本身就是信息，
+ * 而且只改透明度、不产生位移。宠物本体的持续起伏在 app.js 里按同一条媒体查询停掉。 */
+@media (prefers-reduced-motion: reduce) {
+  .pip { transition: none; }
+  #panel { animation: none; }
+  #expfill { transition: none; }
+}
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

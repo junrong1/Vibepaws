@@ -11,7 +11,7 @@
  *   GET  /api/exp          宠物 EXP/等级
  *   GET  /api/hookstats    采集通道开销（字节 / 延迟 / 恒为 0 的模型调用，见 core/hookstats.ts）
  *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
- *   POST /api/settings     改设置（宠物名 / 预算 / 阈值 / 每日上限）
+ *   POST /api/settings     改设置（宠物名 / 预算 / 阈值 / 每日上限 / 分数显示在哪）
  *   POST /api/session      改单个 session 的 goal / budget_tokens
  *   GET  /api/reset        重置预览（本地数据足迹：行数 + 库文件大小）
  *   POST /api/reset        重置本地数据（scope=pet|data，需要 confirm）
@@ -37,6 +37,8 @@ import {
   DEFAULT_DAILY_EXP_CAP,
   DEFAULT_CONTEXT_WARN_PCTS,
   DEFAULT_ZOMBIE_TIMEOUT_MIN,
+  DEFAULT_HEALTH_VISIBILITY,
+  getHealthVisibility,
   type VibepawsSettings,
 } from "./settings.ts";
 import { reclaimZombies, SWEEP_INTERVAL_MS, type ReclaimedSession } from "./reclaim.ts";
@@ -60,6 +62,7 @@ import type {
   AdapterView,
   AgentId,
   CoreEvent,
+  HealthVisibility,
   NotificationResolvedPush,
   PetState,
   PetStatePush,
@@ -120,6 +123,7 @@ export interface SettingsView {
     daily_exp_cap: number;
     context_warn_pcts: number[];
     zombie_timeout_min: number;
+    health_visibility: HealthVisibility;
   };
   pet: {
     name: string;
@@ -404,7 +408,8 @@ export class VibepawsServer {
       // 而不是「下一轮 sweep 也许会」。
       if (changed.includes("zombie_timeout_min")) this.sweepZombies();
       // 名字改了要立刻反映到宠物脚下的名牌上
-      if (changed.includes("pet_name")) this.broadcastState();
+      // 分数可见性同理：它跟着状态推送走（PetStatePush.health_visibility），不推就要等下一次轮询
+      if (changed.includes("pet_name") || changed.includes("health_visibility")) this.broadcastState();
       sendJson(res, 200, { ok: true, changed, clamped: parsed.clamped, ...this.settingsSnapshot() });
     });
   }
@@ -574,6 +579,7 @@ export class VibepawsServer {
         daily_exp_cap: DEFAULT_DAILY_EXP_CAP,
         context_warn_pcts: [...DEFAULT_CONTEXT_WARN_PCTS],
         zombie_timeout_min: DEFAULT_ZOMBIE_TIMEOUT_MIN,
+        health_visibility: DEFAULT_HEALTH_VISIBILITY,
       },
       pet: {
         name: pet.name ?? "vibepaws",
@@ -792,6 +798,7 @@ export class VibepawsServer {
       },
       sessions,
       health_today: dayHealthView(todayHealth(this.db)),
+      health_visibility: getHealthVisibility(this.db),
       adapters: this.listAdapters(),
       mute: (({ global_until, global_minutes }) => ({ global_until, global_minutes }))(
         this.notifications.muteStatus(),

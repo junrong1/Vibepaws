@@ -47,6 +47,9 @@ const LANGUAGES = [
   { id: "zh-CN", key: "settings.language.zh" },
 ];
 
+/** Session Health 分数显示在哪（R30）。顺序与 core/settings.ts 的 HEALTH_VISIBILITIES 一致 */
+const HEALTH_VISIBILITIES = ["off", "flyout", "everywhere"];
+
 /** 0.3：多显示器的两种模式。为什么是两种而不是一个默认，见 desktop/main.js 那一段。 */
 const DISPLAY_MODES = ["follow", "pin"];
 
@@ -198,6 +201,7 @@ function apply(data, forced) {
   setValue(zombieEl, String(settings.zombie_timeout_min), forced);
 
   renderWarnOptions(settings.context_warn_pcts, forced);
+  renderHealthVisibility(settings.health_visibility ?? data.defaults?.health_visibility ?? "flyout", forced);
   renderSessions(data.sessions ?? []);
   renderCost(data.hooks);
 }
@@ -285,6 +289,17 @@ function renderWarnOptions(pcts, forced) {
     el.appendChild(option);
   }
   el.value = current;
+}
+
+/** 分数可见性下拉。老 Core 不认这个字段时照样画出来，默认值就是 flyout */
+function renderHealthVisibility(value, forced) {
+  const el = $("health-visibility");
+  if (el !== forced && editing(el)) return;
+  fillSelect(
+    el,
+    HEALTH_VISIBILITIES.map((id) => ({ id, label: t(`settings.health.${id}`) })),
+    value,
+  );
 }
 
 /** 被收敛后的实际值，用人话写出来（提示里要说的就是这个） */
@@ -927,6 +942,9 @@ $("budget").addEventListener("change", () => {
 $("cap").addEventListener("change", () => patchSettings({ daily_exp_cap: Number($("cap").value) }, $("cap")));
 $("zombie").addEventListener("change", () =>
   patchSettings({ zombie_timeout_min: Number($("zombie").value) }, $("zombie")),
+);
+$("health-visibility").addEventListener("change", () =>
+  patchSettings({ health_visibility: $("health-visibility").value }, $("health-visibility")),
 );
 $("warn").addEventListener("change", () => {
   const raw = $("warn").value;

@@ -16,8 +16,11 @@
       <div id="expfill"></div>
       <span id="exptext">Lv.1</span>
     </div>
-    <!-- 名字徽章 -->
-    <div id="nameplate"></div>
+    <!-- 名字徽章 + 今天的 Session Health pip 条（R12；只在可见性为 everywhere 时出现，见 app.js 的 renderNameplate） -->
+    <div id="nameplate">
+      <span id="pet-name"></span>
+      <span id="pips" class="pips" role="img" hidden></span>
+    </div>
     <!-- 连接状态点 -->
     <div id="conn" class="conn-unknown" data-i18n-title="ui.conn.title"></div>
     <!-- 静音徽章（issue #7：静音必须是看得见、点得掉的状态） -->

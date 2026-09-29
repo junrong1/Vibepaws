@@ -10,6 +10,7 @@
 import type Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_ZOMBIE_TIMEOUT_MIN } from "./reclaim.ts";
+import type { HealthVisibility } from "./events.ts";
 
 export { DEFAULT_ZOMBIE_TIMEOUT_MIN };
 
@@ -83,6 +84,7 @@ const KEY_BUDGET = "budget_tokens";
 const KEY_DAILY_CAP = "daily_exp_cap";
 const KEY_WARN_PCTS = "context_warn_pcts";
 const KEY_ZOMBIE_TIMEOUT = "zombie_timeout_min";
+const KEY_HEALTH_VISIBILITY = "health_visibility";
 
 /** 默认 token 预算：0 = 关掉里程碑提醒（没有分母就没有百分比可报） */
 export const DEFAULT_BUDGET_TOKENS = 0;
@@ -90,6 +92,14 @@ export const DEFAULT_BUDGET_TOKENS = 0;
 export const DEFAULT_DAILY_EXP_CAP = 200;
 /** context 警告阈值（README 6.3）。空数组 = 关掉 context 警告。 */
 export const DEFAULT_CONTEXT_WARN_PCTS: readonly number[] = [70, 85, 95];
+
+/**
+ * Session Health 分数显示在哪（R30）。三档的顺序即设置界面下拉的顺序。
+ * 默认 flyout：分数是一个新东西，先放在「点开才看得到」的地方 —— 宠物脚下常驻一个分数
+ * 是用户自己选的，不是装完就被评分。
+ */
+export const HEALTH_VISIBILITIES: readonly HealthVisibility[] = ["off", "flyout", "everywhere"];
+export const DEFAULT_HEALTH_VISIBILITY: HealthVisibility = "flyout";
 
 /**
  * 上限存在的唯一理由：手滑输进去的 1e12 不该变成一个永久生效的荒谬值。
@@ -118,6 +128,8 @@ export interface VibepawsSettings {
   context_warn_pcts: number[];
   /** 静默多久算僵尸 session（分钟，G10）。进程探活确认死亡时不等这个阈值 */
   zombie_timeout_min: number;
+  /** Session Health 分数显示在哪（R30） */
+  health_visibility: HealthVisibility;
 }
 
 /**
@@ -150,6 +162,16 @@ export function normalizeDailyExpCap(raw: unknown): Normalized<number> {
 /** 僵尸回收的静默阈值（分钟，G10）。不允许 0 —— 那不是「关闭」，那是「立刻全杀」 */
 export function normalizeZombieTimeoutMin(raw: unknown): Normalized<number> {
   return normInt(raw, SETTINGS_LIMITS.zombie_timeout_min_min, SETTINGS_LIMITS.zombie_timeout_min_max);
+}
+
+/**
+ * 分数可见性：只认那三个字符串。认不出的值判非法（整份 patch 拒），而不是悄悄回默认 ——
+ * 「我选了关掉、它却还在」这种静默替换比一个报错更难解释。
+ */
+export function normalizeHealthVisibility(raw: unknown): Normalized<HealthVisibility> {
+  const v = typeof raw === "string" ? raw.trim() : raw;
+  if (typeof v !== "string" || !(HEALTH_VISIBILITIES as readonly string[]).includes(v)) return INVALID;
+  return { ok: true, value: v as HealthVisibility, clamped: false };
 }
 
 /** session 级预算：0 / null = 跟随全局默认（列写 NULL，读取时自然回落） */
@@ -251,12 +273,19 @@ export function getZombieTimeoutMin(db: Database.Database): number {
   return n.ok ? n.value : DEFAULT_ZOMBIE_TIMEOUT_MIN;
 }
 
+/** 分数可见性。缺 key / 脏值一律回默认 flyout —— 读不出来时既不该把分数全关掉，也不该贴到宠物脚下 */
+export function getHealthVisibility(db: Database.Database): HealthVisibility {
+  const n = normalizeHealthVisibility(getSetting(db, KEY_HEALTH_VISIBILITY));
+  return n.ok ? n.value : DEFAULT_HEALTH_VISIBILITY;
+}
+
 export function readSettings(db: Database.Database): VibepawsSettings {
   return {
     budget_tokens: getDefaultBudgetTokens(db),
     daily_exp_cap: getDailyExpCap(db),
     context_warn_pcts: getContextWarnPcts(db),
     zombie_timeout_min: getZombieTimeoutMin(db),
+    health_visibility: getHealthVisibility(db),
   };
 }
 
@@ -317,6 +346,11 @@ export function parseSettingsPatch(raw: unknown): ParsedSettingsPatch {
       if (n.clamped) out.clamped.push("zombie_timeout_min");
     }
   }
+  if ("health_visibility" in body) {
+    const n = normalizeHealthVisibility(body.health_visibility);
+    if (!n.ok) out.invalid.push("health_visibility");
+    else out.settings.health_visibility = n.value;
+  }
   if ("pet_name" in body) {
     const n = normalizeText(body.pet_name, SETTINGS_LIMITS.pet_name_max);
     if (!n.ok) out.invalid.push("pet_name");
@@ -343,6 +377,10 @@ export function applySettingsPatch(db: Database.Database, patch: Partial<Vibepaw
   if (patch.zombie_timeout_min !== undefined && patch.zombie_timeout_min !== before.zombie_timeout_min) {
     setSetting(db, KEY_ZOMBIE_TIMEOUT, String(patch.zombie_timeout_min));
     changed.push("zombie_timeout_min");
+  }
+  if (patch.health_visibility !== undefined && patch.health_visibility !== before.health_visibility) {
+    setSetting(db, KEY_HEALTH_VISIBILITY, patch.health_visibility);
+    changed.push("health_visibility");
   }
   if (patch.context_warn_pcts !== undefined) {
     const next = patch.context_warn_pcts;
