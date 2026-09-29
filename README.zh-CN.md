@@ -433,12 +433,17 @@ session_exp = capped_token_exp
 
 在你的机器内部，有两道彼此独立的闸：
 
-1. **adapter 采集侧** —— 按白名单提取字段。`tool_input`、prompt 文本、`transcript_path` 在发出去之前就被丢掉。
+1. **adapter 采集侧** —— 按白名单提取字段。`tool_input`（编辑类工具目标文件的**文件名**除外，见下）、prompt 文本、`transcript_path` 在发出去之前就被丢掉。
 2. **Core 落库前** —— 按 schema 再丢一次未知字段。原始 hook JSON 永不写入数据库。
 
 具体意味着：气泡绝不显示原始 prompt、源代码、secret path 或文件内容。`safe_summary` 用的是固定措辞（`"需要工具权限"`），不是 agent 的输出。这一条由测试保证 —— 见 `src/core/privacy.test.ts`。
 
 白名单里有一个字段值得单独点名，因为它是新加的：agent 的**进程号**。它是一个本机整数，只用来回答「那个进程还活着吗」（见 [agent 没打招呼就没了](#agent-没打招呼就没了)），永远不出 `127.0.0.1`，也没法还原成你敲过的任何东西。
+
+还有两项是出于同样的理由刻意加宽的 —— 每一项只回答一个问题，不携带别的东西：
+
+- **编辑类工具（`Edit`、`Write`、`MultiEdit`、`NotebookEdit`、Codex 的 `apply_patch`）要改的那个文件的文件名** —— 只有文件名，从不带目录，用来发现「同一个文件 30 秒内又改了一次」。任何到达 Core 的值在落库前都会再被削成文件名，一个写错了的 adapter 也夹带不进路径。
+- **agent 的权限模式**（比如 `acceptEdits`、`bypassPermissions`）—— 一个单词，让 Vibepaws 能说出「这个模式下根本不会弹权限气泡」。
 
 想全部删掉，用**设置 → 重置与卸载**（见[重置、删除、卸载](#重置删除卸载)）—— 它在库里就地清空并压缩文件，而在 Core 还开着的时候删目录做不到这一点。没有应用时，`npm run adapter:uninstall -- --purge-data` 在命令行里做同一件事。一切都在 `.vibepaws/`：数据库、你的宠物、它的 EXP 历史和 API token。
 

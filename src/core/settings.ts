@@ -43,6 +43,39 @@ export function randomToken(): string {
   return randomBytes(24).toString("hex");
 }
 
+/* ================= 静音 ================= */
+
+/**
+ * 静音的键名。值是截止时刻（毫秒时间戳字符串）。通知引擎写它、判它；registry 在一段
+ * 「等你」开始时读它，给等待账本记下「这段等待有多久被静音了」（needs_input_waits.muted_ms）
+ * —— 所以放在这里而不是 notifications.ts：registry 不能 import 通知引擎（后者 import 前者）。
+ */
+export const MUTE_GLOBAL_KEY = "mute.global";
+/**
+ * 用户当初选的时长（分钟）。只存截止时刻是不够的：界面要把「哪个按钮是开着的」
+ * 标出来，而从剩余时间反推会在 2 小时静音的最后半小时把 30 分钟那个按钮点亮。
+ */
+export const MUTE_GLOBAL_MINUTES_KEY = "mute.global.minutes";
+export const MUTE_PROJECT_PREFIX = "mute.project.";
+export const MUTE_SESSION_PREFIX = "mute.session.";
+
+/**
+ * 此刻对这个 session 的 needs-you 气泡（permission / decision）生效的静音截止时刻，
+ * 取全局 / 项目 / session 三者里最晚的那个；null = 没静音。
+ * 与通知引擎的 isMuted 同一套判据（permission / decision 三种静音都认）。
+ * 解析不出数字的值算已过期：一个坏值不该让账本以为整段都被静音了。
+ */
+export function activeMuteUntil(db: Database.Database, projectId: string | null, sessionId: string, now = Date.now()): number | null {
+  const keys = [MUTE_GLOBAL_KEY, MUTE_SESSION_PREFIX + sessionId];
+  if (projectId) keys.push(MUTE_PROJECT_PREFIX + projectId);
+  let latest: number | null = null;
+  for (const key of keys) {
+    const t = Number(getSetting(db, key));
+    if (Number.isFinite(t) && t > now && (latest === null || t > latest)) latest = t;
+  }
+  return latest;
+}
+
 /* ================= 用户可调项 ================= */
 
 /** 键名沿用引擎早就在读的那几个（老库无需迁移） */

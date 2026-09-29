@@ -12,6 +12,7 @@ import { join, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readApiToken } from "../core/token.ts";
 import { adapterStatusEvent } from "./hooks.ts";
+import { fileBasename, isEditTool, isPermissionMode } from "../core/events.ts";
 import type { CoreEvent, AgentId } from "../core/events.ts";
 
 /** 仓库根（由本文件位置反推），离线兜底缓冲固定写回 Vibepaws 仓库，任意 cwd 下都能被 bridge 找到。 */
@@ -70,6 +71,41 @@ function refineByTool(
 }
 
 /* ---------------- 归一化（可测试的核心） ---------------- */
+
+/** Codex apply_patch 的补丁头：`*** Update File: <path>`（Add / Delete 同形）。只认行首 */
+const PATCH_HEADER = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/m;
+
+/**
+ * 编辑类工具的目标文件 → **只剩 basename**（重复编辑检测 R5 的输入，隐私第一道闸）。
+ *
+ * 只从 tool_input 里认几个已知的「路径」字段，取到就立刻削成文件名，其余内容一概不看：
+ *   · Claude Code：Edit / Write / MultiEdit 的 `file_path`，NotebookEdit 的 `notebook_path`
+ *   · Codex：apply_patch 的补丁文本（字符串本身，或 `command` / `input` / `patch` 字段），
+ *     只取补丁头里**第一个**文件 —— 补丁正文是代码，一个字符都不往外带
+ * 目录永远不出这个函数；ingress 会再削一遍（第二道闸），但这里不能指望它。
+ */
+export function editTarget(toolInput: unknown): string | undefined {
+  if (typeof toolInput === "string") return patchTarget(toolInput);
+  if (toolInput === null || typeof toolInput !== "object") return undefined;
+  const o = toolInput as Record<string, unknown>;
+  for (const k of ["file_path", "notebook_path", "path", "filePath"]) {
+    const f = fileBasename(o[k]);
+    if (f) return f;
+  }
+  for (const k of ["command", "input", "patch"]) {
+    const v = o[k];
+    // Codex 的 shell 形态把 apply_patch 放在 argv 数组里
+    const text = typeof v === "string" ? v : Array.isArray(v) ? v.filter((x) => typeof x === "string").join("\n") : "";
+    const f = patchTarget(text);
+    if (f) return f;
+  }
+  return undefined;
+}
+
+function patchTarget(text: string): string | undefined {
+  const m = PATCH_HEADER.exec(text);
+  return m ? fileBasename(m[1]) : undefined;
+}
 
 /**
  * agent 进程的 pid（僵尸回收 G10 的输入）。
@@ -142,6 +178,15 @@ export function normalizeHook(
     payload.title = basename(cwd) || undefined;
   }
   if (toolName) payload.tool_name = toolName;
+  // 目标文件只在 PreToolUse（这一次「要改」）上报：PostToolUse 的 MultiEdit / apply_patch
+  // 会被 refineByTool 落回 agent_working，两头都报就等于每改一次都算一次「重复改」。
+  if (hookEvent === "PreToolUse" && eventType === "agent_working" && isEditTool(toolName)) {
+    const file = editTarget(raw.tool_input);
+    if (file) payload.file = file;
+  }
+  // 权限模式（R6 / G13）：bypassPermissions / acceptEdits 下权限事件根本不会来。
+  // 只报一个模式名的形状，别的值一律当没有。
+  if (isPermissionMode(raw.permission_mode)) payload.permission_mode = raw.permission_mode;
   if (eventType === "decision_required" || eventType === "permission_required") {
     payload.kind = isAskUser ? "question" : (raw.matcher ?? hookEvent);
     if (raw.turn_id) payload.turn_id = String(raw.turn_id);

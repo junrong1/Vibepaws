@@ -59,7 +59,14 @@ export interface EventPayload {
   subagent_kind?: string;      // subagent_started
   capabilities?: string[];     // adapter_status
   adapter_version?: string;    // adapter_status
-  file?: string;               // agent_working: 目标文件（仅文件名 basename，防路径泄漏）
+  file?: string;               // agent_working: 目标文件（仅文件名 basename，防路径泄漏；ingress 再削一遍，见 fileBasename）
+  /**
+   * agent 当前的权限模式（Claude Code 的 hook 输入自带：default / acceptEdits / plan /
+   * bypassPermissions …）。`bypassPermissions` / `acceptEdits` 下权限事件根本不会触发，
+   * 界面要能说出「这个模式下等你的气泡不会出现」，而不是让用户以为宠物坏了（G13）。
+   * 隐私上只允许一个模式名（isPermissionMode），不许借道捎带任何别的东西。
+   */
+  permission_mode?: string;
   /**
    * agent 进程的 pid（僵尸回收 G10）。Core 用它探活：进程没了 = session 死了，
    * 不必干等 15 分钟静默超时。隐私上这是一个本机整数，不携带任何用户内容 ——
@@ -75,6 +82,39 @@ export interface EventPayload {
    * 隐私上与 `pid` 同级：一个本机数字，不携带任何用户内容。
    */
   hook_ms?: number;
+}
+
+/**
+ * 路径 → 只剩文件名（隐私：目录绝不出 adapter，也绝不进库）。
+ * POSIX 与 Windows 分隔符都认；削不出一个像样的文件名（空、`.`、`..`、只有分隔符、
+ * 超长）返回 undefined —— 调用方把它当「没有 file」，而不是报一个半截路径上去。
+ * adapter（第一道闸）与 ingress（第二道闸）用的是同一份实现；dsh_plugin 必须零依赖，
+ * 自带一份等价实现，两处改动必须一起走。
+ */
+export function fileBasename(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const parts = raw.split(/[\\/]+/).filter((p) => p.length > 0);
+  const last = parts[parts.length - 1]?.trim();
+  if (!last || last === "." || last === ".." || last.length > 255) return undefined;
+  // Windows 盘符（`C:`）不是文件名
+  if (parts.length === 1 && /^[A-Za-z]:$/.test(last)) return undefined;
+  return last;
+}
+
+/**
+ * 「改文件」形状的工具（重复编辑检测 R5 的输入）。只看名字，大小写与 `_`/`-` 不敏感：
+ * Claude Code 的 Edit / Write / MultiEdit / NotebookEdit，Codex 的 apply_patch，
+ * pi / dsh 的小写变体。此前 registry 只认 `Edit`，于是 Write、MultiEdit 和 Codex 的
+ * 每一个补丁都不算数。
+ */
+const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit", "applypatch", "editfile", "writefile", "createfile"]);
+export function isEditTool(name: unknown): boolean {
+  return typeof name === "string" && EDIT_TOOLS.has(name.toLowerCase().replace(/[_-]/g, ""));
+}
+
+/** 权限模式名的形状：一个 ASCII 单词。不在这个形状里的值一律不报 / 不收 */
+export function isPermissionMode(raw: unknown): raw is string {
+  return typeof raw === "string" && /^[A-Za-z]{1,64}$/.test(raw);
 }
 
 /** 标准化事件信封（§3.1） */
@@ -192,6 +232,14 @@ export interface SessionView {
   subagent_count: number;
   /** 计数从 0 变成 1 的那一刻（ISO），null = 当前没有 subagent */
   subagent_since: string | null;
+  /** 本段（segment）见过的最高 context 百分比。compaction 不会把它拉低，新一段从 0 开始 */
+  context_peak: number;
+  /** 本段里「同一个文件 30s 内又改了一次」的次数（所有编辑类工具）。不喂 EXP，见 registry */
+  repeat_edit_count: number;
+  /** 第几段：同一行 session 被 clear / resume / 收工后再开，都是新的一段（从 1 数） */
+  segment: number;
+  /** agent 最近一次报上来的权限模式；null = 没报过（非 Claude Code，或老 hook） */
+  permission_mode: string | null;
   /** 这次要做什么（设置窗口录入）。有 goal → topic_multiplier 1.1，也是漂移判定的基准 */
   goal: string | null;
   /** 本 session 的 token 预算；null = 跟随设置里的全局默认 */
@@ -236,6 +284,20 @@ export const NOTIFICATION_RESOLUTIONS: NotificationResolution[] = [
   "dismissed",
   "muted",
 ];
+
+/**
+ * 一段「等你」是怎么结束的（needs_input_waits.resolution）—— 每个清掉
+ * `sessions.needs_input_since` 的地方各记一种，Response 因子据此决定一条样本算不算数：
+ *   inferred   —— agent 又动了（agent_working）：多半是用户在终端里答了
+ *   turn_ended —— agent 说「这一轮结束了」（非阻塞 decision）：权限被拒 / 问题被跳过之后常见
+ *   finished   —— session 收工（session_finished）
+ *   restarted  —— session 重新开始（session_started：resume / clear / compact / 再次 startup）
+ *   timeout    —— 被僵尸回收收掉（core/reclaim.ts）：人走开了的那一种，最长的等待。
+ *                 静默丢掉它们会让 Response 把「没人答」报成「答得很快」
+ */
+export type WaitResolution = "inferred" | "turn_ended" | "finished" | "restarted" | "timeout";
+
+export const WAIT_RESOLUTIONS: WaitResolution[] = ["inferred", "turn_ended", "finished", "restarted", "timeout"];
 
 /**
  * SSE `notification_resolved` 帧：一条气泡已经结束了，界面按 id 撤掉它。

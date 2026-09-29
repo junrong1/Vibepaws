@@ -244,3 +244,21 @@ test("transpileDshPlugin：ESM .ts → 可 require() 的 CJS（dsh 侧绕开 req
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("tool/call 编辑类工具 → 只带目标文件的 basename，其余 arguments 不进 payload", () => {
+  const ev = one(
+    map("tool/call", {
+      callId: "c1",
+      name: "edit_file",
+      arguments: JSON.stringify({ path: "/Users/x/secret-project/TOP_SECRET/a.ts", old: "password=sup3r", new: "x" }),
+    }),
+  );
+  assert.deepEqual(ev.payload, { tool_name: "edit_file", file: "a.ts" });
+  assert.ok(!JSON.stringify(ev).includes("TOP_SECRET"));
+  assert.ok(!JSON.stringify(ev).includes("sup3r"));
+});
+
+test("tool/call 非编辑工具 / 坏 arguments → 不带 file", () => {
+  assert.deepEqual(one(map("tool/call", { name: "Bash", arguments: '{"path":"/etc/passwd"}' })).payload, { tool_name: "Bash" });
+  assert.deepEqual(one(map("tool/call", { name: "write", arguments: "{not json" })).payload, { tool_name: "write" });
+});

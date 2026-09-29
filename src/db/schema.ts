@@ -1,11 +1,11 @@
 /**
  * Vibepaws SQLite schema — 对应 docs/mvp_architecture.md §4
- * 9 张表：pet_types / pets / agents / sessions / events / notifications /
- *         exp_logs / memories / settings
+ * 10 张表：pet_types / pets / agents / sessions / events / notifications /
+ *          needs_input_waits / exp_logs / memories / settings
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -83,6 +83,28 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
   finished_at   TEXT,
   outcome       TEXT,
+  -- ---- 分段（segment）：打分的单位是「一段」，不是这一行 ----
+  -- clear / resume / 收工之后再开，都复用同一行 session；不分段的话，第二段会继承第一段的
+  -- correction 与峰值，一段还在跑的 session 又带着上一段的 finished_at / outcome ——
+  -- 「还没结算」就无从判断。新一段开始时（registry.startSegment）：segment+1、
+  -- segment_started_at=那一刻，下面三个「本段」测量列清零，finished_at / outcome 置空。
+  -- 上一段的数字不另存：它在 session_finished 那一刻仍原样挂在这一行上（finish 不碰它们），
+  -- 由那条事件的消费方（日志 U12）当场取走；下一段开始之前没人会改它们。
+  segment       INTEGER NOT NULL DEFAULT 1,
+  segment_started_at TEXT,
+  -- 本段见过的最高 context 百分比（单调 MAX）。不带百分比的 context_update（Claude Code 的
+  -- PreCompact / PostCompact）既不拉低它、也不把它清零 —— 撞到 96% 才压缩的一段依然读作吃紧。
+  context_peak  REAL NOT NULL DEFAULT 0,
+  -- 本段第一次收到**带百分比**的 context_update 的时刻（NULL = 本段从没报过 context）。
+  -- context_peak=0 说不清「很健康」还是「根本不知道」，Context 因子据此决定是省略还是打分（KTD3）。
+  context_reported_at TEXT,
+  -- 本段里「同一个文件 30s 内又改了一次」的次数，覆盖所有编辑类工具（events.ts 的 isEditTool）。
+  -- 与 correction_count 分开：后者喂 topicMultiplier，那条 >=5 的线是对着 Edit-only 计数定的，
+  -- 合并之前要先拿真实 session 重新推一遍阈值。这一列只给 Session Health 的 Focus 因子读。
+  repeat_edit_count INTEGER NOT NULL DEFAULT 0,
+  -- agent 最近报上来的权限模式（NULL = 没报过）。bypassPermissions / acceptEdits 下
+  -- 权限事件根本不会来，Response 因子没有样本的原因要能说出来（G13）
+  permission_mode TEXT,
   UNIQUE (agent, agent_session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
@@ -121,6 +143,31 @@ CREATE TABLE IF NOT EXISTS notifications (
   resolved_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, shown_at);
+
+-- 每一段「等你」一行（R4 / KTD2）。sessions.needs_input_since 只是一个「现在在不在等」的标记，
+-- 清掉的时候不记是什么时候清的 —— 等了多久只能靠重放 events，而 events 没有保留策略、
+-- 又会被 reset 清空。这张表是 Response 因子唯一的耐久来源。
+--   started_at   进入 needs-you 的那条事件的时间戳（adapter 的时钟）
+--   received_at  Core 处理那条事件的时刻。和 started_at 差得远 = 离线缓冲补发的回放，
+--                那一段的时长不是用户的真实等待
+--   cleared_at   清掉的那一刻（NULL = 还在等）。清的地方有五处，resolution 记是哪一处
+--   muted_ms     这段等待里有多久处于静音（气泡根本没出现）。进入时按当时生效的静音截止时刻
+--                预填「静音最多覆盖到哪」，关闭时夹到实际时长 —— 所以只有已关闭的行是准的
+--   slept_ms     跨过的机器休眠时长。shell 里还没有 powerMonitor，永远是 0（见计划的 Risks）
+CREATE TABLE IF NOT EXISTS needs_input_waits (
+  id            INTEGER PRIMARY KEY,
+  agent         TEXT NOT NULL,
+  session_id    TEXT NOT NULL,             -- sessions.agent_session_id（与 notifications 同口径）
+  segment       INTEGER NOT NULL DEFAULT 1,
+  kind          TEXT,                      -- permission | decision
+  started_at    TEXT NOT NULL,
+  received_at   TEXT NOT NULL,
+  cleared_at    TEXT,
+  resolution    TEXT CHECK (resolution IN ('inferred','turn_ended','finished','restarted','timeout')),
+  muted_ms      INTEGER NOT NULL DEFAULT 0,
+  slept_ms      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_waits_session ON needs_input_waits(agent, session_id, cleared_at);
 
 CREATE TABLE IF NOT EXISTS exp_logs (
   id            INTEGER PRIMARY KEY,
@@ -166,6 +213,30 @@ const ADDED_COLUMNS: Array<{
   { table: "sessions", column: "agent_pid_confirmed", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "subagent_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "subagent_since", ddl: "TEXT" },
+  { table: "sessions", column: "segment", ddl: "INTEGER NOT NULL DEFAULT 1" },
+  {
+    table: "sessions",
+    column: "segment_started_at",
+    ddl: "TEXT",
+    // 老行一律当作「还在第一段」：第一段从 session 开始的那一刻算起
+    backfill: "UPDATE sessions SET segment_started_at = started_at WHERE segment_started_at IS NULL",
+  },
+  {
+    table: "sessions",
+    column: "context_peak",
+    ddl: "REAL NOT NULL DEFAULT 0",
+    // 老库只记得最后一个值 —— 它是峰值的下界，总比 0 更接近真相
+    backfill: "UPDATE sessions SET context_peak = context_pct WHERE context_pct > context_peak",
+  },
+  {
+    table: "sessions",
+    column: "context_reported_at",
+    ddl: "TEXT",
+    // context_pct > 0 只可能来自一条带百分比的 context_update；等于 0 的分不清，留 NULL（不知道）
+    backfill: "UPDATE sessions SET context_reported_at = last_event_at WHERE context_reported_at IS NULL AND context_pct > 0",
+  },
+  { table: "sessions", column: "repeat_edit_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "permission_mode", ddl: "TEXT" },
   {
     table: "notifications",
     column: "resolution",

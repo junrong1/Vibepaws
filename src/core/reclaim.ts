@@ -35,6 +35,7 @@
  */
 import type Database from "better-sqlite3";
 import type { SessionOutcome, NotificationResolvedPush } from "./events.ts";
+import { closeWaits } from "./waits.ts";
 
 /** sweep 周期：G10 的建议值。宠物被钉住的最坏情况 = 这个周期 + 判定阈值 */
 export const SWEEP_INTERVAL_MS = 60_000;
@@ -181,7 +182,8 @@ function classify(
  * 落库。三件事必须一起做，少任何一件「回收」都只完成了一半：
  *   · `is_active=0` + outcome —— 宠物的聚合状态从此不再算它（G10 的正题）
  *   · 清掉 `needs_input_since` —— 不清的话，这个 session 万一被 `--resume` 拉回来，
- *     会带着三小时前的「等你」标记复活，宠物立刻又红一次
+ *     会带着三小时前的「等你」标记复活，宠物立刻又红一次。账本里那一段等待同时关掉，
+ *     记成 timeout：这是「人走开了」的那一类，Response 必须看得见它（core/waits.ts）
  *   · 把它还挂着的气泡标成 dismissed + resolution=timeout —— 一个已经不存在的会话
  *     不该继续在屏幕上求人回答。这正是「orphan cleanup」里 orphan 的部分。
  *     orphaned 也记成 timeout：resolution 说的是「气泡怎么没的」（没人答，会话没了），
@@ -198,6 +200,7 @@ function reclaim(
   now: number,
 ): NotificationResolvedPush[] {
   const at = new Date(now).toISOString();
+  closeWaits(db, agent, sessionId, at, "timeout");
   db.prepare(
     `UPDATE sessions
         SET is_active = 0, outcome = ?, finished_at = ?,

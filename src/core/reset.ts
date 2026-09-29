@@ -21,7 +21,7 @@ export type ResetScope = "pet" | "data";
 /** 每个 scope 会清掉的表，按**子表在前**排列（sessions 被 exp_logs / memories 引用） */
 const TABLES: Record<ResetScope, string[]> = {
   pet: ["exp_logs", "memories", "pets"],
-  data: ["exp_logs", "memories", "notifications", "events", "sessions", "agents", "pets"],
+  data: ["exp_logs", "memories", "notifications", "needs_input_waits", "events", "sessions", "agents", "pets"],
 };
 
 /** 数据足迹：按钮旁边要能说出「删掉的是多少东西」，否则那两个按钮谁也不敢点 */

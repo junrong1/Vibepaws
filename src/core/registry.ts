@@ -5,9 +5,11 @@
  * （finished/tired/level-up 由宠物引擎设置）。
  */
 import type Database from "better-sqlite3";
-import { isReclaimed } from "./events.ts";
+import { isReclaimed, isEditTool, isPermissionMode } from "./events.ts";
 import { notePid } from "./reclaim.ts";
-import type { CoreEvent, PetState, SessionView, SessionState } from "./events.ts";
+import { activeMuteUntil } from "./settings.ts";
+import { openWait, closeWaits } from "./waits.ts";
+import type { CoreEvent, PetState, SessionView, SessionState, WaitResolution } from "./events.ts";
 
 export type RegistryHandler = (ev: CoreEvent) => void;
 
@@ -17,6 +19,26 @@ const NEEDS_INPUT_MAX_MS = 30 * 60_000;
 const READY_MAX_MS = 15 * 60_000;
 /** session_finished 之后仍算 finished 态的时长 */
 const FINISHED_GLOW_MS = 60_000;
+/** 重复编辑的判定窗口：同一个文件在这么短的时间里又改一次 = 上一次没改对（架构 §3.3） */
+const REPEAT_EDIT_WINDOW_MS = 30_000;
+
+/**
+ * 老的 correction_count（喂 topicMultiplier）只对这些 agent 计数。
+ *
+ * 它的规则是「同文件 30s 内重复 `Edit`」，而 `payload.file` 在 U2 之前只有 pi 的 CLI
+ * （和 generic / simulator）会发 —— 所以 Claude Code、Codex、dsh 的 correction_count
+ * 从来没动过，topicMultiplier 对它们一直是 1.0。U2 让这几个 adapter 也报 file 了；
+ * 如果老计数跟着开始动，一个 Claude Code 用户会在行为完全没变的情况下被 ×0.8，
+ * 界面上没有任何解释。那条 >=5 的线要先拿真实 session 重新推一遍（U3），
+ * 在那之前新 adapter 的信号只进 repeat_edit_count，EXP 经济一分不动。
+ */
+const LEGACY_CORRECTION_AGENTS: ReadonlySet<string> = new Set(["pi", "generic"]);
+
+/** 事件时间戳 → 毫秒；解析不出来退回 Core 的时钟 */
+function eventMs(ev: CoreEvent): number {
+  const t = Date.parse(ev.timestamp);
+  return Number.isFinite(t) ? t : Date.now();
+}
 
 function recentlyFinished(finishedAt: string | null | undefined): boolean {
   if (!finishedAt) return false;
@@ -35,6 +57,8 @@ export class SessionRegistry {
   private onUpdate?: () => void;
   /** correction 启发式：同一文件 30s 内重复 Edit → correction_count+1（架构 §3.3） */
   private lastEdit = new Map<string, { file: string; at: number }>();
+  /** 加宽后的重复编辑（所有编辑类工具）→ repeat_edit_count+1。按**事件时间**判窗口，见 agent_working */
+  private lastAnyEdit = new Map<string, { file: string; at: number }>();
 
   constructor(opts: RegistryOptions) {
     this.db = opts.db;
@@ -48,6 +72,7 @@ export class SessionRegistry {
    */
   forgetAll(): void {
     this.lastEdit.clear();
+    this.lastAnyEdit.clear();
   }
 
   /** 核心入口：事件 → 状态机 → sessions 表 + 内存回调 */
@@ -58,12 +83,19 @@ export class SessionRegistry {
         const source = ev.payload.source ?? "startup";
         const existing = this.findSession(ev);
         if (existing) {
-          this.clearNeedsInput(ev);
+          this.clearNeedsInput(ev, "restarted");
           this.clearReady(ev);
           // 一个（重新）开始的 session 手上没有分身：resume / clear / compact 都发生在
           // 两轮之间，上一轮派出去的 subagent 不可能还活着。这是计数漂移的**确定性**
           // 排水口 —— 漏收的 stop 最迟在下一次 SessionStart 被冲掉，不必靠超时兜。
           this.clearSubagents(ev);
+          // 新的一段：clear / resume 显式开新段；上一段已经收工（finished_at 非空）之后的
+          // 任何 start 也是 —— Claude Code 的 hook 把每个 SessionStart 都报成 startup，
+          // 光看 source 的话 SessionEnd 之后的 --resume 永远开不了新段。
+          // compact 与一段还没收工时的 startup 不开：那是同一段在继续。
+          if (source === "clear" || source === "resume" || source === "continue" || existing.finished_at !== null) {
+            this.startSegment(ev);
+          }
         }
         if (source === "resume" || source === "continue") {
           if (existing) {
@@ -105,8 +137,9 @@ export class SessionRegistry {
       case "agent_working": {
         this.ensureSession(ev);
         // correction 启发式：同文件 30s 内重复 Edit → correction_count+1
+        // （老规则原样保留，只对 LEGACY_CORRECTION_AGENTS 生效 —— 理由见那个常量）
         const file = ev.payload.file;
-        if (file && ev.payload.tool_name === "Edit") {
+        if (file && ev.payload.tool_name === "Edit" && LEGACY_CORRECTION_AGENTS.has(ev.agent)) {
           const key = `${ev.agent}:${ev.session_id}`;
           const prev = this.lastEdit.get(key);
           const now = Date.now();
@@ -119,7 +152,21 @@ export class SessionRegistry {
           }
           this.lastEdit.set(key, { file, at: now });
         }
-        this.clearNeedsInput(ev);
+        // 加宽的重复编辑（R5）：所有编辑类工具、所有 agent，写进 repeat_edit_count（本段计数）。
+        // 窗口按**事件时间**算而不是 Core 收到的时间：离线缓冲补发时，一整天的编辑会在
+        // 同一秒到达，按收到时间算就全成了「30s 内的重复」。
+        if (file && isEditTool(ev.payload.tool_name)) {
+          const key = `${ev.agent}:${ev.session_id}`;
+          const prev = this.lastAnyEdit.get(key);
+          const at = eventMs(ev);
+          if (prev && prev.file === file && at - prev.at >= 0 && at - prev.at < REPEAT_EDIT_WINDOW_MS) {
+            db.prepare(
+              "UPDATE sessions SET repeat_edit_count = repeat_edit_count + 1 WHERE agent=? AND agent_session_id=?",
+            ).run(ev.agent, ev.session_id);
+          }
+          this.lastAnyEdit.set(key, { file, at });
+        }
+        this.clearNeedsInput(ev, "inferred");
         this.clearReady(ev);
         // B2 复活边：被回收（timeout/orphaned）的 session 其实还活着，agent_working = 它又动了
         db.prepare(
@@ -147,20 +194,17 @@ export class SessionRegistry {
         //   decision_required + 其余 kind         → 一轮结束待命（ready）
         const blocking = ev.event_type === "permission_required" || ev.payload.kind === "question";
         if (blocking) {
+          const kind = ev.event_type === "permission_required" ? "permission" : "decision";
+          this.openWait(ev, kind);
           // 阻塞（等你回答/批准）：顺手清掉 ready 标记，别让「待命」和「等你」两个时间戳并存成脏数据
           db.prepare(
             `UPDATE sessions SET last_event_at=?,
                needs_input_since=COALESCE(needs_input_since, ?), needs_input_kind=?, ready_since=NULL
              WHERE agent=? AND agent_session_id=?`,
-          ).run(
-            ev.timestamp,
-            ev.timestamp,
-            ev.event_type === "permission_required" ? "permission" : "decision",
-            ev.agent,
-            ev.session_id,
-          );
+          ).run(ev.timestamp, ev.timestamp, kind, ev.agent, ev.session_id);
         } else {
           // 非阻塞（一轮结束待命）：语义与 needs 互斥，清掉对方标记
+          closeWaits(db, ev.agent, ev.session_id, ev.timestamp, "turn_ended");
           db.prepare(
             `UPDATE sessions SET last_event_at=?, ready_since=COALESCE(ready_since, ?),
                needs_input_since=NULL, needs_input_kind=NULL
@@ -190,10 +234,23 @@ export class SessionRegistry {
 
       case "context_update": {
         this.ensureSession(ev);
-        const pct = typeof ev.payload.context_pct === "number" ? ev.payload.context_pct : 0;
-        db.prepare(
-          `UPDATE sessions SET context_pct=?, last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
-        ).run(pct, ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
+        const pct = ev.payload.context_pct;
+        if (typeof pct === "number" && Number.isFinite(pct)) {
+          // 峰值是本段的单调 MAX；context_reported_at 记「本段真的报过 context」（KTD3）
+          db.prepare(
+            `UPDATE sessions SET context_pct=?, context_peak=MAX(context_peak, ?),
+               context_reported_at=COALESCE(context_reported_at, ?), last_event_at=?, last_working_at=?
+             WHERE agent=? AND agent_session_id=?`,
+          ).run(pct, pct, ev.timestamp, ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
+        } else {
+          // 不带百分比的 context_update = 「压缩发生了」（Claude Code 的 PreCompact / PostCompact）。
+          // 以前这里把它当成 0% 写进 context_pct —— 于是每次压缩都把实时值清零，而 PreCompact
+          // 恰恰发生在 context 最满的那一刻。不知道就是不知道：两列都不动，等下一条带数字的
+          // context_update（statusline 每轮都会报）来刷新。峰值更不能被它拉低或清零。
+          db.prepare(
+            `UPDATE sessions SET last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
+          ).run(ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
+        }
         break;
       }
 
@@ -244,7 +301,9 @@ export class SessionRegistry {
 
       case "session_finished": {
         this.ensureSession(ev);
-        this.clearNeedsInput(ev);
+        // 本段的测量列（context_peak / repeat_edit_count / segment）这里**一个都不碰**：
+        // 这一刻它们就是这一段的终值，下一段开始之前没人会改 —— 日志（U12）在这条事件上取走
+        this.clearNeedsInput(ev, "finished");
         this.clearReady(ev);
         const reason = ev.payload.reason ?? "completion";
         const outcome = ev.payload.outcome ?? "success";
@@ -265,17 +324,73 @@ export class SessionRegistry {
     // 进程探活的输入（G10）。放在 switch 之后：这时 session 行必然已经存在，
     // 而 adapter_status 那种不建 session 的事件只会更新到零行（无害）。
     notePid(this.db, ev.agent, ev.session_id, ev.payload.pid);
+    this.notePermissionMode(ev);
     this.onUpdate?.();
   }
 
-  /** 收到任何「进展」事件都说明用户已经回答 / agent 已经继续 → 停止「等你」 */
-  private clearNeedsInput(ev: CoreEvent): void {
+  /**
+   * 收到任何「进展」事件都说明用户已经回答 / agent 已经继续 → 停止「等你」。
+   * 同时关掉账本里那一段等待，记下是哪一处关的（见 core/waits.ts 的清单）。
+   */
+  private clearNeedsInput(ev: CoreEvent, resolution: WaitResolution): void {
+    closeWaits(this.db, ev.agent, ev.session_id, ev.timestamp, resolution);
     this.db
       .prepare(
         `UPDATE sessions SET needs_input_since=NULL, needs_input_kind=NULL
          WHERE agent=? AND agent_session_id=? AND needs_input_since IS NOT NULL`,
       )
       .run(ev.agent, ev.session_id);
+  }
+
+  /** 进入 needs-you → 账本开一段（已经开着就不重复开，见 waits.openWait） */
+  private openWait(ev: CoreEvent, kind: string): void {
+    const row = this.db
+      .prepare("SELECT segment, project_id FROM sessions WHERE agent=? AND agent_session_id=?")
+      .get(ev.agent, ev.session_id) as { segment: number; project_id: string } | undefined;
+    openWait(this.db, {
+      agent: ev.agent,
+      sessionId: ev.session_id,
+      segment: row?.segment ?? 1,
+      kind,
+      startedAt: ev.timestamp,
+      receivedAt: new Date().toISOString(),
+      // 这段等待的气泡此刻会不会被静音吞掉（与通知引擎同一套判据）
+      mutedUntil: activeMuteUntil(this.db, row?.project_id ?? null, ev.session_id),
+    });
+  }
+
+  /**
+   * 开始新的一段（segment）。打分的单位是一段而不是一行 session：clear / resume 复用同一行，
+   * 不分段的话第二段会继承第一段的重复编辑与峰值，一段正在跑的 session 又顶着上一段的
+   * finished_at / outcome，「还没结算」就判断不出来。
+   *
+   * 本段测量列清零：context_peak=0 + context_reported_at=NULL（本段还没报过 context ——
+   * resume 回来的会话哪怕 context_pct 还挂着旧值，也要等本段第一条真实读数），
+   * repeat_edit_count=0（连同内存里的上一次编辑，否则跨段也能凑出一次「重复」）。
+   * correction_count **不动**：它喂 EXP，EXP 从来是按 session 算的。
+   */
+  private startSegment(ev: CoreEvent): void {
+    this.db
+      .prepare(
+        `UPDATE sessions SET segment=segment+1, segment_started_at=?,
+           context_peak=0, context_reported_at=NULL, repeat_edit_count=0,
+           finished_at=NULL, outcome=NULL
+         WHERE agent=? AND agent_session_id=?`,
+      )
+      .run(ev.timestamp, ev.agent, ev.session_id);
+    this.lastAnyEdit.delete(`${ev.agent}:${ev.session_id}`);
+  }
+
+  /** 权限模式（R6）：带了就记，只在变了的时候写 */
+  private notePermissionMode(ev: CoreEvent): void {
+    const mode = ev.payload.permission_mode;
+    if (!isPermissionMode(mode)) return;
+    this.db
+      .prepare(
+        `UPDATE sessions SET permission_mode=?
+         WHERE agent=? AND agent_session_id=? AND permission_mode IS NOT ?`,
+      )
+      .run(mode, ev.agent, ev.session_id, mode);
   }
 
   /** session 生命周期事件 → 手上的分身一律归零（计数漂移的排水口，见调用处） */
@@ -298,10 +413,10 @@ export class SessionRegistry {
       .run(ev.agent, ev.session_id);
   }
 
-  private findSession(ev: CoreEvent): { id: number } | undefined {
+  private findSession(ev: CoreEvent): { id: number; finished_at: string | null } | undefined {
     return this.db
-      .prepare("SELECT id FROM sessions WHERE agent=? AND agent_session_id=?")
-      .get(ev.agent, ev.session_id) as { id: number } | undefined;
+      .prepare("SELECT id, finished_at FROM sessions WHERE agent=? AND agent_session_id=?")
+      .get(ev.agent, ev.session_id) as { id: number; finished_at: string | null } | undefined;
   }
 
   private ensureSession(ev: CoreEvent): number {
@@ -320,8 +435,8 @@ export class SessionRegistry {
     const info = this.db
       .prepare(
         `INSERT INTO sessions(agent, agent_session_id, project_id, title, parent_id, branch,
-                              is_active, last_event_at, started_at)
-         VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+                              is_active, last_event_at, started_at, segment_started_at)
+         VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
       )
       .run(
         ev.agent,
@@ -332,6 +447,7 @@ export class SessionRegistry {
         source === "fork" ? "fork" : null,
         ev.timestamp,
         ev.timestamp,
+        ev.timestamp,
       );
     return Number(info.lastInsertRowid);
   }
@@ -340,7 +456,8 @@ export class SessionRegistry {
   private static readonly VIEW_COLUMNS = `agent, agent_session_id as session_id, project_id, title, is_active,
                 token_used, context_pct, correction_count, last_event_at, last_working_at, finished_at,
                 needs_input_since, ready_since, subagent_count, subagent_since,
-                parent_id, outcome, goal, budget_tokens`;
+                parent_id, outcome, goal, budget_tokens,
+                context_peak, repeat_edit_count, segment, permission_mode`;
 
   /** 全部 session 视图（按最后活动倒序） */
   listSessions(limit = 50): SessionView[] {
@@ -416,6 +533,10 @@ export class SessionRegistry {
       ready_since: (r.ready_since as string | null) ?? null,
       subagent_count: (r.subagent_count as number) ?? 0,
       subagent_since: (r.subagent_since as string | null) ?? null,
+      context_peak: (r.context_peak as number) ?? 0,
+      repeat_edit_count: (r.repeat_edit_count as number) ?? 0,
+      segment: (r.segment as number) ?? 1,
+      permission_mode: (r.permission_mode as string | null) ?? null,
       goal: (r.goal as string | null) ?? null,
       budget_tokens: (r.budget_tokens as number | null) ?? null,
       is_active: (r.is_active as number) === 1,

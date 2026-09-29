@@ -38,7 +38,8 @@
  *   session（cwd 准确），所以 agent/error 有意不监听（mapAgentError 保留为可复用映射）。
  *
  * 隐私：payload 只进白名单字段，safe_summary 固定措辞，绝不带 prompt / 代码 / 路径 /
- *      tool arguments / message content。token 只发数字，context 只发百分比。
+ *      tool arguments / message content。唯一从 arguments 里取的是编辑类工具的目标文件，
+ *      且只取 basename（editTargetOf）。token 只发数字，context 只发百分比。
  * 兜底：Core 离线时写 ~/.vibepaws/events/dsh_*.jsonl（用户级，插件自包含、不知道仓库路径），
  *      generic bridge 会连同仓库根 .vibepaws/events 一起补收。
  *
@@ -131,6 +132,47 @@ function str(v: unknown): string | undefined {
 }
 function obj(v: unknown): Record<string, unknown> | undefined {
   return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+/**
+ * 与 core/events.ts 的 fileBasename / isEditTool 等价（本文件必须零依赖，两处改动一起走）。
+ * 路径只剩文件名；削不出像样的文件名就当没有。
+ */
+function fileBasename(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const parts = raw.split(/[\\/]+/).filter((p) => p.length > 0);
+  const last = parts[parts.length - 1]?.trim();
+  if (!last || last === "." || last === ".." || last.length > 255) return undefined;
+  if (parts.length === 1 && /^[A-Za-z]:$/.test(last)) return undefined;
+  return last;
+}
+const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit", "applypatch", "editfile", "writefile", "createfile"]);
+function isEditTool(name: string | undefined): boolean {
+  return name !== undefined && EDIT_TOOLS.has(name.toLowerCase().replace(/[_-]/g, ""));
+}
+
+/**
+ * 编辑类 tool/call 的目标文件 → 只剩 basename（重复编辑检测 R5 的输入）。
+ * `arguments` 是 JSON 字符串（也兼容已解析的对象）：只认几个已知的路径字段，取到就削成
+ * 文件名，其余参数（代码、命令）一概不看、不往外带。
+ */
+export function editTargetOf(args: unknown): string | undefined {
+  let o: Record<string, unknown> | undefined;
+  if (typeof args === "string") {
+    try {
+      o = obj(JSON.parse(args));
+    } catch {
+      return undefined;
+    }
+  } else {
+    o = obj(args);
+  }
+  if (!o) return undefined;
+  for (const k of ["file_path", "path", "filePath", "file", "notebook_path"]) {
+    const f = fileBasename(o[k]);
+    if (f) return f;
+  }
+  return undefined;
 }
 
 function normalizeProject(cwd: string): string {
@@ -263,7 +305,12 @@ export function mapSessionEvent(input: MapSessionInput): CoreEvent[] {
       if (name === "ask_user_question") {
         return [mk("decision_required", { kind: "question" }, "Waiting for your answer", "high")];
       }
-      return [mk("agent_working", name ? { tool_name: name } : {}, `Working: ${name || "agent"}`)];
+      const payload: Record<string, unknown> = name ? { tool_name: name } : {};
+      if (isEditTool(name)) {
+        const file = editTargetOf(data?.arguments);
+        if (file) payload.file = file;
+      }
+      return [mk("agent_working", payload, `Working: ${name || "agent"}`)];
     }
     case "tool/result": {
       const err = obj(data?.error);

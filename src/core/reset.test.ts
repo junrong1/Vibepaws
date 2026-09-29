@@ -74,6 +74,11 @@ test("scope=pet：换一只新宠物，session / 事件 / 设置全都留着", (
   assert.equal(after.sessions.length, 1, "session 列表属于「现在在跑什么」，不该被换宠物波及");
   assert.equal(getSetting(server.db, "budget_tokens"), "200000", "预算是用户的设置，不是宠物的历史");
   assert.equal((server.db.prepare("SELECT COUNT(*) c FROM exp_logs").get() as { c: number }).c, 0);
+  assert.equal(
+    (server.db.prepare("SELECT COUNT(*) c FROM needs_input_waits").get() as { c: number }).c,
+    1,
+    "等待账本是 session 的历史，不是宠物的",
+  );
 });
 
 test("scope=data：回到首次启动的样子（连 session / 事件 / 设置一起）", () => {
@@ -86,6 +91,11 @@ test("scope=data：回到首次启动的样子（连 session / 事件 / 设置�
     { events: 0, sessions: 0, notifications: 0, exp_logs: 0, memories: 0, agents: 0, db_bytes: null },
   );
   assert.equal(getSetting(server.db, "budget_tokens"), null, "预算与阈值一起清掉 —— 这是「全部数据」");
+  assert.equal(
+    (server.db.prepare("SELECT COUNT(*) c FROM needs_input_waits").get() as { c: number }).c,
+    0,
+    "等待账本记着每一次在哪个 session 上等了多久 —— 「删除全部数据」不能把它留下",
+  );
   const snap = server.stateSnapshot();
   assert.equal(snap.sessions.length, 0);
   assert.deepEqual(snap.adapters, []);

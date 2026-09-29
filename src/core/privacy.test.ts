@@ -9,6 +9,7 @@ import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
 import { ingestEvent } from "./ingress.ts";
 import { normalizeHook } from "../adapters/hook_agent.ts";
+import { VibepawsServer } from "./server.ts";
 
 const SENSITIVE_MARKERS = ["TOP_SECRET", "password=sup3r", "hidden prompt", "BEGIN PRIVATE KEY"];
 
@@ -127,4 +128,195 @@ test("adapter 只在真的跑在 agent 子进程里时才报 pid（bridge 补发
   // bridge 走的是这条路：它的 ppid 与该 session 的 agent 毫无关系
   assert.equal(normalizeHook(hook, "claude_code")!.payload.pid, undefined);
   assert.equal(normalizeHook(hook, "claude_code", { pid: 4242 })!.payload.pid, 4242);
+});
+
+/* ---------------- U2：白名单刻意加宽的两项（file basename / permission_mode） ----------------
+ * 这几条先于实现写成：白名单是安全边界，测试是它唯一的执行者。
+ * file 一直在白名单里，但此前只有 pi 的 CLI 会发、且只在 adapter 那一侧 basename ——
+ * Core 这一侧什么都没拦。现在 Claude Code / Codex / dsh 也发了，第二道闸必须自己保证
+ * 「落库的只可能是文件名」，不能指望每个 adapter 都写对。 */
+
+function ingestPayload(eventId: string, payload: Record<string, unknown>): Record<string, unknown> {
+  const db = new Database(":memory:");
+  applySchema(db);
+  ingestEvent(
+    {
+      event_id: eventId,
+      seq: 1,
+      agent: "claude_code",
+      session_id: "s1",
+      project_id: "/p",
+      event_type: "agent_working",
+      severity: "low",
+      safe_summary: "Working",
+      timestamp: new Date().toISOString(),
+      payload,
+    },
+    { db, onEvent: () => {} },
+  );
+  const row = db.prepare("SELECT payload_json FROM events WHERE event_id=?").get(eventId) as { payload_json: string };
+  return JSON.parse(row.payload_json) as Record<string, unknown>;
+}
+
+test("第二道闸：file 只能是 basename —— 绝对路径 / Windows 路径 / 相对路径一律削成文件名", () => {
+  for (const [raw, want] of [
+    ["/Users/x/secret-project/TOP_SECRET/a.ts", "a.ts"],
+    ["C:\\Users\\x\\secret-project\\TOP_SECRET\\b.ts", "b.ts"],
+    ["src/TOP_SECRET/c.ts", "c.ts"],
+    ["d.ts", "d.ts"],
+  ] as const) {
+    const stored = ingestPayload(`f-${want}`, { tool_name: "Edit", file: raw });
+    assert.equal(stored.file, want, raw);
+    const blob = JSON.stringify(stored);
+    assert.ok(!blob.includes("TOP_SECRET"), `目录不应落库: ${raw}`);
+    assert.ok(!/[\\/]/.test(String(stored.file)), `file 里不应有路径分隔符: ${raw}`);
+  }
+});
+
+test("第二道闸：削不出文件名的 file（空 / . / .. / 只有分隔符）直接丢掉", () => {
+  for (const raw of ["", ".", "..", "/", "C:\\", "../.."]) {
+    const stored = ingestPayload(`fx-${raw}`, { tool_name: "Edit", file: raw });
+    assert.equal(stored.file, undefined, JSON.stringify(raw));
+    assert.equal(stored.tool_name, "Edit");
+  }
+});
+
+test("permission_mode 进得去；与它同级的未列名字段照旧被丢掉", () => {
+  const stored = ingestPayload("pm-1", {
+    permission_mode: "bypassPermissions",
+    permission_rules: ["Bash(rm -rf:*)"],
+    tool_input: { command: "TOP_SECRET" },
+  });
+  assert.deepEqual(stored, { permission_mode: "bypassPermissions" });
+});
+
+test("permission_mode 只能是一个模式名：夹带路径 / 空格 / 超长的值不许借道", () => {
+  for (const raw of ["/Users/x/TOP_SECRET", "default; TOP_SECRET", "x".repeat(65), ""]) {
+    const stored = ingestPayload(`pm-${raw.length}-${raw.slice(0, 3)}`, { permission_mode: raw });
+    assert.equal(stored.permission_mode, undefined, raw);
+  }
+});
+
+test("第一道闸：Claude Code 的编辑类 PreToolUse 只带出 basename，tool_input 其余内容不进事件", () => {
+  const ev = normalizeHook(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "s-f",
+      cwd: "/p",
+      tool_name: "Edit",
+      tool_input: {
+        file_path: "/Users/x/secret-project/TOP_SECRET/parser.ts",
+        old_string: "password=sup3r",
+        new_string: "BEGIN PRIVATE KEY",
+      },
+      permission_mode: "acceptEdits",
+    },
+    "claude_code",
+  )!;
+  assert.equal(ev.payload.file, "parser.ts");
+  assert.equal(ev.payload.permission_mode, "acceptEdits");
+  const blob = JSON.stringify(ev);
+  for (const m of [...SENSITIVE_MARKERS, "secret-project", "/Users/x"]) {
+    assert.ok(!blob.includes(m), `adapter 事件不应含: ${m}`);
+  }
+});
+
+test("第一道闸：NotebookEdit 取 notebook_path 的 basename", () => {
+  const ev = normalizeHook(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "s-nb",
+      cwd: "/p",
+      tool_name: "NotebookEdit",
+      tool_input: { notebook_path: "/Users/x/secret-project/TOP_SECRET/a.ipynb", new_source: "TOP_SECRET" },
+    },
+    "claude_code",
+  )!;
+  assert.equal(ev.payload.file, "a.ipynb");
+  assert.ok(!JSON.stringify(ev).includes("TOP_SECRET"));
+});
+
+test("第一道闸：Codex apply_patch 只取补丁头里第一个文件的 basename，补丁正文不进事件", () => {
+  const patch = [
+    "*** Begin Patch",
+    "*** Update File: /Users/x/secret-project/TOP_SECRET/lib/util.rs",
+    "@@",
+    "-let password=sup3r;",
+    "+let key = \"BEGIN PRIVATE KEY\";",
+    "*** End Patch",
+  ].join("\n");
+  const ev = normalizeHook(
+    { hook_event_name: "PreToolUse", session_id: "s-cx", cwd: "/p", tool_name: "apply_patch", tool_input: { command: patch } },
+    "codex",
+  )!;
+  assert.equal(ev.payload.file, "util.rs");
+  const blob = JSON.stringify(ev);
+  for (const m of [...SENSITIVE_MARKERS, "secret-project", "Begin Patch"]) {
+    assert.ok(!blob.includes(m), `adapter 事件不应含: ${m}`);
+  }
+});
+
+test("第一道闸：非编辑工具不带 file（Bash 的命令里就算有路径也不碰）；PostToolUse 也不带", () => {
+  const bash = normalizeHook(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "s-b",
+      cwd: "/p",
+      tool_name: "Bash",
+      tool_input: { command: "cat /Users/x/TOP_SECRET/a.ts", file_path: "/Users/x/TOP_SECRET/a.ts" },
+    },
+    "claude_code",
+  )!;
+  assert.equal(bash.payload.file, undefined);
+  // PostToolUse 的 MultiEdit 会被映射成 agent_working —— 两头都报 file 等于每次编辑都算一次「重复」
+  const post = normalizeHook(
+    {
+      hook_event_name: "PostToolUse",
+      session_id: "s-b",
+      cwd: "/p",
+      tool_name: "MultiEdit",
+      tool_input: { file_path: "/Users/x/a.ts" },
+    },
+    "claude_code",
+  )!;
+  assert.equal(post.payload.file, undefined);
+});
+
+test("第一道闸：permission_mode 不是模式名的样子就不报", () => {
+  const ev = normalizeHook(
+    { hook_event_name: "PreToolUse", session_id: "s-pm", cwd: "/p", tool_name: "Bash", permission_mode: "/Users/x/TOP_SECRET" },
+    "claude_code",
+  )!;
+  assert.equal(ev.payload.permission_mode, undefined);
+  assert.ok(!JSON.stringify(ev).includes("TOP_SECRET"));
+});
+
+test("端到端：真实 hook 输入 → Core，库里只有文件名，重复编辑照样数得出来", () => {
+  const db = new Database(":memory:");
+  applySchema(db);
+  seedPetTypes(db);
+  const server = new VibepawsServer({ db });
+  const hook = (h: Record<string, unknown>): void => {
+    const r = server.handleEvent(normalizeHook({ session_id: "e2e", cwd: "/Users/x/secret-project", ...h }, "claude_code")!);
+    assert.equal(r.ok, true);
+  };
+  hook({ hook_event_name: "SessionStart" });
+  for (let i = 0; i < 2; i++) {
+    hook({
+      hook_event_name: "PreToolUse",
+      tool_name: "Write",
+      permission_mode: "acceptEdits",
+      tool_input: { file_path: "/Users/x/secret-project/TOP_SECRET/a.ts", content: "password=sup3r" },
+    });
+  }
+  const payloads = (db.prepare("SELECT payload_json FROM events WHERE event_type='agent_working'").all() as Array<{
+    payload_json: string;
+  }>).map((r) => r.payload_json);
+  assert.equal(payloads.length, 2);
+  for (const p of payloads) {
+    assert.equal(JSON.parse(p).file, "a.ts");
+    for (const m of [...SENSITIVE_MARKERS, "TOP_SECRET"]) assert.ok(!p.includes(m), `不应落库: ${m}`);
+  }
+  const s = db.prepare("SELECT repeat_edit_count, correction_count, permission_mode FROM sessions WHERE agent_session_id='e2e'").get();
+  assert.deepEqual(s, { repeat_edit_count: 1, correction_count: 0, permission_mode: "acceptEdits" });
 });

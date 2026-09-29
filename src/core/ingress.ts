@@ -3,6 +3,7 @@
  * 职责：校验 token → 白名单过滤 payload → event_id 去重 → 写 events 表 → 回调分发。
  */
 import type Database from "better-sqlite3";
+import { fileBasename, isPermissionMode } from "./events.ts";
 import type { CoreEvent, EventPayload } from "./events.ts";
 
 /** payload 白名单：仅允许这些字段进入 Core（与 events.ts 的 EventPayload 对齐） */
@@ -27,6 +28,18 @@ const PAYLOAD_WHITELIST: Record<keyof EventPayload, true> = {
   file: true,
   pid: true,
   hook_ms: true,
+  permission_mode: true,
+};
+
+/**
+ * 白名单里**带形状约束**的字段：键对了还不够，值也必须长成那个样子。
+ * 返回 undefined = 丢掉这个字段。这里是第二道闸 —— adapter 那一侧已经削过一遍，
+ * 但一个写错了的 adapter（或手动发射器）不能靠自觉守住「目录不进库」。
+ */
+const SHAPED: Partial<Record<keyof EventPayload, (v: unknown) => unknown>> = {
+  // 只剩文件名：绝对路径 / Windows 路径 / 相对路径一律削掉目录
+  file: fileBasename,
+  permission_mode: (v) => (isPermissionMode(v) ? v : undefined),
 };
 
 const SEVERITIES = new Set(["low", "medium", "high"]);
@@ -40,6 +53,13 @@ export function sanitizePayload(input: unknown): EventPayload {
     if (!(k in PAYLOAD_WHITELIST)) continue; // 丢弃未知字段
     const key = k as keyof EventPayload;
     if (v === undefined || v === null) continue;
+    const shape = SHAPED[key];
+    if (shape) {
+      const shaped = shape(v);
+      // @ts-expect-error 形状函数只返回 string | undefined
+      if (shaped !== undefined) out[key] = shaped;
+      continue;
+    }
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
       // @ts-expect-error 类型收窄
       out[key] = v;

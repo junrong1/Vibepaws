@@ -90,10 +90,14 @@ function contextOverload(): CoreEvent[] {
   return out;
 }
 
-/** correction loop：反复同文件修改 → topic_multiplier 0.8 */
+/**
+ * correction loop：反复同文件修改 → topic_multiplier 0.8。
+ * 用 pi：老的 correction_count 只对 pi / generic 计数（其余 agent 的同一信号只进
+ * repeat_edit_count，见 registry 的 LEGACY_CORRECTION_AGENTS）。
+ */
 function correctionLoop(): CoreEvent[] {
   const out: CoreEvent[] = [];
-  const agent: CoreEvent["agent"] = "codex";
+  const agent: CoreEvent["agent"] = "pi";
   out.push(ev(agent, "sim-cor-1", "/Users/demo/parser", "session_started", "Session started", { source: "startup" }));
   for (let i = 0; i < 7; i++) {
     out.push(ev(agent, "sim-cor-1", "/Users/demo/parser", "agent_working", `Edit attempt ${i + 1}`, { tool_name: "Edit", file: "parser.ts" }, "low", 2 + i * 2));

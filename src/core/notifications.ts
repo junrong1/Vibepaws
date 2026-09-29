@@ -16,6 +16,10 @@ import {
   getContextWarnPcts,
   getDefaultBudgetTokens,
   DEFAULT_CONTEXT_WARN_PCTS,
+  MUTE_GLOBAL_KEY,
+  MUTE_GLOBAL_MINUTES_KEY,
+  MUTE_PROJECT_PREFIX,
+  MUTE_SESSION_PREFIX,
 } from "./settings.ts";
 import { t, DEFAULT_LOCALE } from "../i18n/messages.js";
 
@@ -63,14 +67,7 @@ function render(text: I18nText): string {
 }
 
 const DEDUP_MS = 60_000; // 同 session 同类型 60s 合并
-const MUTE_GLOBAL_KEY = "mute.global";
-/**
- * 用户当初选的时长（分钟）。只存截止时刻是不够的：界面要把「哪个按钮是开着的」
- * 标出来，而从剩余时间反推会在 2 小时静音的最后半小时把 30 分钟那个按钮点亮。
- */
-const MUTE_GLOBAL_MINUTES_KEY = "mute.global.minutes";
-const MUTE_PROJECT_PREFIX = "mute.project.";
-const MUTE_SESSION_PREFIX = "mute.session.";
+// 静音键名在 settings.ts（registry 的等待账本也要读，而它不能 import 这个模块）
 
 /**
  * context 阈值的**默认值**（README 6.3）。真正生效的那份由设置窗口决定，

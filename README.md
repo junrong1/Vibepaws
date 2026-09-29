@@ -437,12 +437,17 @@ Nothing. There is no cloud sync, no telemetry, and no network destination other 
 
 Inside your machine, there are two independent gates:
 
-1. **At the adapter** — fields are extracted by allowlist. `tool_input`, prompt text, and `transcript_path` are dropped before anything is sent.
+1. **At the adapter** — fields are extracted by allowlist. `tool_input` (except the target file's *name* for edit tools, below), prompt text, and `transcript_path` are dropped before anything is sent.
 2. **At Core, before persistence** — unknown fields are dropped again by schema. Raw hook JSON is never written to the database.
 
 What that means concretely: bubbles never show raw prompts, source code, secret paths, or file contents. `safe_summary` uses fixed wording (`"Tool permission needed"`), not agent output. This is enforced by tests — see `src/core/privacy.test.ts`.
 
 One field on the allowlist is worth naming because it's new: the agent's **process id**, a local integer used only to answer "is that process still alive?" (see [When an agent dies](#when-an-agent-dies-without-saying-so)). It never leaves `127.0.0.1`, and it can't be turned back into anything you typed.
+
+Two more were widened on purpose, for the same reason — each answers one question and carries nothing else:
+
+- **The file name an edit tool targets** (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, Codex's `apply_patch`) — the name only, never a directory, used to notice the same file being re-edited within 30 seconds. Core cuts anything that reaches it down to the file name again before storing, so a misbehaving adapter can't slip a path in either.
+- **The agent's permission mode** (for example `acceptEdits` or `bypassPermissions`) — a single word, so Vibepaws can tell that a mode which never asks for permission is why no permission bubble appears.
 
 To delete everything, use **Settings → Reset & uninstall** (see [Reset, delete, uninstall](#reset-delete-uninstall)) — it wipes the database in place and compacts the file, which deleting the directory under a running Core does not do. Without the app, `npm run adapter:uninstall -- --purge-data` does the same from the shell. Everything lives in `.vibepaws/`: the database, your pet, its EXP history, and the API token.
 

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema, SCHEMA_VERSION } from "./schema.ts";
-import { NOTIFICATION_RESOLUTIONS } from "../core/events.ts";
+import { NOTIFICATION_RESOLUTIONS, WAIT_RESOLUTIONS } from "../core/events.ts";
 
 const V1_SESSIONS = `
 CREATE TABLE sessions (
@@ -136,4 +136,66 @@ test("resolution 的 CHECK 与 events.ts 的 NOTIFICATION_RESOLUTIONS 是同一�
   );
   for (const r of [...NOTIFICATION_RESOLUTIONS, null]) insert.run(r);
   assert.throws(() => insert.run("expired"), /CHECK/);
+});
+
+test("老库 sessions 补上分段 / 峰值 / 重复编辑 / 权限模式：按老列回填，数据不丢", () => {
+  const db = new Database(":memory:");
+  db.exec(V1_SESSIONS);
+  db.prepare(
+    `INSERT INTO sessions(agent, agent_session_id, project_id, context_pct, started_at, last_event_at)
+     VALUES('claude_code','hot','/p', 88, '2026-09-01T10:00:00.000Z', '2026-09-01T11:00:00.000Z')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO sessions(agent, agent_session_id, project_id, context_pct, started_at)
+     VALUES('claude_code','cold','/p', 0, '2026-09-02T10:00:00.000Z')`,
+  ).run();
+  applySchema(db);
+  const rows = db
+    .prepare(
+      `SELECT agent_session_id AS id, segment, segment_started_at, context_peak, context_reported_at,
+              repeat_edit_count, permission_mode FROM sessions ORDER BY id`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const hot = rows.find((r) => r.id === "hot")!;
+  const cold = rows.find((r) => r.id === "cold")!;
+  assert.equal(hot.segment, 1);
+  assert.equal(hot.segment_started_at, "2026-09-01T10:00:00.000Z", "第一段从 session 开始算起");
+  assert.equal(hot.context_peak, 88, "最后一个值是峰值的下界");
+  assert.equal(hot.context_reported_at, "2026-09-01T11:00:00.000Z");
+  assert.equal(cold.context_peak, 0);
+  assert.equal(cold.context_reported_at, null, "0% 分不清「很健康」和「没报过」，留作不知道");
+  assert.equal(hot.repeat_edit_count, 0);
+  assert.equal(hot.permission_mode, null);
+});
+
+test("applySchema 跑第二遍不再回填：已经涨上去的峰值不会被 context_pct 拉回来", () => {
+  const db = new Database(":memory:");
+  db.exec(V1_SESSIONS);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id, context_pct) VALUES('claude_code','s','/p', 40)").run();
+  applySchema(db);
+  db.prepare("UPDATE sessions SET context_peak = 97, context_pct = 10, segment_started_at = 'kept'").run();
+  applySchema(db);
+  const r = db.prepare("SELECT context_peak, segment_started_at FROM sessions").get() as Record<string, unknown>;
+  assert.equal(r.context_peak, 97);
+  assert.equal(r.segment_started_at, "kept");
+  const cols = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((c) => c.name);
+  assert.equal(cols.filter((c) => c === "context_peak").length, 1);
+});
+
+test("老库升级后有 needs_input_waits 表；resolution 的 CHECK 与 events.ts 的 WAIT_RESOLUTIONS 是同一份清单", () => {
+  const db = new Database(":memory:");
+  db.exec(V1_SESSIONS);
+  applySchema(db);
+  const cols = (db.prepare("PRAGMA table_info(needs_input_waits)").all() as Array<{ name: string }>).map((c) => c.name);
+  for (const c of ["agent", "session_id", "segment", "started_at", "received_at", "cleared_at", "resolution", "muted_ms", "slept_ms"]) {
+    assert.ok(cols.includes(c), `缺少列 ${c}`);
+  }
+  const insert = db.prepare(
+    `INSERT INTO needs_input_waits(agent, session_id, started_at, received_at, resolution)
+     VALUES('claude_code','s1','t','t',?)`,
+  );
+  for (const r of [...WAIT_RESOLUTIONS, null]) insert.run(r);
+  assert.throws(() => insert.run("user_actioned"), /CHECK/);
+  const w = db.prepare("SELECT muted_ms, slept_ms, segment FROM needs_input_waits LIMIT 1").get() as Record<string, number>;
+  assert.deepEqual(w, { muted_ms: 0, slept_ms: 0, segment: 1 });
 });
