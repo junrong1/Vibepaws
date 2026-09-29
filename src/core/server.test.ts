@@ -5,7 +5,7 @@
  * 而那一列只会是 idle / level-up —— 宠物永远是 idle 表情，
  * registry.aggregatePetState 成了没人调用的死代码，而这恰好是产品的核心。
  */
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -15,6 +15,13 @@ import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
 import { VibepawsServer } from "./server.ts";
 import type { CoreEvent } from "./events.ts";
+
+/** 「今天」的段贴着「现在」造：把时钟钉在今天本地正午，午夜刚过跑也不会把段挤到昨天 */
+function atLocalNoon(t: TestContext): void {
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
+}
 
 /**
  * repoRoot / home 必须一起换成临时目录：/api/uninstall 会同时清项目级与用户级配置，
@@ -568,6 +575,116 @@ test("agent 自己往下走了（needs-you 被进展清掉）→ 气泡记成 in
   });
 });
 
+for (const kind of ["permission_prompt", "Notification", "idle_prompt"]) {
+  test(`权限请求之后的 Notification hook（kind=${kind}）不撤气泡、不关等待；之后 agent 继续才以 inferred 收尾`, async () => {
+    await withServer(async (server, base) => {
+      const sse = await openSse(base, server.token);
+      try {
+        const t0 = Date.now();
+        const at = (ms: number): string => new Date(t0 + ms).toISOString();
+        server.handleEvent(ev({ timestamp: at(0), payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+        server.handleEvent(ev({ event_type: "permission_required", timestamp: at(100), payload: { tool_name: "Bash" } }));
+        const n = await sse.next("notification");
+        assert.equal(n.type, "permission");
+
+        // Claude Code 几百毫秒后补的那一条（真实输入没有 matcher，kind 来自 notification_type）
+        server.handleEvent(ev({ event_type: "decision_required", timestamp: at(400), payload: { kind } }));
+        await assert.rejects(sse.next("notification_resolved", 300), "权限气泡不该被撤");
+        assert.deepEqual(
+          { status: notifRow(server, n.id as number).status, resolution: notifRow(server, n.id as number).resolution },
+          { status: "shown", resolution: null },
+        );
+        const types = server.db.prepare("SELECT type FROM notifications ORDER BY id").all() as Array<{ type: string }>;
+        assert.deepEqual(types.map((r) => r.type), ["permission"], "不该另弹一条「待命」盖住权限气泡");
+        const waits = () =>
+          server.db.prepare("SELECT started_at, cleared_at, resolution FROM needs_input_waits").all() as Array<{
+            started_at: string;
+            cleared_at: string | null;
+            resolution: string | null;
+          }>;
+        assert.deepEqual(waits(), [{ started_at: at(100), cleared_at: null, resolution: null }], "等待还开着");
+        const snap = server.stateSnapshot();
+        assert.equal(snap.sessions[0]!.state, "needs-you");
+        assert.equal(snap.ready.length, 0);
+        const row = server.db.prepare("SELECT last_event_at FROM sessions").get() as { last_event_at: string };
+        assert.equal(row.last_event_at, at(400), "只刷新 last_event_at");
+
+        // 用户 90 秒后在终端里批准，agent 往下走
+        server.handleEvent(ev({ event_type: "agent_working", timestamp: at(90_100), payload: { tool_name: "Bash" } }));
+        const resolved = await sse.next("notification_resolved");
+        assert.equal(resolved.id, n.id);
+        assert.equal(resolved.resolution, "inferred");
+        assert.deepEqual(waits(), [{ started_at: at(100), cleared_at: at(90_100), resolution: "inferred" }]);
+      } finally {
+        sse.close();
+      }
+    });
+  });
+}
+
+test("没在等的时候，Notification hook 照旧是「一轮结束待命」", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "idle_prompt" } }));
+  assert.equal(server.stateSnapshot().pet.state, "ready");
+  const types = server.db.prepare("SELECT type FROM notifications").all() as Array<{ type: string }>;
+  assert.deepEqual(types.map((r) => r.type), ["ready"]);
+});
+
+test("阻塞等待里来一条 Stop 仍然关掉等待（它说的是这一轮真的结束了）", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }));
+  server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "Stop" } }));
+  const w = server.db.prepare("SELECT resolution FROM needs_input_waits").get() as { resolution: string | null };
+  assert.equal(w.resolution, "turn_ended");
+  assert.equal(server.stateSnapshot().pet.state, "ready");
+});
+
+test("状态推送的合并定时器里 stateSnapshot 抛了：这一帧跳过、记一条错误，Core 不死，下一帧照推", async (t) => {
+  await withServer(async (server, base) => {
+    const sse = await openSse(base, server.token);
+    try {
+      const errors = t.mock.method(console, "error", () => {});
+      const real = server.stateSnapshot.bind(server);
+      server.stateSnapshot = () => {
+        throw new Error("bad journal row");
+      };
+      // 没兜住的话这里是一个未捕获异常：node:test 会把它记成这条测试（或整个文件）失败
+      server.broadcastState();
+      await assert.rejects(sse.next("pet_state", 300), "抛了的那一帧不推");
+      assert.equal(errors.mock.callCount(), 1);
+
+      server.stateSnapshot = real;
+      server.broadcastState();
+      assert.equal((await sse.next("pet_state")).type, "pet_state", "定时器没被卡死，下一帧照常");
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+test("agent 又动了（B3）：挂着的 error 气泡记成 inferred，并推 notification_resolved", async () => {
+  await withServer(async (server, base) => {
+    server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+    const { id } = server.db
+      .prepare(
+        `INSERT INTO notifications(agent, session_id, type, title, body, status, shown_at)
+         VALUES('claude_code', 's1', 'error', 't', 'b', 'shown', ?) RETURNING id`,
+      )
+      .get(new Date().toISOString()) as { id: number };
+    const sse = await openSse(base, server.token);
+    try {
+      server.handleEvent(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+      const resolved = await sse.next("notification_resolved");
+      assert.deepEqual([resolved.id, resolved.type, resolved.resolution], [id, "error", "inferred"]);
+      assert.equal(notifRow(server, id).resolution, "inferred");
+    } finally {
+      sse.close();
+    }
+  });
+});
+
 test("用户在宠物里点过的气泡，agent 继续干活时不会被改写成 inferred", () => {
   const server = makeServer();
   server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
@@ -650,7 +767,8 @@ test("被回收的 session 没有分数（null），不是 0 分（R10）", () =
   assert.equal(view.health, null);
 });
 
-test("health_today：今天一段都没结算 = unknown；结算一段之后有数", () => {
+test("health_today：今天一段都没结算 = unknown；结算一段之后有数", (t) => {
+  atLocalNoon(t);
   const server = makeServer();
   assert.deepEqual(server.stateSnapshot().health_today, { mean: null, health: null, unknown: true, segments: 0 });
   finishedSession(server, "done");

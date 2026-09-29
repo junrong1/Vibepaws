@@ -16,7 +16,7 @@
 import type Database from "better-sqlite3";
 import type { CoreEvent, EvolutionStatus, ExpSource, GrowthView, PetState } from "./events.ts";
 import { getDailyExpCap } from "./settings.ts";
-import { localDayKey, localDayStart, todayHealth } from "./health_query.ts";
+import { localDayKey, localDayStart, todayHealth, type DayHealth } from "./health_query.ts";
 import { EVOLUTION_HEALTH_GATE, type EvolutionRecord } from "./journal.ts";
 
 export interface PetSnapshot {
@@ -349,12 +349,13 @@ export class ExpEngine {
    * 不渲染 tired、不暂停自成长、不扣进化 —— 所以这里返回 1.0。要区分「不知道」和「满格」的
    * 界面去读 health_query.todayHealth()（health 为 null）。
    */
-  private healthScore(): number {
-    return todayHealth(this.db).health ?? 1.0;
+  private healthScore(today: DayHealth = todayHealth(this.db)): number {
+    return today.health ?? 1.0;
   }
 
   // ---- 读取 ----
-  getPetSnapshot(): PetSnapshot {
+  /** `today`：调用方这一刻已经算好的当天聚合（stateSnapshot 一帧只算一次）；不给就自己算 */
+  getPetSnapshot(today?: DayHealth): PetSnapshot {
     const pet = this.petRow();
     if (!pet) {
       // 兜底：确保存在
@@ -380,15 +381,15 @@ export class ExpEngine {
       level: p.level,
       exp: round2(p.exp),
       state,
-      health_score: this.persistHealth(p.id, p.health_score),
+      health_score: this.persistHealth(p.id, p.health_score, today),
       daily_exp: round2(p.daily_exp),
       next_level_exp: levelExpRequired(p.level),
     };
   }
 
   /** 算出当前健康分，和库里的不一样就写回 pets.health_score（这一列要跟得上，不只是进化那一刻） */
-  private persistHealth(petId: number, stored: number): number {
-    const health = round2(this.healthScore());
+  private persistHealth(petId: number, stored: number, today?: DayHealth): number {
+    const health = round2(this.healthScore(today));
     if (health !== stored) this.db.prepare("UPDATE pets SET health_score=? WHERE id=?").run(health, petId);
     return health;
   }

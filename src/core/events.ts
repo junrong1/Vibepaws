@@ -210,6 +210,30 @@ export type SessionOutcome = "success" | "partial" | "abandoned" | "orphaned" | 
  * 渲染层有一份等价实现（`ui/app.js` 的 `reclaimedSession`）—— 浏览器里的 app.js
  * 没法 import 这个模块，两处改动必须一起走。
  */
+/**
+ * Claude Code 的 Notification hook 映射出来的 decision_required kind（hook_agent：
+ * `notification_type ?? matcher ?? "Notification"`）。它是「提醒一下」而不是「一轮结束」：
+ * 权限请求之后几百毫秒必到一条 permission_prompt，干等 60s 还会再来一条 idle_prompt。
+ * session 正挂着一段阻塞等待（needs_input_kind 非空）时，这些只刷新 last_event_at ——
+ * 不关账本、不清标记、不撤权限气泡，也不另弹一条「待命」。
+ * Stop 和别的 adapter 的 idle / blocked 不在里面：它们说的是这一轮真的结束了。
+ */
+export const NOTIFICATION_PING_KINDS: ReadonlySet<string> = new Set([
+  "Notification",
+  "permission_prompt",
+  "idle_prompt",
+  "elicitation_dialog",
+]);
+
+/** 这条事件是不是 Notification hook 的提醒（见 NOTIFICATION_PING_KINDS） */
+export function isNotificationPing(ev: Pick<CoreEvent, "event_type" | "payload">): boolean {
+  return (
+    ev.event_type === "decision_required" &&
+    typeof ev.payload.kind === "string" &&
+    NOTIFICATION_PING_KINDS.has(ev.payload.kind)
+  );
+}
+
 export function isReclaimed(outcome: string | null | undefined): boolean {
   return outcome === "orphaned" || outcome === "timeout";
 }

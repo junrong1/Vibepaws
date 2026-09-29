@@ -112,13 +112,18 @@ export interface HistorySegment {
  * health.ts。被回收的段根本不会写进日志（R10），打分那一层照旧会再排除一遍。
  */
 export function loadHistorySegments(db: Database.Database, since: string): HistorySegment[] {
+  // `day >= ?` 只是给 idx_memories_day(kind, day) 一个下界，让每一帧状态推送的代价跟着「今天」走、
+  // 而不是跟着整份日志长。day 是写入那一刻的本地日：往前多留一天，时区变过也不会把边界上的行裁掉；
+  // 精确的边界仍是后面那条 occurred_at 比较
+  const sinceMs = Date.parse(since);
+  const dayFloor = Number.isFinite(sinceMs) ? localDayKey(new Date(sinceMs - 24 * 60 * 60_000)) : "";
   const rows = db
     .prepare(
       `SELECT agent, agent_session_id, segment, project, input_json FROM memories
-       WHERE kind='session' AND input_json IS NOT NULL AND julianday(occurred_at) >= julianday(?)
+       WHERE kind='session' AND day >= ? AND input_json IS NOT NULL AND julianday(occurred_at) >= julianday(?)
        ORDER BY occurred_at, id`,
     )
-    .all(since) as Array<{ agent: string; agent_session_id: string; segment: number; project: string | null; input_json: string }>;
+    .all(dayFloor, since) as Array<{ agent: string; agent_session_id: string; segment: number; project: string | null; input_json: string }>;
   const out: HistorySegment[] = [];
   for (const r of rows) {
     const input = parseSegmentInput(r.input_json);

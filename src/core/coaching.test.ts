@@ -335,6 +335,20 @@ test("HTTP：/api/coaching 要 token；返回目录、现在的阈值与误报�
   });
 });
 
+test("HTTP：恢复默认也把 repeat / budget 的闩锁对齐到新阈值（与 context 同一个 relatch）", async () => {
+  const server = makeServer();
+  await withHttp(server, async (base) => {
+    tuneRule(server.db, "repeat_edit", 3);
+    server.notifications.silenceAfterTuning("repeat_edit", "claude_code", "s1", 6);
+    server.notifications.silenceAfterTuning("milestone", "claude_code", "s1", 0.6);
+    const latched = (server.notifications as unknown as { latched: Map<string, number> }).latched;
+    assert.equal((await post(base, "/api/coaching", server.token, { reset: "repeat_edit" })).status, 200);
+    assert.equal(latched.get("repeat:claude_code:s1"), 3, "闩到不高于原档的最高默认档");
+    assert.equal((await post(base, "/api/coaching", server.token, { reset: "milestone" })).status, 200);
+    assert.equal(latched.get("budget:claude_code:s1"), 0.5);
+  });
+});
+
 test("文档回归：模块头的端点表里有 /api/coaching 与 not_useful", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");

@@ -474,14 +474,20 @@ function endsWithNewline(path: string): boolean {
 
 /**
  * 把还没写进文件的行（rendered_at IS NULL）按顺序追加到各自的月份文件，成功一条标一条。
- * 失败（目录建不了、磁盘满）记一条日志就返回 —— 行还在，rendered_at 留空，下一次补。
+ * 失败（目录建不了、磁盘满、某个月的文件被改成只读）记一条日志 —— 行还在，rendered_at 留空，下一次补。
+ * 失败按**月**隔离：一个写不进去的月份文件只让这个月剩下的行等下一次，别的月份照写
+ * （同一个月里跳过后面的行，是为了不在文件里留下乱序的条目）。
+ *
+ * 一条 = 一个事务：先标 rendered_at，再追加；追加抛了事务回滚，标记跟着撤掉。于是「写进文件了
+ * 却没标上」只剩一种可能：追加成功之后、COMMIT 之前进程没了 —— 原来的「追加之后标记那一步抛了」
+ * 那条路（下一次再追加一遍，文件里出现两张一样的收据）不存在了。
  * **不抛**：它跑在事件链里。返回这次写出去了几条。
  */
 export function flushJournal(db: Database.Database, dir: string | null): number {
   if (!dir) return 0;
-  let written = 0;
+  let rows: MemoryRow[];
   try {
-    const rows = db
+    rows = db
       .prepare(
         `SELECT ${ENTRY_COLUMNS} FROM memories
          WHERE kind IN ('session','evolution') AND rendered_at IS NULL AND day IS NOT NULL
@@ -490,21 +496,32 @@ export function flushJournal(db: Database.Database, dir: string | null): number 
       .all() as MemoryRow[];
     if (rows.length === 0) return 0;
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const mark = db.prepare("UPDATE memories SET rendered_at=? WHERE id=?");
-    for (const r of rows) {
-      const entry = toView(r);
-      const month = entry.day.slice(0, 7);
-      if (!MONTH_RE.test(month)) continue;
-      const path = join(dir, `${month}.md`);
-      // 文件不在（第一次、被用户删了）→ 连表头一起建；在 → 只追加，前面是什么一个字节都不动
-      const prefix = !existsSync(path) ? fileHeader(month) : endsWithNewline(path) ? "\n" : "\n\n";
-      appendFileSync(path, prefix + renderEntry(entry));
-      mark.run(new Date().toISOString(), r.id);
-      written += 1;
-    }
   } catch (err) {
     // 与事件 spool 同一个习惯：写不进去就记一笔，不让它变成别人的异常
     console.error("[vibepaws] journal write failed (rows kept, will retry on next entry):", err);
+    return 0;
+  }
+  const mark = db.prepare("UPDATE memories SET rendered_at=? WHERE id=?");
+  const writeOne = db.transaction((id: number, path: string, text: string) => {
+    mark.run(new Date().toISOString(), id);
+    appendFileSync(path, text);
+  });
+  const failed = new Set<string>();
+  let written = 0;
+  for (const r of rows) {
+    const entry = toView(r);
+    const month = entry.day.slice(0, 7);
+    if (!MONTH_RE.test(month) || failed.has(month)) continue;
+    const path = join(dir, `${month}.md`);
+    try {
+      // 文件不在（第一次、被用户删了）→ 连表头一起建；在 → 只追加，前面是什么一个字节都不动
+      const prefix = !existsSync(path) ? fileHeader(month) : endsWithNewline(path) ? "\n" : "\n\n";
+      writeOne(r.id, path, prefix + renderEntry(entry));
+      written += 1;
+    } catch (err) {
+      failed.add(month);
+      console.error(`[vibepaws] journal write failed for ${month} (rows kept, will retry on next entry):`, err);
+    }
   }
   return written;
 }

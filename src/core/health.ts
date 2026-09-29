@@ -138,6 +138,8 @@ export const SPOOL_REPLAY_GAP_MS = 60_000;
  * 补一条 Notification hook，它映射成非阻塞 decision，把刚开的等待以 turn_ended 关掉。
  * 这些零长度的行要是算进去，一串伪影能把一个真实的 20 分钟等待「稀释」成中位 0 秒、满分。
  * 只丢 turn_ended：inferred（agent 又动了）在一秒内关掉，是用户真的秒答了。
+ * registry 现在不再让这种提醒关掉阻塞等待（events.ts 的 NOTIFICATION_PING_KINDS）；这道过滤留给
+ * 修复之前落库的行，和别的来源拼出来的同类伪影。
  */
 export const ARTEFACT_WAIT_MS = 1000;
 

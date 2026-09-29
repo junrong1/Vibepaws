@@ -245,8 +245,14 @@ test("B3 解除：agent_working 把 shown error/drift 通知标 actioned，warni
 
   reg.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
   assert.notEqual(reg.listSessions()[0]!.state, "warning", "agent 恢复后 warning 应解除");
-  const notif = db.prepare("SELECT status FROM notifications").get() as { status: string };
+  const notif = db.prepare("SELECT status, resolution, resolved_at FROM notifications").get() as {
+    status: string;
+    resolution: string | null;
+    resolved_at: string | null;
+  };
   assert.equal(notif.status, "actioned", "error 通知应被标成已处理");
+  assert.equal(notif.resolution, "inferred", "不是用户点的：记成 inferred，而不是永远 NULL");
+  assert.ok(notif.resolved_at);
 });
 
 test("「等你」超过安全阀（30min）后不再告警", () => {

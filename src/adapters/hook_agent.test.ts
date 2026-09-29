@@ -85,6 +85,20 @@ test("Claude Code Notification(usage) → token_update", () => {
   assert.equal(ev.payload.tokens, 12345);
 });
 
+test("Claude Code Notification：kind 取 notification_type；形状不对的值不搭车", () => {
+  const ping = normalizeHook(
+    { hook_event_name: "Notification", session_id: "s-1", cwd: "/p", notification_type: "permission_prompt", message: "secret-ish text" },
+    "claude_code",
+  )!;
+  assert.equal(ping.event_type, "decision_required");
+  assert.equal(ping.payload.kind, "permission_prompt");
+  const odd = normalizeHook(
+    { hook_event_name: "Notification", session_id: "s-1", cwd: "/p", notification_type: "Needs /Users/me/x" },
+    "claude_code",
+  )!;
+  assert.equal(odd.payload.kind, "Notification");
+});
+
 test("Claude Code SessionEnd → session_finished", () => {
   const ev = normalizeHook({ hook_event_name: "SessionEnd", session_id: "s-1", cwd: "/p" }, "claude_code")!;
   assert.equal(ev.event_type, "session_finished");

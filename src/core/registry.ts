@@ -5,13 +5,13 @@
  * （finished/tired/level-up 由宠物引擎设置）。
  */
 import type Database from "better-sqlite3";
-import { isReclaimed, isEditTool, isPermissionMode } from "./events.ts";
+import { isReclaimed, isEditTool, isNotificationPing, isPermissionMode } from "./events.ts";
 import { notePid } from "./reclaim.ts";
 import { activeMuteUntil } from "./settings.ts";
 import { openWait, closeWaits } from "./waits.ts";
 import { inputsForRows, type SegmentRowWithKey } from "./health_query.ts";
 import { healthView, scoreSegment } from "./health.ts";
-import type { CoreEvent, PetState, SessionView, SessionState, WaitResolution } from "./events.ts";
+import type { CoreEvent, NotificationResolvedPush, PetState, SessionView, SessionState, WaitResolution } from "./events.ts";
 
 export type RegistryHandler = (ev: CoreEvent) => void;
 
@@ -52,11 +52,14 @@ export interface RegistryOptions {
   db: Database.Database;
   /** 每个事件处理后通知（SSE 推送等） */
   onUpdate?: () => void;
+  /** registry 自己结束了一些气泡（B3 解除边）：server 据此推 notification_resolved */
+  onResolved?: (pushes: NotificationResolvedPush[]) => void;
 }
 
 export class SessionRegistry {
   private db: Database.Database;
   private onUpdate?: () => void;
+  private onResolved?: (pushes: NotificationResolvedPush[]) => void;
   /** correction 启发式：同一文件 30s 内重复 Edit → correction_count+1（架构 §3.3） */
   private lastEdit = new Map<string, { file: string; at: number }>();
   /** 加宽后的重复编辑（所有编辑类工具）→ repeat_edit_count+1。按**事件时间**判窗口，见 agent_working */
@@ -65,6 +68,7 @@ export class SessionRegistry {
   constructor(opts: RegistryOptions) {
     this.db = opts.db;
     this.onUpdate = opts.onUpdate;
+    this.onResolved = opts.onResolved;
   }
 
   /**
@@ -179,11 +183,18 @@ export class SessionRegistry {
         db.prepare(
           `UPDATE sessions SET last_event_at=?, last_working_at=? WHERE agent=? AND agent_session_id=?`,
         ).run(ev.timestamp, ev.timestamp, ev.agent, ev.session_id);
-        // B3 解除边：agent 恢复工作后，把还挂着的 error/drift 气泡标成已处理 → warning 立即回落 working
-        db.prepare(
-          `UPDATE notifications SET status='actioned'
-           WHERE agent=? AND session_id=? AND status='shown' AND type IN ('error','drift')`,
-        ).run(ev.agent, ev.session_id);
+        // B3 解除边：agent 恢复工作后，把还挂着的 error/drift 气泡标成已处理 → warning 立即回落 working。
+        // 这也是一次「结束」：记成 inferred（不是用户点的）并带上时刻，交给 onResolved 推 notification_resolved ——
+        // 否则库里撤了、屏幕上的气泡还在，行上的 resolution 也永远是 NULL
+        const resolved = db
+          .prepare(
+            `UPDATE notifications SET status='actioned', resolution=COALESCE(resolution, 'inferred'),
+               resolved_at=COALESCE(resolved_at, ?)
+             WHERE agent=? AND session_id=? AND status='shown' AND type IN ('error','drift')
+             RETURNING id, agent, session_id, type, resolution, resolved_at`,
+          )
+          .all(new Date().toISOString(), ev.agent, ev.session_id) as NotificationResolvedPush[];
+        if (resolved.length > 0) this.onResolved?.(resolved);
         break;
       }
 
@@ -204,6 +215,15 @@ export class SessionRegistry {
                needs_input_since=COALESCE(needs_input_since, ?), needs_input_kind=?, ready_since=NULL
              WHERE agent=? AND agent_session_id=?`,
           ).run(ev.timestamp, ev.timestamp, kind, ev.agent, ev.session_id);
+        } else if (isNotificationPing(ev) && this.inBlockingWait(ev)) {
+          // Notification hook 在一段阻塞等待里的提醒（permission_prompt 紧跟 PermissionRequest、
+          // 干等时的 idle_prompt）：人还没答，等待还在。只刷新 last_event_at —— 关掉它会把
+          // 权限气泡当成 inferred 撤掉，账本那一行以 ~0ms 的 turn_ended 伪影收尾，Response 永远没样本
+          db.prepare(`UPDATE sessions SET last_event_at=? WHERE agent=? AND agent_session_id=?`).run(
+            ev.timestamp,
+            ev.agent,
+            ev.session_id,
+          );
         } else {
           // 非阻塞（一轮结束待命）：语义与 needs 互斥，清掉对方标记
           closeWaits(db, ev.agent, ev.session_id, ev.timestamp, "turn_ended");
@@ -342,6 +362,14 @@ export class SessionRegistry {
          WHERE agent=? AND agent_session_id=? AND needs_input_since IS NOT NULL`,
       )
       .run(ev.agent, ev.session_id);
+  }
+
+  /** session 此刻挂着一段阻塞等待（permission / question 置的 needs_input_kind） */
+  private inBlockingWait(ev: CoreEvent): boolean {
+    const row = this.db
+      .prepare("SELECT needs_input_since, needs_input_kind FROM sessions WHERE agent=? AND agent_session_id=?")
+      .get(ev.agent, ev.session_id) as { needs_input_since: string | null; needs_input_kind: string | null } | undefined;
+    return Boolean(row?.needs_input_since && row.needs_input_kind);
   }
 
   /** 进入 needs-you → 账本开一段（已经开着就不重复开，见 waits.openWait） */

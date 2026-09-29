@@ -214,7 +214,14 @@ export class VibepawsServer {
 
     this.notifications = new NotificationEngine(this.db);
     this.exp = new ExpEngine(this.db);
-    this.registry = cfg.registry ?? new SessionRegistry({ db: this.db, onUpdate: () => this.broadcastState() });
+    this.registry =
+      cfg.registry ??
+      new SessionRegistry({
+        db: this.db,
+        onUpdate: () => this.broadcastState(),
+        // B3：agent 又动了，挂着的 error / drift 气泡被 registry 结束（inferred）—— 屏幕上的也得走
+        onResolved: (pushes) => this.broadcastResolved(pushes),
+      });
     this.journal = new Journal(
       this.db,
       cfg.journalDir !== undefined ? cfg.journalDir : cfg.db ? null : join(DATA_DIR, JOURNAL_DIR_NAME),
@@ -680,7 +687,7 @@ export class VibepawsServer {
     });
   }
 
-  /** 把一条规则的阈值恢复默认。context 走的是同一个 context_warn_pcts，闩锁照设置窗口的规矩重新对齐 */
+  /** 把一条规则的阈值恢复默认。context 走的是同一个 context_warn_pcts；context / repeat / budget 的闩锁照设置窗口的规矩重新对齐 */
   private handleCoachingReset(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
     readJsonBody(req, res, "bad body", (body) => {
       const { reset } = (body ?? {}) as { reset?: unknown };
@@ -690,7 +697,10 @@ export class VibepawsServer {
         return;
       }
       const threshold = resetThreshold(this.db, rule.id);
-      if (rule.id === "context") this.notifications.relatch("context", threshold);
+      // 闩锁跟着新阈值重新对齐：不这么做的话，闩在（调高过的）旧档上的 session 在恢复出来的低档上一直不出声，
+      // 要等下一段才重新武装。repeat / budget 的闩锁与 context 同一个形状（档位值），同一个 relatch
+      const latch = rule.id === "context" ? "context" : rule.id === "repeat_edit" ? "repeat" : rule.id === "milestone" ? "budget" : null;
+      if (latch) this.notifications.relatch(latch, threshold);
       sendJson(res, 200, { ok: true, rule: rule.id, threshold, ...coachingSnapshot(this.db) });
     });
   }
@@ -915,8 +925,14 @@ export class VibepawsServer {
     this.stateFlush = setTimeout(() => {
       this.stateFlush = null;
       if (this.sseClients.size === 0) return;
-      const push = this.stateSnapshot();
-      for (const client of [...this.sseClients]) this.sendSse(client, "pet_state", push);
+      // 定时器里抛 = 未捕获异常，Core 整个没了（Core 没有 uncaughtException 兜底，同 sweepZombies）。
+      // 一行坏数据 / 一次 SQLite 错误只该让这一帧不推，下一个事件还会再排一帧
+      try {
+        const push = this.stateSnapshot();
+        for (const client of [...this.sseClients]) this.sendSse(client, "pet_state", push);
+      } catch (err) {
+        console.error("[vibepaws] state push failed, skipping this tick:", err);
+      }
     }, STATE_COALESCE_MS);
     this.stateFlush.unref?.();
   }
@@ -988,7 +1004,9 @@ export class VibepawsServer {
 
   /** 当前聚合状态（/api/state 与 SSE 推送共用；测试直接读它） */
   stateSnapshot(): PetStatePush {
-    const pet = this.exp.getPetSnapshot();
+    // 当天聚合一帧只算一次：宠物健康和 health_today 读的是同一份
+    const today = todayHealth(this.db);
+    const pet = this.exp.getPetSnapshot(today);
     const sessions = this.registry.listSessions();
     return {
       type: "pet_state",
@@ -1002,7 +1020,7 @@ export class VibepawsServer {
         next_level_exp: pet.next_level_exp,
       },
       sessions,
-      health_today: dayHealthView(todayHealth(this.db)),
+      health_today: dayHealthView(today),
       health_visibility: getHealthVisibility(this.db),
       adapters: this.listAdapters(),
       mute: (({ global_until, global_minutes }) => ({ global_until, global_minutes }))(

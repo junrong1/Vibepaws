@@ -10,7 +10,7 @@
  *
  * 所有文件都写在临时目录：Core 绝不对着开发机真实的数据目录跑。
  */
-import { test } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
@@ -22,6 +22,7 @@ import { VibepawsServer } from "./server.ts";
 import {
   JOURNAL_MAX_FILES,
   adoptSettledSessions,
+  flushJournal,
   parseJournalMonth,
   recordFinish,
   renderEntry,
@@ -31,6 +32,24 @@ import { sessionHealthHistory } from "./health_history.ts";
 import type { CoreEvent, JournalEntryView } from "./events.ts";
 
 const MIN = 60_000;
+
+/**
+ * 这里的段都贴着「现在」造（Date.now() − 几分钟），断言的是「今天」「这个月的文件」。
+ * 午夜刚过、月初第一分钟跑，段的开始会落到前一天 / 前一个月，于是 segments==2、days:1 之类的断言
+ * 随时间偶发失败。每条测试都把时钟钉在今天的本地正午（只 mock Date：没有测试靠 setTimeout 等时间流逝）。
+ */
+function freezeAtNoon(t: TestContext): void {
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
+}
+
+const test = (name: string, fn: (t: TestContext) => void | Promise<void>): void => {
+  nodeTest(name, (t) => {
+    freezeAtNoon(t);
+    return fn(t);
+  });
+};
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `vibepaws-journal-${prefix}-`));
@@ -239,6 +258,51 @@ test("写文件失败不抛出事件链：行照样写进去，目录好了之�
   const text = readFileSync(join(good, `${localDayKey(new Date()).slice(0, 7)}.md`), "utf8");
   assert.equal(text.match(/^### /gm)!.length, 2);
   assert.ok(rows(healed).every((r) => r.rendered_at !== null));
+});
+
+test("一个月份文件写不进去只挡住那个月：别的月份照写；失败那一条的 rendered_at 跟着事务撤掉", () => {
+  // 先只写行（没配目录），再把其中两段挪到上个月，模拟升级时收养进来的老行
+  const server = makeServer({ journalDir: null });
+  for (const id of ["old-1", "old-2", "new-1"]) runSegment(server, id);
+  const prev = new Date();
+  prev.setDate(1);
+  prev.setMonth(prev.getMonth() - 1);
+  const prevDay = localDayKey(prev);
+  server.db
+    .prepare("UPDATE memories SET day=?, occurred_at=? WHERE agent_session_id IN ('old-1','old-2')")
+    .run(prevDay, prev.toISOString());
+
+  const dir = tempDir("iso");
+  // 上个月的文件名被一个目录占了：appendFileSync 必然 EISDIR
+  mkdirSync(join(dir, `${prevDay.slice(0, 7)}.md`));
+  const errors: unknown[] = [];
+  const real = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  let written: number;
+  try {
+    written = flushJournal(server.db, dir);
+  } finally {
+    console.error = real;
+  }
+  assert.equal(written, 1, "这个月那一条照写");
+  assert.equal(errors.length, 1, "坏掉的月份一轮只记一次，不是每行一次");
+  const thisMonth = readFileSync(join(dir, `${localDayKey(new Date()).slice(0, 7)}.md`), "utf8");
+  assert.equal(thisMonth.match(/^### /gm)!.length, 1);
+  const state = server.db
+    .prepare("SELECT agent_session_id AS id, rendered_at FROM memories WHERE kind='session' ORDER BY agent_session_id")
+    .all() as Array<{ id: string; rendered_at: string | null }>;
+  assert.deepEqual(
+    state.map((r) => [r.id, r.rendered_at !== null]),
+    [["new-1", true], ["old-1", false], ["old-2", false]],
+    "追加抛了 → 先标上的 rendered_at 随事务回滚，下一次还会补",
+  );
+
+  // 修好之后再跑一次：欠的两条补上，已经写过的那一条不会再写一遍
+  rmSync(join(dir, `${prevDay.slice(0, 7)}.md`), { recursive: true });
+  assert.equal(flushJournal(server.db, dir), 2);
+  assert.equal(readFileSync(join(dir, `${prevDay.slice(0, 7)}.md`), "utf8").match(/^### /gm)!.length, 2);
+  assert.equal(flushJournal(server.db, dir), 0);
+  assert.equal(readFileSync(join(dir, `${localDayKey(new Date()).slice(0, 7)}.md`), "utf8"), thisMonth, "没有重复的收据");
 });
 
 test("没配目录（注入 db 的缺省）：只写行，不碰任何文件", () => {

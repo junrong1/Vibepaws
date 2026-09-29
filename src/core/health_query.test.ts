@@ -2,7 +2,7 @@
  * Session Health 读库那一层（health_query.ts）的单测：哪些行属于「这一段」、「今天」从哪算起。
  * 打分规则本身在 health.test.ts。
  */
-import { test } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
@@ -17,6 +17,7 @@ import {
   todayHealth,
 } from "./health_query.ts";
 import { recordFinish } from "./journal.ts";
+import { normalizeHook } from "../adapters/hook_agent.ts";
 import type { CoreEvent } from "./events.ts";
 
 function makeDb(): Database.Database {
@@ -46,6 +47,19 @@ function ev(at: number, partial: Partial<CoreEvent>): CoreEvent {
 
 const MIN = 60_000;
 
+/**
+ * 这里的段贴着「现在」造（Date.now() − 60 分钟之类），断言的是「今天」。午夜刚过跑的话，
+ * 段的开始会落到昨天。每条测试都把时钟钉在今天的本地正午（只 mock Date；要时间往前走的用 t.mock.timers.tick）。
+ */
+const test = (name: string, fn: (t: TestContext) => void | Promise<void>): void => {
+  nodeTest(name, (t) => {
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+    t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
+    return fn(t);
+  });
+};
+
 test("端到端：阻塞两分钟 → 答了 → 收工，读出来的这一段能手算出分数", () => {
   const db = makeDb();
   const reg = new SessionRegistry({ db });
@@ -66,6 +80,35 @@ test("端到端：阻塞两分钟 → 答了 → 收工，读出来的这一段�
   // 12（88%）+ 25（没重复编辑）+ 20（2 分钟）+ 25（success 无报错）
   assert.deepEqual(r.factors, { context: 12, focus: 25, response: 20, outcome: 25 });
   assert.equal(r.score, 82);
+});
+
+test("端到端（hook 输入 → 账本 → 打分）：PermissionRequest 后紧跟的 Notification 不吃掉 Response 样本", (t) => {
+  // 时钟已经钉在正午（见上面的 test 包装）；hook 的时间戳取 Date.now()，用 tick 让它往前走
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  const hook = (raw: Record<string, unknown>): void => {
+    const e = normalizeHook({ session_id: "cc-1", cwd: "/Users/x/my-app", ...raw }, "claude_code", {});
+    assert.ok(e, `${String(raw.hook_event_name)} 应该映射出一条事件`);
+    reg.handle(e);
+  };
+  hook({ hook_event_name: "SessionStart" });
+  t.mock.timers.tick(1000);
+  hook({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "npm test" } });
+  t.mock.timers.tick(300);
+  // Claude Code 真实的 Notification 输入：没有 matcher，只有 notification_type
+  hook({ hook_event_name: "Notification", notification_type: "permission_prompt", message: "Claude needs your permission" });
+  t.mock.timers.tick(90_000);
+  hook({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "npm test" } });
+  t.mock.timers.tick(5 * MIN);
+  hook({ hook_event_name: "SessionEnd" });
+
+  const waits = db.prepare("SELECT kind, resolution FROM needs_input_waits").all();
+  assert.deepEqual(waits, [{ kind: "permission", resolution: "inferred" }], "一段等待，由 agent 继续干活收尾");
+  const r = scoreSegment(loadSegmentInput(db, "claude_code", "cc-1")!)!;
+  assert.equal(r.evidence.responseSamples, 1, "90 秒的真实等待必须是一条样本");
+  assert.ok(!r.omitted.includes("response"));
+  assert.equal(r.evidence.responseMedianMs, 90_300, "样本是真实的 90 秒，不是几百毫秒的伪影");
+  assert.equal(typeof r.factors.response, "number");
 });
 
 test("还在跑的一段读出来是 unsettled；上一段的等待不算进这一段", () => {
@@ -155,8 +198,8 @@ test("批量读和逐个读是同一个口径；日志里存的打分输入与�
   reg.handle(ev(t0 + 1000, { session_id: "a", event_type: "permission_required", payload: { tool_name: "Bash" } }));
   reg.handle(ev(t0 + 1000 + 3 * MIN, { session_id: "a", event_type: "agent_working", payload: {} }));
   db.prepare(
-    "INSERT INTO events(event_id, agent, session_id, event_type, safe_summary, received_at) VALUES(?,?,?,?,?,datetime('now'))",
-  ).run("err-b", "claude_code", "b", "session_error", "x");
+    "INSERT INTO events(event_id, agent, session_id, event_type, safe_summary, received_at) VALUES(?,?,?,?,?,?)",
+  ).run("err-b", "claude_code", "b", "session_error", "x", new Date(t0 + 2 * MIN).toISOString().replace("T", " ").slice(0, 19));
   for (const id of ["a", "b"]) {
     reg.handle(ev(t0 + 5 * MIN, { session_id: id, event_type: "session_finished", payload: { outcome: "success" } }));
     recordFinish(db, "claude_code", id); // server 的事件链在这一刻写日志

@@ -23,7 +23,7 @@ import {
 } from "./settings.ts";
 import { t, DEFAULT_LOCALE } from "../i18n/messages.js";
 import { DEFAULT_MILESTONE_TIERS, coachingRule, ruleForType, ruleThreshold, type CoachingRuleId } from "./coaching.ts";
-import { isEditTool } from "./events.ts";
+import { isEditTool, isNotificationPing } from "./events.ts";
 
 /** 文案定位：渲染层用它出字，Core 用它渲染英文落库。 */
 export interface I18nText {
@@ -165,6 +165,9 @@ export class NotificationEngine {
         const kind = ev.payload.kind;
         // ready 分流（与 registry.ts 一致）：question = 阻塞等你回答；其余 = 一轮结束待命
         if (kind !== "question") {
+          // Notification hook 在一段阻塞等待里的提醒：registry 没清等待（见 NOTIFICATION_PING_KINDS），
+          // 这里也别弹一条「干完了，等你」去盖住还挂着的权限 / 提问气泡
+          if (isNotificationPing(ev) && this.inBlockingWait(ev.agent, ev.session_id)) return null;
           return {
             ...base,
             type: "ready",
@@ -564,6 +567,14 @@ export class NotificationEngine {
       )
       .get(at, at, notificationId) as NotificationResolvedPush | undefined;
     return row ?? null;
+  }
+
+  /** session 此刻挂着一段阻塞等待（与 registry 的同名判据一致） */
+  private inBlockingWait(agent: string, sessionId: string): boolean {
+    const row = this.db
+      .prepare("SELECT needs_input_since, needs_input_kind FROM sessions WHERE agent=? AND agent_session_id=?")
+      .get(agent, sessionId) as { needs_input_since: string | null; needs_input_kind: string | null } | undefined;
+    return Boolean(row?.needs_input_since && row.needs_input_kind);
   }
 
   /**

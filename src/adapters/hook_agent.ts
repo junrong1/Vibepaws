@@ -195,7 +195,13 @@ export function normalizeHook(
     if (prefix) payload.command_prefix = prefix;
   }
   if (eventType === "decision_required" || eventType === "permission_required") {
-    payload.kind = isAskUser ? "question" : (raw.matcher ?? hookEvent);
+    // Notification 的真实输入带 notification_type（permission_prompt / idle_prompt / …），不带 matcher。
+    // 只收一个短标识符形状的值：它会进库、进 SSE，不能让任意字符串搭车
+    const notificationType =
+      hookEvent === "Notification" && typeof raw.notification_type === "string" && /^[a-z][a-z_]{0,31}$/.test(raw.notification_type)
+        ? raw.notification_type
+        : undefined;
+    payload.kind = isAskUser ? "question" : (notificationType ?? raw.matcher ?? hookEvent);
     if (raw.turn_id) payload.turn_id = String(raw.turn_id);
   }
   if (eventType === "token_update" && typeof raw.tokens === "number") payload.tokens = raw.tokens;

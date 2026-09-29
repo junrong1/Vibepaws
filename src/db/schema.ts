@@ -340,9 +340,11 @@ const ADDED_COLUMNS: Array<{
     column: "resolved_at",
     ddl: "TEXT",
     // 只填得出确定的那部分：actioned 有 actioned_at，muted 在出生那一刻就结束了。
+    // 老的 actioned 行实际上 actioned_at 全是 NULL（真实的老库里 68 行无一例外）：退回 shown_at ——
+    // 「user_actioned 却没有结束时刻」会让任何按 resolved_at 算的读者把它们丢掉；shown_at 是它的下界。
     // 老的 dismissed 不知道是什么时候叉掉的 —— 编一个时间比留空更糟
     backfill: `UPDATE notifications SET resolved_at = CASE status
-                 WHEN 'actioned' THEN actioned_at
+                 WHEN 'actioned' THEN COALESCE(actioned_at, shown_at)
                  WHEN 'muted' THEN shown_at
                END
                WHERE resolved_at IS NULL`,

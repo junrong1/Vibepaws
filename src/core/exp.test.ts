@@ -1,7 +1,7 @@
 /**
  * EXP 引擎单测：公式纯函数 + token EXP/daily cap/升级/exp_logs。
  */
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema } from "../db/schema.ts";
@@ -22,6 +22,13 @@ import {
 } from "./exp.ts";
 import { recordFinish } from "./journal.ts";
 import type { CoreEvent } from "./events.ts";
+
+/** 「今天」的段贴着「现在」造：把时钟钉在今天本地正午，午夜刚过跑也不会把段挤到昨天 */
+function atLocalNoon(t: TestContext): void {
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
+}
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
@@ -279,7 +286,8 @@ test("今天一段都没结算 = 不知道：读作 1.0，自成长照常 ——
   assert.equal(selfGrowthLogs(db), 1);
 });
 
-test("升级后的第一个早上：昨天打得再差，今天还没收工就是「不知道」，不是失败的一天", () => {
+test("升级后的第一个早上：昨天打得再差，今天还没收工就是「不知道」，不是失败的一天", (t) => {
+  atLocalNoon(t);
   const db = makeDb();
   const exp = new ExpEngine(db);
   // 昨天（本地午夜之前）的一段极差的 session
@@ -291,7 +299,8 @@ test("升级后的第一个早上：昨天打得再差，今天还没收工就�
   assert.equal(selfGrowthLogs(db), 1);
 });
 
-test("今天打得很差：健康分掉到 0.7 以下，自成长暂停，pets.health_score 跟着写回", () => {
+test("今天打得很差：健康分掉到 0.7 以下，自成长暂停，pets.health_score 跟着写回", (t) => {
+  atLocalNoon(t);
   const db = makeDb();
   const exp = new ExpEngine(db);
   settledSegment(db, "bad", { endMsAgo: 60_000, durationMs: 60_000, peak: 98, edits: 7, outcome: "abandoned" });
@@ -304,7 +313,8 @@ test("今天打得很差：健康分掉到 0.7 以下，自成长暂停，pets.h
   assert.equal(selfGrowthLogs(db), 0);
 });
 
-test("Response 不喂宠物：一段等了半小时才答、其余都好的 session，宠物照样满格", () => {
+test("Response 不喂宠物：一段等了半小时才答、其余都好的 session，宠物照样满格", (t) => {
+  atLocalNoon(t);
   const db = makeDb();
   const exp = new ExpEngine(db);
   // 等待要在「收工」之前就在账本里，日志行才带得上它 —— 所以先不记，插完等待再记
@@ -319,7 +329,8 @@ test("Response 不喂宠物：一段等了半小时才答、其余都好的 sess
   assert.equal(exp.getPetSnapshot().health_score, 1);
 });
 
-test("进化把满足门槛的健康分写进 pets.health_score（原来写死 1.0）", () => {
+test("进化把满足门槛的健康分写进 pets.health_score（原来写死 1.0）", (t) => {
+  atLocalNoon(t);
   const db = makeDb();
   const exp = new ExpEngine(db);
   db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/Users/x/my-app')").run();

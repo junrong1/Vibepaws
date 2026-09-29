@@ -91,23 +91,26 @@ test("老库 notifications 补上 resolution / resolved_at：按 status 回填�
   );
   insert.run("shown", "shown", null);
   insert.run("actioned", "actioned", "2026-09-01T10:05:00.000Z");
+  insert.run("actioned-no-time", "actioned", null);
   insert.run("dismissed", "dismissed", null);
   insert.run("muted", "muted", null);
 
   applySchema(db);
 
   const rows = db.prepare("SELECT id, title, status, resolution, resolved_at FROM notifications ORDER BY id").all() as NotifRow[];
-  assert.equal(rows.length, 4, "老数据一行都不能丢");
+  assert.equal(rows.length, 5, "老数据一行都不能丢");
   const by = Object.fromEntries(rows.map((r) => [r.title, r]));
   assert.equal(by.shown!.resolution, null, "还挂着的气泡不能被回填成已结束");
   assert.equal(by.shown!.resolved_at, null);
   assert.equal(by.actioned!.resolution, "user_actioned");
   assert.equal(by.actioned!.resolved_at, "2026-09-01T10:05:00.000Z");
+  assert.equal(by["actioned-no-time"]!.resolution, "user_actioned");
+  assert.equal(by["actioned-no-time"]!.resolved_at, "2026-09-01T10:00:00.000Z", "没有 actioned_at 的老行退回 shown_at，不留 NULL");
   assert.equal(by.dismissed!.resolution, "dismissed");
   assert.equal(by.dismissed!.resolved_at, null, "不知道什么时候叉的，就别编一个时间");
   assert.equal(by.muted!.resolution, "muted");
   assert.equal(by.muted!.resolved_at, "2026-09-01T10:00:00.000Z");
-  for (const r of rows) assert.equal(r.status, r.title, "status 原样保留");
+  for (const r of rows) assert.equal(r.status, r.title.replace("-no-time", ""), "status 原样保留");
 });
 
 test("applySchema 跑第二遍对 notifications 是空操作：不重复加列，也不再回填", () => {
