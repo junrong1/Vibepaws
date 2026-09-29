@@ -30,6 +30,8 @@ import {
   segmentInputFromRows,
   type SegmentInput,
   type WaitSample,
+  aggregateSegments,
+  healthView,
 } from "./health.ts";
 import { TIRED_HEALTH_THRESHOLD } from "./exp.ts";
 
@@ -343,4 +345,49 @@ test("行适配器：本段的列 → SegmentInput；is_active=1 或 finished_at
   assert.equal(segmentInputFromRows({ ...row, is_active: 1 }, [], 0).settled, false);
   assert.equal(segmentInputFromRows({ ...row, finished_at: null }, [], 0).settled, false);
   assert.equal(segmentInputFromRows({ ...row, context_reported_at: null }, [], 0).contextReported, false);
+});
+
+/* ================= 聚合与线上形状（U4） ================= */
+
+test("aggregateSegments：mean 就是 dayMean；因子各自时长加权，只在有分的段上平均", () => {
+  const long = seg({ finishedAt: iso(240 * MIN), waits: [wait(30_000)] }); // Response 25
+  const short = seg({ contextPeak: 98, repeatEdits: 7, outcome: "abandoned", finishedAt: iso(30_000) });
+  const live = seg({ settled: false, outcome: null, finishedAt: null });
+  const gone = seg({ outcome: "orphaned" });
+  const agg = aggregateSegments([long, short, live, gone]);
+  assert.equal(agg.mean, dayMean([long, short, live, gone]));
+  assert.equal(agg.segments, 2, "没结算的、被回收的都不算");
+  assert.equal(agg.durationMs, 240 * MIN + 30_000);
+  assert.equal(agg.factors.response, 25, "只有长段有 Response 样本：短段的省略不拉低它");
+  assert.equal(agg.factors.focus, Math.round(((25 * 240 + 8 * 5) / 245) * 10) / 10);
+  assert.deepEqual(Object.keys(agg.factors), [...FACTOR_NAMES]);
+});
+
+test("aggregateSegments：一段都没有 → mean null、因子全 null、0 段", () => {
+  assert.deepEqual(aggregateSegments([]), {
+    mean: null,
+    factors: { context: null, focus: null, response: null, outcome: null },
+    segments: 0,
+    durationMs: 0,
+  });
+});
+
+test("healthView：被回收是 null；其余只改成 snake_case，数一个不动", () => {
+  assert.equal(healthView(scoreSegment(seg({ outcome: "timeout" }))), null);
+  const r = scoreSegment(seg({ waits: [wait(2 * MIN)], errorCount: 1 }))!;
+  const v = healthView(r)!;
+  assert.equal(v.score, r.score);
+  assert.deepEqual(v.factors, r.factors);
+  assert.deepEqual(v.omitted, r.omitted);
+  assert.equal(v.unsettled, false);
+  assert.deepEqual(v.evidence, {
+    context_peak: 40,
+    repeat_edits: 0,
+    response_median_ms: 2 * MIN,
+    response_samples: 1,
+    outcome: "success",
+    error_count: 1,
+  });
+  v.omitted.push("context");
+  assert.deepEqual(r.omitted, [], "视图是副本，改它不会改到打分结果");
 });

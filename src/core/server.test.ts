@@ -177,11 +177,15 @@ test("HTTP：/health 免鉴权，其余端点没 token 一律 401", async () => 
   }
 });
 
-test("健康分低且没有活跃 session 时宠物是 tired（README 6.4，不做永久死亡）", () => {
+test("健康分低且没有活跃 session 时宠物是 tired（README 6.4，不做永久死亡）", (t) => {
+  // 时钟钉在今天本地中午：收工要在两分钟前（避开 60s 的 finished 余晖），又必须落在「今天」——
+  // 用真时钟的话，本地午夜后头几分钟跑这条测试，那一段就成了昨天的，宠物读作「不知道」而不是 tired
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
   const server = makeServer();
   // 今天结算过的一段打得很差（撞满 context、correction loop、放弃）→ healthScore 掉到 0.7 以下。
   // 健康分现在来自 Session Health（core/health.ts），不再数 session_error
-  // 收工在两分钟前：避开 60s 的 finished 余晖（那段时间宠物显示 finished 而不是 tired）
   const end = new Date(Date.now() - 2 * 60_000);
   const start = new Date(end.getTime() - 60_000).toISOString();
   server.db
@@ -579,4 +583,151 @@ test("没在等你的 session 干活不会碰任何气泡（context 提醒不算
   server.handleEvent(ev({ event_type: "agent_working", payload: {} }));
   const rows = server.db.prepare("SELECT type, resolution FROM notifications").all() as Array<{ type: string; resolution: string | null }>;
   assert.deepEqual(rows, [{ type: "context", resolution: null }]);
+});
+
+/* ---------------- Session Health 上线（U4：R7 / R8 / R9） ---------------- */
+
+const FACTORS = ["context", "focus", "response", "outcome"];
+
+/** 一段打完的 session：88% context、阻塞两分钟后答了、顺利收工 → 12 + 25 + 20 + 25 = 82 */
+function finishedSession(server: VibepawsServer, sessionId: string, project = "/Users/x/my-app"): void {
+  const t0 = Date.now() - 3 * 60_000;
+  const at = (ms: number): string => new Date(t0 + ms).toISOString();
+  const base = { session_id: sessionId, project_id: project };
+  server.handleEvent(ev({ ...base, timestamp: at(0), payload: { source: "startup", cwd: project } }));
+  server.handleEvent(ev({ ...base, event_type: "context_update", timestamp: at(1000), payload: { context_pct: 88 } }));
+  // 等待的 received_at 是 Core 此刻的时钟：时间戳离「现在」太远会被当成离线缓冲的回放丢掉
+  server.handleEvent(
+    ev({ ...base, event_type: "permission_required", timestamp: new Date().toISOString(), payload: { tool_name: "Bash" } }),
+  );
+  server.db
+    .prepare("UPDATE needs_input_waits SET started_at=?, received_at=? WHERE session_id=?")
+    .run(at(2000), at(2000), sessionId);
+  server.handleEvent(ev({ ...base, event_type: "agent_working", timestamp: at(2000 + 2 * 60_000), payload: {} }));
+  server.handleEvent(
+    ev({ ...base, event_type: "session_finished", timestamp: at(2 * 60_000 + 5000), payload: { outcome: "success" } }),
+  );
+}
+
+test("session 视图带着数字分数和四个有名字的因子", () => {
+  const server = makeServer();
+  finishedSession(server, "done");
+  const view = server.stateSnapshot().sessions.find((s) => s.session_id === "done")!;
+  assert.ok(view.health, "结算过的一段必须有分");
+  assert.equal(typeof view.health.score, "number");
+  assert.deepEqual(Object.keys(view.health.factors), FACTORS, "四个因子，名字与顺序是每个界面共用的");
+  assert.deepEqual(view.health.factors, { context: 12, focus: 25, response: 20, outcome: 25 });
+  assert.equal(view.health.score, 82);
+  assert.equal(view.health.unsettled, false);
+  assert.deepEqual(view.health.omitted, []);
+  assert.equal(view.health.evidence.context_peak, 88);
+  assert.equal(view.health.evidence.response_samples, 1);
+  // /api/sessions 与 stateSnapshot 是同一份视图
+  assert.deepEqual(server.registry.sessionView("claude_code", "done")!.health, view.health);
+});
+
+test("还在跑的 session：Outcome 未结算（null，但不算省略），分数是临时分", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "context_update", payload: { context_pct: 40 } }));
+  const health = server.stateSnapshot().sessions[0]!.health!;
+  assert.equal(health.unsettled, true);
+  assert.equal(health.factors.outcome, null);
+  assert.ok(!health.omitted.includes("outcome"), "它会来的：界面画虚线槽，而不是说「缺 Outcome」");
+  assert.deepEqual(health.omitted, ["response"], "没阻塞过 → Response 省略，不按满分算（R8）");
+  assert.equal(health.score, 100, "context 25 + focus 25，在两个因子上归一");
+});
+
+test("被回收的 session 没有分数（null），不是 0 分（R10）", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  silenceFor(server, 16);
+  assert.equal(server.sweepZombies().length, 1);
+  const view = server.stateSnapshot().sessions[0]!;
+  assert.equal(view.outcome, "timeout");
+  assert.equal(view.health, null);
+});
+
+test("health_today：今天一段都没结算 = unknown；结算一段之后有数", () => {
+  const server = makeServer();
+  assert.deepEqual(server.stateSnapshot().health_today, { mean: null, health: null, unknown: true, segments: 0 });
+  finishedSession(server, "done");
+  const today = server.stateSnapshot().health_today;
+  assert.equal(today.unknown, false);
+  assert.equal(today.segments, 1);
+  // 三因子（不含 Response）：(12 + 25 + 25) / 75 = 82.7 → 映射后满格
+  assert.equal(today.mean, 82.7);
+  assert.equal(today.health, 1);
+  assert.equal(server.stateSnapshot().pet.health_score, today.health, "pip 条与宠物读的是同一个数");
+});
+
+test("一帧状态的 SQL 条数不随 session 数增长（等待 / 报错按整批查）", () => {
+  const server = makeServer();
+  const count = (): number => {
+    let n = 0;
+    const real = server.db.prepare.bind(server.db);
+    server.db.prepare = ((sql: string) => {
+      n += 1;
+      return real(sql);
+    }) as typeof server.db.prepare;
+    try {
+      server.stateSnapshot();
+    } finally {
+      server.db.prepare = real;
+    }
+    return n;
+  };
+  finishedSession(server, "a");
+  const one = count();
+  for (let i = 0; i < 20; i++) finishedSession(server, `many-${i}`);
+  assert.equal(count(), one, "50 个 session 也还是同样几条查询");
+});
+
+test("HTTP：/api/session_health 要 token；带 token 返回已结算的段（短名）与按天的聚合", async () => {
+  await withServer(async (server, base) => {
+    finishedSession(server, "done", "/Users/alice/secret-corp/my-app");
+    server.handleEvent(ev({ session_id: "live", payload: { source: "startup", cwd: "/Users/x/other" } }));
+
+    assert.equal((await fetch(`${base}/api/session_health`)).status, 401);
+
+    const res = await fetch(`${base}/api/session_health?days=3`, { headers: { "x-vibepaws-token": server.token } });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      source: string;
+      days: number;
+      segments: Array<Record<string, unknown>>;
+      daily: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.source, "sessions");
+    assert.equal(body.days, 3);
+    assert.equal(body.segments.length, 1, "还在跑的那一段不进历史（R9）");
+    const seg = body.segments[0]!;
+    assert.equal(seg.session_id, "done");
+    assert.equal(seg.project, "my-app");
+    assert.equal(seg.score, 82);
+    assert.deepEqual(seg.factors, { context: 12, focus: 25, response: 20, outcome: 25 });
+    assert.deepEqual(seg.omitted, []);
+    assert.equal(typeof seg.duration_ms, "number");
+    assert.ok(!JSON.stringify(body).includes("/Users/"), "原始 project_id 永远不出 Core");
+
+    assert.equal(body.daily.length, 3, "范围里每一天都列出来，没有段的日子是 unknown");
+    assert.deepEqual(
+      body.daily.map((d) => d.unknown),
+      [true, true, false],
+    );
+    assert.equal(body.daily[2]!.segments, 1);
+
+    const bad = await fetch(`${base}/api/session_health?days=abc`, { headers: { "x-vibepaws-token": server.token } });
+    assert.equal(bad.status, 400);
+    const capped = await fetch(`${base}/api/session_health?days=100000`, {
+      headers: { "x-vibepaws-token": server.token },
+    });
+    assert.equal(((await capped.json()) as { days: number }).days, 90);
+  });
+});
+
+test("文档回归：模块头的端点表里有 /api/session_health", () => {
+  const src = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+  const header = src.slice(0, src.indexOf("*/"));
+  assert.match(header, /GET\s+\/api\/session_health/);
 });

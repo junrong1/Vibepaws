@@ -9,7 +9,14 @@ import { applySchema } from "../db/schema.ts";
 import { seedPetTypes } from "../db/seed.ts";
 import { SessionRegistry } from "./registry.ts";
 import { scoreSegment } from "./health.ts";
-import { loadSegmentInput, loadSettledSegments, localDayStart, todayHealth } from "./health_query.ts";
+import {
+  loadHistorySegments,
+  loadSegmentInput,
+  loadSettledSegments,
+  localDayKey,
+  localDayStart,
+  todayHealth,
+} from "./health_query.ts";
 import type { CoreEvent } from "./events.ts";
 
 function makeDb(): Database.Database {
@@ -130,4 +137,40 @@ test("本地午夜：localDayStart 落在同一天的 00:00（本地时区）", 
   assert.equal(start.getDate(), 29);
   assert.equal(start.getHours(), 0);
   assert.equal(start.getMinutes(), 0);
+});
+
+test("批量读和逐个读是同一个口径：每个 session 的等待、报错各归各的", () => {
+  const db = makeDb();
+  const reg = new SessionRegistry({ db });
+  const t0 = Date.now() - 2000;
+  for (const id of ["a", "b"]) {
+    reg.handle(ev(t0, { session_id: id, event_type: "session_started", payload: { source: "startup" } }));
+  }
+  reg.handle(ev(t0 + 1000, { session_id: "a", event_type: "permission_required", payload: { tool_name: "Bash" } }));
+  reg.handle(ev(t0 + 1000 + 3 * MIN, { session_id: "a", event_type: "agent_working", payload: {} }));
+  db.prepare(
+    "INSERT INTO events(event_id, agent, session_id, event_type, safe_summary, received_at) VALUES(?,?,?,?,?,datetime('now'))",
+  ).run("err-b", "claude_code", "b", "session_error", "x");
+  for (const id of ["a", "b"]) {
+    reg.handle(ev(t0 + 5 * MIN, { session_id: id, event_type: "session_finished", payload: { outcome: "success" } }));
+  }
+  const history = loadHistorySegments(db, localDayStart(new Date(t0), 1));
+  assert.deepEqual(history.map((h) => h.sessionId).sort(), ["a", "b"]);
+  for (const h of history) {
+    assert.deepEqual(h.input, loadSegmentInput(db, "claude_code", h.sessionId), h.sessionId);
+    assert.equal(h.projectId, "/Users/x/my-app");
+  }
+  const a = history.find((h) => h.sessionId === "a")!.input;
+  const b = history.find((h) => h.sessionId === "b")!.input;
+  assert.deepEqual([a.waits.length, a.errorCount], [1, 0]);
+  assert.deepEqual([b.waits.length, b.errorCount], [0, 1]);
+});
+
+test("localDayStart 往前数日历日；localDayKey 是本地的 YYYY-MM-DD", () => {
+  const now = new Date(2026, 8, 29, 0, 5);
+  const back = new Date(localDayStart(now, 6));
+  assert.deepEqual([back.getMonth(), back.getDate(), back.getHours()], [8, 23, 0]);
+  assert.equal(localDayKey(new Date(2026, 0, 3, 23, 59)), "2026-01-03");
+  // 跨月
+  assert.equal(localDayKey(new Date(localDayStart(new Date(2026, 9, 1, 9), 1))), "2026-09-30");
 });

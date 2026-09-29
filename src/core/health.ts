@@ -43,10 +43,12 @@
  * （petHealthFromMean）—— 映射的推导与目标 tired 率见那个函数的注释。
  */
 import { isReclaimed } from "./events.ts";
+import type { HealthFactorName, SessionHealthView } from "./events.ts";
 
 /* ================= 因子 ================= */
 
-export type FactorName = "context" | "focus" | "response" | "outcome";
+/** 名字的定义在 events.ts（线上的类型），这里是同一个类型 */
+export type FactorName = HealthFactorName;
 
 /** 四个因子的固定顺序：每个界面都按这个顺序、用这四个名字 */
 export const FACTOR_NAMES: readonly FactorName[] = ["context", "focus", "response", "outcome"];
@@ -288,6 +290,29 @@ export function petScore(result: HealthResult): number | null {
   return normalise(result.factors, PET_FACTORS);
 }
 
+/**
+ * HealthResult → 线上的样子（SessionView.health）。只是改成 snake_case、复制数组，
+ * 不做任何判断 —— 被回收（null）原样是 null。
+ */
+export function healthView(result: HealthResult | null): SessionHealthView | null {
+  if (!result) return null;
+  const e = result.evidence;
+  return {
+    score: result.score,
+    factors: { ...result.factors },
+    evidence: {
+      context_peak: e.contextPeak,
+      repeat_edits: e.repeatEdits,
+      response_median_ms: e.responseMedianMs,
+      response_samples: e.responseSamples,
+      outcome: e.outcome,
+      error_count: e.errorCount,
+    },
+    unsettled: result.unsettled,
+    omitted: [...result.omitted],
+  };
+}
+
 /* ================= 一天 ================= */
 
 /**
@@ -325,6 +350,56 @@ export function dayMean(segments: readonly SegmentInput[]): number | null {
   }
   if (total === 0) return null;
   return round1(weighted / total);
+}
+
+/** 一组段（通常是一天）的聚合：Den 的 Today / Growth、周卡按天画的就是这个 */
+export interface SegmentsAggregate {
+  /** 与 dayMean 同一个数：时长加权的三因子平均（不含 Response，KTD4）；null = 一段都没有 */
+  mean: number | null;
+  /**
+   * 每个因子各自的时长加权平均（满分 FACTOR_MAX，一位小数），四个都有 —— Response 在这里**展示**，
+   * 只是不进 mean。只在该因子有分的段上平均（省略的段不拉低、也不抬高它）；一段都没有 → null
+   */
+  factors: Record<FactorName, number | null>;
+  /** 参与聚合的段数（已结算、没被回收、有分） */
+  segments: number;
+  /** 这些段的真实时长之和（毫秒，不含 DURATION_FLOOR_MS 的下限补足） */
+  durationMs: number;
+}
+
+/**
+ * 把一组段聚合成一个数 + 四个因子。与 dayMean 一样只收已结算、没被回收的段（R9 / R10），
+ * 权重也一样是 max(时长, DURATION_FLOOR_MS)。
+ */
+export function aggregateSegments(segments: readonly SegmentInput[]): SegmentsAggregate {
+  const sums: Record<FactorName, { w: number; v: number }> = {
+    context: { w: 0, v: 0 },
+    focus: { w: 0, v: 0 },
+    response: { w: 0, v: 0 },
+    outcome: { w: 0, v: 0 },
+  };
+  let count = 0;
+  let durationMs = 0;
+  for (const s of segments) {
+    if (!s.settled) continue;
+    const r = scoreSegment(s);
+    if (!r || r.unsettled || r.score === null) continue;
+    const d = segmentDurationMs(s) ?? 0;
+    const w = Math.max(d, DURATION_FLOOR_MS);
+    count += 1;
+    durationMs += d;
+    for (const name of FACTOR_NAMES) {
+      const p = r.factors[name];
+      if (p === null) continue;
+      sums[name].w += w;
+      sums[name].v += p * w;
+    }
+  }
+  const factors = {} as Record<FactorName, number | null>;
+  for (const name of FACTOR_NAMES) {
+    factors[name] = sums[name].w === 0 ? null : round1(sums[name].v / sums[name].w);
+  }
+  return { mean: dayMean(segments), factors, segments: count, durationMs };
 }
 
 /**

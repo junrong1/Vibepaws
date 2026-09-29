@@ -9,6 +9,8 @@ import { isReclaimed, isEditTool, isPermissionMode } from "./events.ts";
 import { notePid } from "./reclaim.ts";
 import { activeMuteUntil } from "./settings.ts";
 import { openWait, closeWaits } from "./waits.ts";
+import { inputsForRows, type SegmentRowWithKey } from "./health_query.ts";
+import { healthView, scoreSegment } from "./health.ts";
 import type { CoreEvent, PetState, SessionView, SessionState, WaitResolution } from "./events.ts";
 
 export type RegistryHandler = (ev: CoreEvent) => void;
@@ -452,12 +454,17 @@ export class SessionRegistry {
     return Number(info.lastInsertRowid);
   }
 
-  /** session 视图共用的列清单（listSessions 与 sessionView 必须取一样的字段） */
+  /**
+   * session 视图共用的列清单（listSessions 与 sessionView 必须取一样的字段）。
+   * 末尾那几列（id / agent_session_id / segment_started_at / context_reported_at）是给 Session Health
+   * 打分的（health_query.SEGMENT_COLUMNS 要的），不上线 —— 行直接交给 inputsForRows，省一次回查。
+   */
   private static readonly VIEW_COLUMNS = `agent, agent_session_id as session_id, project_id, title, is_active,
                 token_used, context_pct, correction_count, last_event_at, last_working_at, finished_at,
                 needs_input_since, ready_since, subagent_count, subagent_since,
                 parent_id, outcome, goal, budget_tokens,
-                context_peak, repeat_edit_count, segment, permission_mode`;
+                context_peak, repeat_edit_count, segment, permission_mode,
+                id, agent_session_id, segment_started_at, context_reported_at`;
 
   /** 全部 session 视图（按最后活动倒序） */
   listSessions(limit = 50): SessionView[] {
@@ -467,7 +474,7 @@ export class SessionRegistry {
          FROM sessions ORDER BY last_event_at DESC LIMIT ?`,
       )
       .all(limit) as Array<Record<string, unknown>>;
-    return rows.map((r) => this.toView(r));
+    return this.toViews(rows);
   }
 
   /** 单个 session 视图（设置窗口写完 goal/budget 后要把生效结果回给界面） */
@@ -478,7 +485,17 @@ export class SessionRegistry {
          FROM sessions WHERE agent=? AND agent_session_id=?`,
       )
       .get(agent, sessionId) as Record<string, unknown> | undefined;
-    return row ? this.toView(row) : null;
+    return row ? this.toViews([row])[0]! : null;
+  }
+
+  /**
+   * 行 → 视图，顺带给每一行的当前这一段打分（SessionView.health）。
+   * stateSnapshot 每一帧 SSE / 每次轮询都走这里：等待和报错按整批各查一次
+   * （health_query.inputsForRows），而不是 50 行 × 2 条 SQL。
+   */
+  private toViews(rows: Array<Record<string, unknown>>): SessionView[] {
+    const inputs = inputsForRows(this.db, rows as unknown as SegmentRowWithKey[]);
+    return rows.map((r, i) => this.toView(r, healthView(scoreSegment(inputs[i]!))));
   }
 
   /**
@@ -517,7 +534,7 @@ export class SessionRegistry {
     return this.sessionView(agent, sessionId);
   }
 
-  private toView(r: Record<string, unknown>): SessionView {
+  private toView(r: Record<string, unknown>, health: SessionView["health"]): SessionView {
     return {
       agent: r.agent as SessionView["agent"],
       session_id: r.session_id as string,
@@ -542,6 +559,7 @@ export class SessionRegistry {
       is_active: (r.is_active as number) === 1,
       parent_id: r.parent_id as number | null,
       outcome: r.outcome as string | undefined,
+      health,
     };
   }
 

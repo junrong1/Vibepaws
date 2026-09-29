@@ -247,6 +247,98 @@ export interface SessionView {
   is_active: boolean;
   parent_id: number | null;
   outcome?: string;
+  /**
+   * 当前这一段的 Session Health（core/health.ts）。null = 这一段被回收了（orphaned / timeout）：
+   * 没有分数，不是 0 分（R10）。还在跑的一段也有分 —— 那是临时分，看 `unsettled`。
+   */
+  health: SessionHealthView | null;
+}
+
+/** Session Health 的四个因子（顺序即界面顺序，见 core/health.ts 的 FACTOR_NAMES） */
+export type HealthFactorName = "context" | "focus" | "response" | "outcome";
+
+/** 一段的 Session Health 上线后的样子（SessionView.health；字段即 health.ts HealthResult 的 snake_case 版） */
+export interface SessionHealthView {
+  /** 0–100，一位小数，在有数据的因子上归一；null = 一个因子都没有（防御，实际上 Focus 总有数） */
+  score: number | null;
+  /** 每个因子的得分（满分 25）；null = 省略（见 omitted）或没结算（Outcome，见 unsettled） */
+  factors: Record<HealthFactorName, number | null>;
+  /** 展开一行时说「为什么是这个分」 */
+  evidence: {
+    /** null = 本段没报过 context */
+    context_peak: number | null;
+    repeat_edits: number;
+    /** null = 没有合格样本 */
+    response_median_ms: number | null;
+    response_samples: number;
+    /** null = 还没结算 */
+    outcome: string | null;
+    error_count: number;
+  };
+  /** Outcome 还没来：这一段还在跑。临时分不进日志、当天聚合、周卡（R9） */
+  unsettled: boolean;
+  /** 因为没数据被省略的因子 —— 界面要说出缺的是哪一个，而不是按满分画。没结算的 Outcome 不在这里 */
+  omitted: HealthFactorName[];
+}
+
+/**
+ * 一天（或任意一组段）的聚合。`mean` 与宠物的 health_score 是同一个数的两种读法：
+ * 三因子（不含 Response，KTD4）时长加权平均，health = 它映射到 0.5–1.0 之后。
+ */
+export interface DayHealthView {
+  /** 0–100；null = 不知道（这一天没有结算过的段）—— 不是 0，也不渲染 tired（R31） */
+  mean: number | null;
+  /** 映射后的宠物健康（0.5–1.0）；null = 不知道 */
+  health: number | null;
+  /** mean === null 的直白说法：界面画「不知道」而不是一条空的 pip 条 */
+  unknown: boolean;
+  /** 参与聚合的段数（已结算、没被回收） */
+  segments: number;
+}
+
+/** GET /api/session_health 的一段（只有已结算、没被回收的） */
+export interface SessionHealthHistoryItem {
+  agent: string;
+  session_id: string;
+  segment: number;
+  /** 项目短名（projectShortName）。原始 project_id 是绝对路径，永远不出 Core */
+  project: string;
+  /** 收工那一刻的本地日历日（YYYY-MM-DD） */
+  day: string;
+  started_at: string | null;
+  finished_at: string;
+  /** null = 起点缺失（U2 之前的老行没有 segment_started_at） */
+  duration_ms: number | null;
+  score: number | null;
+  /** 三因子分（喂宠物的那个，不含 Response）；daily.mean 是它的时长加权平均 */
+  pet_score: number | null;
+  factors: Record<HealthFactorName, number | null>;
+  omitted: HealthFactorName[];
+}
+
+/** GET /api/session_health 的一天 */
+export interface SessionHealthDay extends DayHealthView {
+  /** 本地日历日（YYYY-MM-DD） */
+  day: string;
+  /** 四个因子各自的时长加权平均（满分 25）；Response 在这里展示，但不进 mean */
+  factors: Record<HealthFactorName, number | null>;
+  /** 这一天各段真实时长之和（毫秒） */
+  duration_ms: number;
+}
+
+/** GET /api/session_health 的响应 */
+export interface SessionHealthHistory {
+  /** 历史取自哪里：今天是 sessions 表（每行只有最近一段）；U12 之后是 journal */
+  source: "sessions" | "journal";
+  days: number;
+  /** 范围起点：最早那一天的本地午夜（ISO） */
+  since: string;
+  /** 范围终点：算这份响应的时刻（ISO） */
+  until: string;
+  /** 按 finished_at 从早到晚 */
+  segments: SessionHealthHistoryItem[];
+  /** 范围里的**每一个**本地日，从早到晚；没有段的日子 unknown=true、segments=0 */
+  daily: SessionHealthDay[];
 }
 
 export interface AgentCapabilities {
@@ -329,6 +421,11 @@ export interface PetStatePush {
   /** 已接入的 adapter。空数组 = 一个 hook 都没装 —— 界面要说的是「去装 adapter」，
    * 而不是「还没有 session」。这两句话指向完全不同的操作。 */
   adapters: AdapterView[];
+  /**
+   * 今天（本地午夜起）的 Session Health 聚合 —— 宠物 health_score 的来源，pip 条读的就是它。
+   * unknown = 今天还没有一段结算过（包括升级后的第一个早上），不是 0 分（R31）
+   */
+  health_today: DayHealthView;
   /** 当前静音状态：界面要能显示「还剩多久」、点亮对应按钮并原地取消（issue #7） */
   mute: { global_until: number | null; global_minutes: number | null };
   needs_you: SessionView[];

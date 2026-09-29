@@ -4,8 +4,10 @@
  *   GET  /health           健康检查
  *   POST /events           收事件（X-Vibepaws-Token 校验 + ingestEvent）
  *   GET  /sse              事件流（pet_state / notification / notification_resolved 三类推送）
- *   GET  /api/state        当前聚合状态 JSON
+ *   GET  /api/state        当前聚合状态 JSON（含每个 session 的 health 与今天的 health_today）
  *   GET  /api/sessions     全部 session 视图
+ *   GET  /api/session_health  Session Health 历史（?days=N，默认 7、上限 90）：已结算的段 + 按本地日聚合。
+ *                          不叫 /api/health —— /health 是免鉴权的存活探针，两条同名路由鉴权相反是个坑
  *   GET  /api/exp          宠物 EXP/等级
  *   GET  /api/hookstats    采集通道开销（字节 / 延迟 / 恒为 0 的模型调用，见 core/hookstats.ts）
  *   GET  /api/settings     设置窗口的全部数据（可调项 + 取值范围 + 宠物 + 活跃 session）
@@ -52,6 +54,8 @@ import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
+import { todayHealth } from "./health_query.ts";
+import { dayHealthView, parseHistoryDays, sessionHealthHistory } from "./health_history.ts";
 import type {
   AdapterView,
   AgentId,
@@ -222,6 +226,13 @@ export class VibepawsServer {
           if (url === "/api/sessions") {
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ sessions: this.registry.listSessions() }));
+            return;
+          }
+          // Den / 周卡的历史。只读，但和其他 /api/* 一样在 token 之后：里面有项目名与每段的时间线
+          if (url === "/api/session_health") {
+            const days = parseHistoryDays(new URL(req.url ?? "/", "http://core").searchParams.get("days"));
+            if (days === null) sendJson(res, 400, { error: "days must be a positive integer" });
+            else sendJson(res, 200, sessionHealthHistory(this.db, { days }));
             return;
           }
           if (url === "/api/exp") {
@@ -780,6 +791,7 @@ export class VibepawsServer {
         next_level_exp: pet.next_level_exp,
       },
       sessions,
+      health_today: dayHealthView(todayHealth(this.db)),
       adapters: this.listAdapters(),
       mute: (({ global_until, global_minutes }) => ({ global_until, global_minutes }))(
         this.notifications.muteStatus(),
