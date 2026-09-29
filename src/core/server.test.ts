@@ -407,3 +407,158 @@ test("改静默阈值当场生效，而不是等下一轮 sweep", async () => {
     assert.equal(server.stateSnapshot().sessions[0]!.is_active, false);
   });
 });
+
+/* ---------------- 通知身份与结束方式（R1 / R2 / R17） ---------------- */
+
+/**
+ * 最小 SSE 客户端：只为了在测试里等某一类帧。
+ * 连上后先等到那条「连接即推送」的 pet_state —— 在那之前 Core 还没把我们记进 sseClients，
+ * 这时候触发的事件广播不到这里，测试会莫名其妙地等超时。
+ */
+async function openSse(base: string, token: string): Promise<{
+  next: (type: string, timeoutMs?: number) => Promise<Record<string, unknown>>;
+  close: () => void;
+}> {
+  const ac = new AbortController();
+  const res = await fetch(`${base}/sse`, { headers: { "x-vibepaws-token": token }, signal: ac.signal });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const frames: Array<{ type: string; data: Record<string, unknown> }> = [];
+  const pull = async (): Promise<void> => {
+    const { value, done } = await reader.read();
+    if (done) throw new Error("sse closed");
+    buf += decoder.decode(value, { stream: true });
+    let cut: number;
+    while ((cut = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      const type = /^event: (.+)$/m.exec(raw)?.[1];
+      const data = /^data: (.+)$/m.exec(raw)?.[1];
+      if (type && data) frames.push({ type, data: JSON.parse(data) as Record<string, unknown> });
+    }
+  };
+  const next = async (type: string, timeoutMs = 2000): Promise<Record<string, unknown>> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const i = frames.findIndex((f) => f.type === type);
+      if (i >= 0) return frames.splice(i, 1)[0]!.data;
+      if (Date.now() > deadline) throw new Error(`no ${type} frame within ${timeoutMs}ms`);
+      await Promise.race([pull(), new Promise((r) => setTimeout(r, deadline - Date.now()))]);
+    }
+  };
+  await next("pet_state");
+  return { next, close: () => ac.abort() };
+}
+
+type NotifRow = { status: string; resolution: string | null; resolved_at: string | null };
+const notifRow = (server: VibepawsServer, id: number): NotifRow =>
+  server.db.prepare("SELECT status, resolution, resolved_at FROM notifications WHERE id=?").get(id) as NotifRow;
+
+test("SSE notification 帧带数字 id，/api/action dismiss 认它，并推回 notification_resolved", async () => {
+  await withServer(async (server, base) => {
+    const sse = await openSse(base, server.token);
+    try {
+      server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+      server.handleEvent(ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }));
+      const n = await sse.next("notification");
+      assert.equal(n.type, "permission");
+      assert.ok(Number.isInteger(n.id), "气泡在界面上必须是一个可以被指认的东西");
+
+      const r = await post(base, "/api/action", server.token, { action: "dismiss", id: n.id });
+      assert.equal(r.status, 200);
+      assert.deepEqual(
+        { status: notifRow(server, n.id as number).status, resolution: notifRow(server, n.id as number).resolution },
+        { status: "dismissed", resolution: "dismissed" },
+      );
+      const resolved = await sse.next("notification_resolved");
+      assert.equal(resolved.id, n.id);
+      assert.equal(resolved.resolution, "dismissed");
+
+      // 再叉一次：幂等 200，但不是新的一次结束，不再推帧
+      assert.equal((await post(base, "/api/action", server.token, { action: "dismiss", id: n.id })).status, 200);
+      await assert.rejects(sse.next("notification_resolved", 300));
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+test("/api/action actioned 记成 user_actioned；非整数 id 一律 400 且什么都没改", async () => {
+  await withServer(async (server, base) => {
+    server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+    server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+    const { id } = server.db.prepare("SELECT id FROM notifications").get() as { id: number };
+
+    for (const bad of [String(id), 1.5, null, undefined]) {
+      const r = await post(base, "/api/action", server.token, { action: "actioned", id: bad });
+      assert.equal(r.status, 400, `id=${String(bad)} 不该被接受`);
+    }
+    assert.equal(notifRow(server, id).resolution, null);
+
+    assert.equal((await post(base, "/api/action", server.token, { action: "actioned", id })).status, 200);
+    const row = notifRow(server, id);
+    assert.equal(row.status, "actioned");
+    assert.equal(row.resolution, "user_actioned");
+    assert.ok(row.resolved_at);
+  });
+});
+
+test("回收推 notification_resolved（id + timeout）：库里撤了，屏幕上的气泡也得走", async () => {
+  await withServer(async (server, base) => {
+    server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+    server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+    const { id } = server.db.prepare("SELECT id FROM notifications").get() as { id: number };
+    const sse = await openSse(base, server.token);
+    try {
+      silenceFor(server, 16);
+      assert.equal(server.sweepZombies().length, 1);
+      const resolved = await sse.next("notification_resolved");
+      assert.equal(resolved.id, id);
+      assert.equal(resolved.resolution, "timeout");
+      assert.equal(resolved.session_id, "s1");
+      assert.equal(notifRow(server, id).resolution, "timeout", "行上也要记着它是怎么没的");
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+test("agent 自己往下走了（needs-you 被进展清掉）→ 气泡记成 inferred 并推 notification_resolved", async () => {
+  await withServer(async (server, base) => {
+    const sse = await openSse(base, server.token);
+    try {
+      server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+      server.handleEvent(ev({ event_type: "permission_required", payload: { tool_name: "Bash" } }));
+      const n = await sse.next("notification");
+
+      server.handleEvent(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+      const resolved = await sse.next("notification_resolved");
+      assert.equal(resolved.id, n.id);
+      assert.equal(resolved.resolution, "inferred");
+      assert.equal(notifRow(server, n.id as number).resolution, "inferred");
+      assert.equal(server.stateSnapshot().sessions[0]!.state, "working");
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+test("用户在宠物里点过的气泡，agent 继续干活时不会被改写成 inferred", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "decision_required", payload: { kind: "question" } }));
+  const { id } = server.db.prepare("SELECT id FROM notifications").get() as { id: number };
+  server.notifications.actioned(id);
+  server.handleEvent(ev({ event_type: "agent_working", payload: {} }));
+  assert.equal(notifRow(server, id).resolution, "user_actioned");
+});
+
+test("没在等你的 session 干活不会碰任何气泡（context 提醒不算被「答过」）", () => {
+  const server = makeServer();
+  server.handleEvent(ev({ payload: { source: "startup", cwd: "/Users/x/my-app" } }));
+  server.handleEvent(ev({ event_type: "context_update", payload: { context_pct: 88 } }));
+  server.handleEvent(ev({ event_type: "agent_working", payload: {} }));
+  const rows = server.db.prepare("SELECT type, resolution FROM notifications").all() as Array<{ type: string; resolution: string | null }>;
+  assert.deepEqual(rows, [{ type: "context", resolution: null }]);
+});

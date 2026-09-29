@@ -5,6 +5,7 @@
 import { drawPet } from "./pets/render.js";
 import * as petRegistry from "./pets/registry.js";
 import { BLEND_MS, MOTION } from "./pets/motion.js";
+import { stickyBubbleStale } from "./health/bubbles.js";
 // 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
 import { t as translate, normalizeLocale } from "/i18n.js";
 
@@ -93,6 +94,11 @@ function openStream() {
   es.addEventListener("notification", (e) => {
     const n = parseJson(e.data);
     if (n && !n.skip) pushBubble(n);
+  });
+  // Core 说这条气泡结束了（回收 / agent 自己往下走了 / 别的客户端叉掉了）→ 按 id 撤
+  es.addEventListener("notification_resolved", (e) => {
+    const r = parseJson(e.data);
+    if (r && Number.isInteger(r.id)) removeBubbleById(r.id);
   });
   // UI server 明确告知「连上了代理但 Core 不在」（见 src/ui/server.ts 的 proxySse）
   es.addEventListener("core_offline", () => setStream(false));
@@ -401,6 +407,8 @@ function pushBubble(n) {
   if (existing) {
     existing.querySelector(".b-title").textContent = notifText(n, "title");
     existing.querySelector(".b-body").textContent = notifText(n, "body");
+    // 指向最新那一行：叉掉时标记的应当是用户正看着的这条文字
+    if (Number.isInteger(n.id)) existing.dataset.id = String(n.id);
     // 重新计时：不重置的话，一条不断刷新的通知会在**第一次**出现后 8 秒消失，
     // 用户看到的是「刚更新完就没了」。
     armDismiss(existing, sticky);
@@ -413,6 +421,9 @@ function pushBubble(n) {
   el.dataset.agent = n.agent ?? "";
   el.dataset.session = n.session_id ?? "";
   el.dataset.type = n.type ?? "";
+  // 行 id：回 /api/action 用，也是 notification_resolved 撤气泡的依据。老 Core 不发 id
+  if (Number.isInteger(n.id)) el.dataset.id = String(n.id);
+  el._createdAt = Date.now();
 
   const dismiss = document.createElement("button");
   dismiss.type = "button";
@@ -421,6 +432,7 @@ function pushBubble(n) {
   dismiss.setAttribute("aria-label", t("ui.bubble.dismiss"));
   dismiss.onclick = (e) => {
     e.stopPropagation();
+    resolveBubble(el, "dismiss");
     removeBubble(el);
   };
   el.appendChild(dismiss);
@@ -432,6 +444,7 @@ function pushBubble(n) {
 
   el.onclick = () => {
     openPanel();
+    resolveBubble(el, "actioned");
     removeBubble(el);
   };
   box.appendChild(el);
@@ -464,6 +477,18 @@ function removeBubble(el) {
   el.remove();
 }
 
+function removeBubbleById(id) {
+  for (const el of [...$("bubbles").children]) {
+    if (el.dataset.id === String(id)) removeBubble(el);
+  }
+}
+
+/** 告诉 Core 用户在宠物里处理了这条气泡（dismiss / actioned）。没有 id 的老通知无从指认，跳过 */
+function resolveBubble(el, action) {
+  if (!el.dataset.id) return;
+  void postAction(action, { id: Number(el.dataset.id) });
+}
+
 /** 超出上限时先淘汰会自己消失的那些，别把「等你」挤掉 */
 function trimBubbles() {
   const box = $("bubbles");
@@ -477,15 +502,15 @@ function trimBubbles() {
 
 /**
  * 用户回答了 agent 之后，Core 会把该 session 的 needs-you 撤掉 ——
- * 那条常驻气泡也该自己走，不必用户手动叉掉。
+ * 那条常驻气泡也该自己走，不必用户手动叉掉。session 从列表里消失了也一样
+ * （判定见 ui/health/bubbles.js）。
  */
 function reconcileStickyBubbles() {
+  const now = Date.now();
   for (const el of [...$("bubbles").children]) {
     if (!el.classList.contains("sticky")) continue;
-    const s = state.sessions.find(
-      (x) => x.session_id === el.dataset.session && x.agent === el.dataset.agent,
-    );
-    if (s && s.state !== "needs-you") removeBubble(el);
+    const bubble = { agent: el.dataset.agent, session: el.dataset.session, createdAt: el._createdAt ?? 0 };
+    if (stickyBubbleStale(bubble, state.sessions, now)) removeBubble(el);
   }
 }
 

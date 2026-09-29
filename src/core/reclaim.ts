@@ -34,7 +34,7 @@
  * 超时那条路。方向是安全的：宁可晚 15 分钟回收，也不要错杀。
  */
 import type Database from "better-sqlite3";
-import type { SessionOutcome } from "./events.ts";
+import type { SessionOutcome, NotificationResolvedPush } from "./events.ts";
 
 /** sweep 周期：G10 的建议值。宠物被钉住的最坏情况 = 这个周期 + 判定阈值 */
 export const SWEEP_INTERVAL_MS = 60_000;
@@ -59,6 +59,9 @@ export interface ReclaimedSession {
   outcome: Extract<SessionOutcome, "orphaned" | "timeout">;
   /** 最后一次事件到回收之间的静默时长（毫秒），写日志用 */
   idle_ms: number;
+  /** 顺手撤掉的气泡（resolution=timeout）。调用方逐条推 `notification_resolved`，
+   * 否则库里已经撤了，屏幕上那条「等你」要等到重启才消失 */
+  notifications: NotificationResolvedPush[];
 }
 
 export interface ReclaimOptions {
@@ -146,7 +149,7 @@ export function reclaimZombies(db: Database.Database, opts: ReclaimOptions = {})
     const outcome = classify(row, idleMs, timeoutMs, isAlive);
     if (!outcome) continue;
 
-    reclaim(db, row.agent, row.agent_session_id, outcome, now);
+    const notifications = reclaim(db, row.agent, row.agent_session_id, outcome, now);
     reclaimed.push({
       agent: row.agent,
       session_id: row.agent_session_id,
@@ -154,6 +157,7 @@ export function reclaimZombies(db: Database.Database, opts: ReclaimOptions = {})
       title: row.title,
       outcome,
       idle_ms: idleMs,
+      notifications,
     });
   }
   return reclaimed;
@@ -178,8 +182,10 @@ function classify(
  *   · `is_active=0` + outcome —— 宠物的聚合状态从此不再算它（G10 的正题）
  *   · 清掉 `needs_input_since` —— 不清的话，这个 session 万一被 `--resume` 拉回来，
  *     会带着三小时前的「等你」标记复活，宠物立刻又红一次
- *   · 把它还挂着的气泡标成 dismissed —— 一个已经不存在的会话不该继续在屏幕上
- *     求人回答。这正是「orphan cleanup」里 orphan 的部分
+ *   · 把它还挂着的气泡标成 dismissed + resolution=timeout —— 一个已经不存在的会话
+ *     不该继续在屏幕上求人回答。这正是「orphan cleanup」里 orphan 的部分。
+ *     orphaned 也记成 timeout：resolution 说的是「气泡怎么没的」（没人答，会话没了），
+ *     进程是崩了还是静默了由 sessions.outcome 负责回答
  *
  * `last_event_at` **不动**：它是「什么时候没声了」的唯一证据，也是下一轮 sweep
  * 的判定依据。刷新它等于把静默时长清零。
@@ -190,7 +196,7 @@ function reclaim(
   sessionId: string,
   outcome: ReclaimedSession["outcome"],
   now: number,
-): void {
+): NotificationResolvedPush[] {
   const at = new Date(now).toISOString();
   db.prepare(
     `UPDATE sessions
@@ -199,8 +205,12 @@ function reclaim(
             subagent_count = 0, subagent_since = NULL
       WHERE agent = ? AND agent_session_id = ?`,
   ).run(outcome, at, agent, sessionId);
-  db.prepare(
-    `UPDATE notifications SET status = 'dismissed'
-      WHERE agent = ? AND session_id = ? AND status = 'shown'`,
-  ).run(agent, sessionId);
+  // resolution IS NULL：已经被用户点过 / 推断过的那几条不改写 —— 只记第一次结束
+  return db
+    .prepare(
+      `UPDATE notifications SET status = 'dismissed', resolution = 'timeout', resolved_at = ?
+        WHERE agent = ? AND session_id = ? AND status = 'shown' AND resolution IS NULL
+        RETURNING id, agent, session_id, type, resolution, resolved_at`,
+    )
+    .all(at, agent, sessionId) as NotificationResolvedPush[];
 }

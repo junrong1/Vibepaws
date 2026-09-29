@@ -184,6 +184,55 @@ test("回收顺带撤掉还挂着的气泡（orphan cleanup）", () => {
   assert.deepEqual(shown.map((n) => n.session_id), ["other"]);
 });
 
+test("回收撤掉的气泡记成 timeout，并把 id 交给调用方去推 notification_resolved", () => {
+  const db = makeDb();
+  seedSession(db, { idleMs: TIMEOUT_MS + 1000 });
+  const insert = db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body, status, resolution)
+     VALUES('claude_code', 's1', ?, 't', 'b', ?, ?)`,
+  );
+  const waiting = Number(insert.run("permission", "shown", null).lastInsertRowid);
+  // 用户已经在宠物里点过的那条：只记第一次结束，回收不改写它
+  const answered = Number(insert.run("decision", "actioned", "user_actioned").lastInsertRowid);
+
+  const [r] = reclaimZombies(db, { now: NOW, timeoutMs: TIMEOUT_MS });
+  assert.ok(r);
+  assert.equal(r.notifications.length, 1);
+  const n = r.notifications[0]!;
+  assert.equal(n.id, waiting);
+  assert.equal(n.resolution, "timeout");
+  assert.equal(n.agent, "claude_code");
+  assert.equal(n.session_id, "s1");
+  assert.equal(n.type, "permission");
+  assert.equal(n.resolved_at, new Date(NOW).toISOString());
+
+  const rows = db.prepare("SELECT id, status, resolution FROM notifications ORDER BY id").all() as Array<{
+    id: number; status: string; resolution: string;
+  }>;
+  assert.deepEqual(rows, [
+    { id: waiting, status: "dismissed", resolution: "timeout" },
+    { id: answered, status: "actioned", resolution: "user_actioned" },
+  ]);
+});
+
+test("pid 死了（orphaned）撤掉的气泡同样记成 timeout —— 进程怎么没的由 outcome 回答", () => {
+  const db = makeDb();
+  seedSession(db, { idleMs: LIVENESS_GRACE_MS + 1000, pid: 4242, confirmed: true });
+  db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body) VALUES('claude_code','s1','decision','t','b')`,
+  ).run();
+  const [r] = reclaimZombies(db, { now: NOW, timeoutMs: TIMEOUT_MS, isAlive: () => false });
+  assert.equal(r?.outcome, "orphaned");
+  assert.deepEqual(r?.notifications.map((n) => n.resolution), ["timeout"]);
+});
+
+test("没有挂着的气泡时 notifications 是空数组（调用方不必判空）", () => {
+  const db = makeDb();
+  seedSession(db, { idleMs: TIMEOUT_MS + 1000 });
+  const [r] = reclaimZombies(db, { now: NOW, timeoutMs: TIMEOUT_MS });
+  assert.deepEqual(r?.notifications, []);
+});
+
 test("已经结束的 session 不再被碰（outcome 不会被覆写成 timeout）", () => {
   const db = makeDb();
   seedSession(db, { idleMs: 10 * TIMEOUT_MS, active: false });

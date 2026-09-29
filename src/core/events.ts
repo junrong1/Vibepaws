@@ -217,6 +217,39 @@ export interface AdapterView {
   last_event_at: string | null;
 }
 
+/**
+ * 一条通知是怎么结束的（notifications.resolution）。
+ *   user_actioned —— 用户在宠物里点了这条气泡（Response 因子要的就是这个时间戳）
+ *   inferred      —— 用户没碰气泡，但 agent 自己往下走了（needs-you 被进展事件清掉）：
+ *                    多半是在终端里答的，时间里混着 agent 自己的重启
+ *   timeout       —— session 被僵尸回收（orphaned / timeout 都算这一种，见 core/reclaim.ts）
+ *   dismissed     —— 用户在宠物里叉掉了
+ *   muted         —— 被静音吞掉，从来没出现在屏幕上
+ * 只记**第一次**结束：被回收之后用户再叉一次，它依然是 timeout。
+ */
+export type NotificationResolution = "user_actioned" | "inferred" | "timeout" | "dismissed" | "muted";
+
+export const NOTIFICATION_RESOLUTIONS: NotificationResolution[] = [
+  "user_actioned",
+  "inferred",
+  "timeout",
+  "dismissed",
+  "muted",
+];
+
+/**
+ * SSE `notification_resolved` 帧：一条气泡已经结束了，界面按 id 撤掉它。
+ * 没有这一帧的时候，Core 在库里把气泡标成 dismissed，屏幕上的那一条却要等重启才走。
+ */
+export interface NotificationResolvedPush {
+  id: number;
+  agent: string;
+  session_id: string;
+  type: string;
+  resolution: NotificationResolution;
+  resolved_at: string;
+}
+
 /** 聚合宠物状态推送（SSE） */
 export interface PetStatePush {
   type: "pet_state";

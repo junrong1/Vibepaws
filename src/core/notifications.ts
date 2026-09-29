@@ -7,7 +7,7 @@
  * 由渲染层按用户 locale 出字；落库的 title/body 固定用英文，DB 内容与界面语言解耦。
  */
 import type Database from "better-sqlite3";
-import type { CoreEvent } from "./events.ts";
+import type { CoreEvent, NotificationResolution, NotificationResolvedPush } from "./events.ts";
 import { projectShortName } from "./registry.ts";
 import {
   getSetting,
@@ -26,6 +26,11 @@ export interface I18nText {
 }
 
 export interface Notification {
+  /**
+   * 行 id（notifications.id）。界面拿它回 `/api/action` 叉掉 / 标记已处理，
+   * Core 拿它推 `notification_resolved`。没有它，气泡在界面上是一个无法被指认的东西。
+   */
+  id?: number;
   event_id?: string;
   agent: string;
   session_id: string;
@@ -37,10 +42,13 @@ export interface Notification {
   i18n?: { title: I18nText; body: I18nText };
   status: "shown" | "dismissed" | "actioned" | "muted";
   shown_at: string;
+  /** 怎么结束的（NULL = 还挂着），见 events.ts 的 NotificationResolution */
+  resolution?: NotificationResolution | null;
+  resolved_at?: string | null;
 }
 
 /** 判定结果：只带 key/params，title/body 在落库前统一渲染成英文 */
-type Draft = Omit<Notification, "status" | "shown_at" | "title" | "body"> & {
+type Draft = Omit<Notification, "id" | "status" | "shown_at" | "title" | "body" | "resolution" | "resolved_at"> & {
   i18n: { title: I18nText; body: I18nText };
   /**
    * 阈值闩锁的**待提交**项。必须等 persist() 真的把气泡发出去才记账 ——
@@ -273,12 +281,15 @@ export class NotificationEngine {
     // mute 检查
     const muted = this.isMuted(n.session_id, n.type);
     if (muted) {
+      // 被静音吞掉的通知一出生就结束了：resolved_at = shown_at
+      const at = new Date().toISOString();
       this.db
         .prepare(
-          `INSERT INTO notifications(event_id, agent, session_id, type, title, body, status, shown_at)
-           VALUES(?, ?, ?, ?, ?, ?, 'muted', ?)`,
+          `INSERT INTO notifications(event_id, agent, session_id, type, title, body, status, shown_at,
+                                     resolution, resolved_at)
+           VALUES(?, ?, ?, ?, ?, ?, 'muted', ?, 'muted', ?)`,
         )
-        .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, new Date().toISOString());
+        .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, at, at);
       return null;
     }
     // 去重：同 session 同类型 60s。**升档除外** —— 去重是为了压住「同一件事重复说」，
@@ -299,7 +310,8 @@ export class NotificationEngine {
          VALUES(?, ?, ?, ?, ?, ?, 'shown', ?)`,
       )
       .run(n.event_id ?? null, n.agent, n.session_id, n.type, n.title, n.body, shownAt);
-    return { ...n, status: "shown", shown_at: shownAt };
+    // lastInsertRowid 是 number | bigint；行 id 不可能超出安全整数，Number() 之后 JSON 才序列化得了
+    return { ...n, id: Number(info.lastInsertRowid), status: "shown", shown_at: shownAt };
   }
 
   // ---- mute 管理 ----
@@ -393,13 +405,47 @@ export class NotificationEngine {
       sessions,
     };
   }
-  dismiss(notificationId: number): void {
-    this.db.prepare("UPDATE notifications SET status='dismissed' WHERE id=?").run(notificationId);
+  /**
+   * 用户在宠物里叉掉 / 点了这条气泡。返回被结束的那条（调用方据此推 `notification_resolved`）；
+   * null = 没有这一行，或者它早就结束了 —— 只记第一次结束，被回收过的气泡再叉一次仍是 timeout。
+   */
+  dismiss(notificationId: number): NotificationResolvedPush | null {
+    const at = new Date().toISOString();
+    const row = this.db
+      .prepare(
+        `UPDATE notifications SET status='dismissed', resolution='dismissed', resolved_at=?
+          WHERE id=? AND resolution IS NULL
+          RETURNING id, agent, session_id, type, resolution, resolved_at`,
+      )
+      .get(at, notificationId) as NotificationResolvedPush | undefined;
+    return row ?? null;
   }
-  actioned(notificationId: number): void {
-    this.db
-      .prepare("UPDATE notifications SET status='actioned', actioned_at=? WHERE id=?")
-      .run(new Date().toISOString(), notificationId);
+  actioned(notificationId: number): NotificationResolvedPush | null {
+    const at = new Date().toISOString();
+    const row = this.db
+      .prepare(
+        `UPDATE notifications SET status='actioned', actioned_at=?, resolution='user_actioned', resolved_at=?
+          WHERE id=? AND resolution IS NULL
+          RETURNING id, agent, session_id, type, resolution, resolved_at`,
+      )
+      .get(at, at, notificationId) as NotificationResolvedPush | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * 「等你」被 agent 自己的进展清掉了（用户多半在终端里答的）→ 把这个 session 还挂着的
+   * decision / permission 气泡记成 inferred。只动这两类：它们是 needs-you 的气泡，
+   * context / error 之类的提醒不因为 agent 继续干活就算「答过了」。
+   */
+  resolveInferred(agent: string, sessionId: string): NotificationResolvedPush[] {
+    return this.db
+      .prepare(
+        `UPDATE notifications SET status='dismissed', resolution='inferred', resolved_at=?
+          WHERE agent=? AND session_id=? AND status='shown' AND resolution IS NULL
+            AND type IN ('decision','permission')
+          RETURNING id, agent, session_id, type, resolution, resolved_at`,
+      )
+      .all(new Date().toISOString(), agent, sessionId) as NotificationResolvedPush[];
   }
   history(limit = 50): Notification[] {
     return this.db

@@ -3,7 +3,7 @@
  * 端点：
  *   GET  /health           健康检查
  *   POST /events           收事件（X-Vibepaws-Token 校验 + ingestEvent）
- *   GET  /sse              事件流（pet_state / notification / event 三类推送）
+ *   GET  /sse              事件流（pet_state / notification / notification_resolved 三类推送）
  *   GET  /api/state        当前聚合状态 JSON
  *   GET  /api/sessions     全部 session 视图
  *   GET  /api/exp          宠物 EXP/等级
@@ -52,7 +52,15 @@ import { ingestEvent, upsertAgent } from "./ingress.ts";
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD } from "./exp.ts";
-import type { AdapterView, AgentId, CoreEvent, PetState, PetStatePush, SessionView } from "./events.ts";
+import type {
+  AdapterView,
+  AgentId,
+  CoreEvent,
+  NotificationResolvedPush,
+  PetState,
+  PetStatePush,
+  SessionView,
+} from "./events.ts";
 
 export interface ServerConfig {
   port?: number;
@@ -160,7 +168,13 @@ export class VibepawsServer {
 
     // 事件分发链：ingress → registry → notifications/exp → SSE
     this.notifications.onEvent = (ev: CoreEvent) => {
+      const wasWaiting = this.isWaiting(ev.agent, ev.session_id);
       this.registry.handle(ev);
+      // 「等你」被这条事件清掉了，而用户没在宠物里点过那条气泡 —— 只能是在终端里答的
+      // （或者 agent 自己放弃了等待）。气泡记成 inferred 并撤掉，别让它比「等你」活得久
+      if (wasWaiting && !this.isWaiting(ev.agent, ev.session_id)) {
+        this.broadcastResolved(this.notifications.resolveInferred(ev.agent, ev.session_id));
+      }
       this.exp.handle(ev);
       this.broadcastNotification(ev);
     };
@@ -309,6 +323,8 @@ export class VibepawsServer {
           `(silent ${Math.round(s.idle_ms / 60_000)}m)`,
       );
     }
+    // 库里已经把它们的气泡撤了；不推这一帧的话，屏幕上那条「等你」要等到重启才走
+    this.broadcastResolved(reclaimed.flatMap((s) => s.notifications));
     // 宠物的聚合状态刚变了（可能正是从「需要你」松开）—— 别等下一个事件才告诉界面
     this.broadcastState();
     return reclaimed;
@@ -599,14 +615,20 @@ export class VibepawsServer {
           if (!session_id) return bad("session_id required");
           this.notifications.unmuteSession(session_id);
           break;
-        case "dismiss":
+        // 同一条气泡可能开在好几个客户端里（浏览器 + 桌面壳）：一处叉掉，处处撤掉。
+        // 返回 null（没有这一行 / 早就结束了）仍回 200 —— 重复点一次不是错误
+        case "dismiss": {
           if (!Number.isInteger(id)) return bad("id required");
-          this.notifications.dismiss(id as number);
+          const r = this.notifications.dismiss(id as number);
+          if (r) this.broadcastResolved([r]);
           break;
-        case "actioned":
+        }
+        case "actioned": {
           if (!Number.isInteger(id)) return bad("id required");
-          this.notifications.actioned(id as number);
+          const r = this.notifications.actioned(id as number);
+          if (r) this.broadcastResolved([r]);
           break;
+        }
         default:
           return bad("unknown action");
       }
@@ -687,6 +709,21 @@ export class VibepawsServer {
     const notif = this.notifications.getForEvent(ev);
     if (!notif) return; // 没有通知就没必要广播「skip」噪音
     for (const client of [...this.sseClients]) this.sendSse(client, "notification", notif);
+  }
+
+  /** 气泡结束了：逐条推 `notification_resolved`，界面按 id 撤掉。不走 broadcastState 的合并窗口 —— 每条都是独立的一件事 */
+  private broadcastResolved(resolved: NotificationResolvedPush[]): void {
+    for (const r of resolved) {
+      for (const client of [...this.sseClients]) this.sendSse(client, "notification_resolved", r);
+    }
+  }
+
+  /** 这个 session 此刻是不是卡在「等你」上（needs_input_since 非空） */
+  private isWaiting(agent: string, sessionId: string): boolean {
+    const row = this.db
+      .prepare("SELECT needs_input_since FROM sessions WHERE agent=? AND agent_session_id=?")
+      .get(agent, sessionId) as { needs_input_since: string | null } | undefined;
+    return Boolean(row?.needs_input_since);
   }
 
   /**

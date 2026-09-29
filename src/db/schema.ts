@@ -5,7 +5,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -113,7 +113,12 @@ CREATE TABLE IF NOT EXISTS notifications (
   body          TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'shown' CHECK (status IN ('shown','dismissed','actioned','muted')),
   shown_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  actioned_at   TEXT
+  actioned_at   TEXT,
+  -- 这条通知是怎么结束的（NULL = 还挂着）。status 只说「现在是什么样」，
+  -- 说不出「用户在宠物里点的」和「agent 自己往下走了、我们推断用户在终端答了」的区别 ——
+  -- 而 Response 因子要的正是前者的时间戳。取值见 core/events.ts 的 NOTIFICATION_RESOLUTIONS。
+  resolution    TEXT CHECK (resolution IN ('user_actioned','inferred','timeout','dismissed','muted')),
+  resolved_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, shown_at);
 
@@ -145,7 +150,13 @@ CREATE TABLE IF NOT EXISTS settings (
  * v1 之后新增的列。`CREATE TABLE IF NOT EXISTS` 对已存在的库是空操作，
  * 所以老库必须显式补列 —— 否则升级后的代码会对着 v1 的表查不存在的字段。
  */
-const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
+const ADDED_COLUMNS: Array<{
+  table: string;
+  column: string;
+  ddl: string;
+  /** 补列之后立刻跑一次（且只在补列那一次跑）：从老列推出新列的值，老行不该变成「不知道」 */
+  backfill?: string;
+}> = [
   { table: "sessions", column: "token_exp_granted", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "needs_input_since", ddl: "TEXT" },
   { table: "sessions", column: "needs_input_kind", ddl: "TEXT" },
@@ -155,6 +166,30 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "sessions", column: "agent_pid_confirmed", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "subagent_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "subagent_since", ddl: "TEXT" },
+  {
+    table: "notifications",
+    column: "resolution",
+    ddl: "TEXT CHECK (resolution IN ('user_actioned','inferred','timeout','dismissed','muted'))",
+    // 老库只有 status：actioned / dismissed / muted 各有唯一对应；shown 仍挂着，保持 NULL
+    backfill: `UPDATE notifications SET resolution = CASE status
+                 WHEN 'actioned' THEN 'user_actioned'
+                 WHEN 'dismissed' THEN 'dismissed'
+                 WHEN 'muted' THEN 'muted'
+               END
+               WHERE resolution IS NULL AND status != 'shown'`,
+  },
+  {
+    table: "notifications",
+    column: "resolved_at",
+    ddl: "TEXT",
+    // 只填得出确定的那部分：actioned 有 actioned_at，muted 在出生那一刻就结束了。
+    // 老的 dismissed 不知道是什么时候叉掉的 —— 编一个时间比留空更糟
+    backfill: `UPDATE notifications SET resolved_at = CASE status
+                 WHEN 'actioned' THEN actioned_at
+                 WHEN 'muted' THEN shown_at
+               END
+               WHERE resolved_at IS NULL`,
+  },
 ];
 
 interface MigrateDb {
@@ -165,11 +200,12 @@ interface MigrateDb {
 /** 幂等补列：读 table_info 而不是 catch 异常，避免把真实错误也吞掉。 */
 function addMissingColumns(db: MigrateDb): void {
   if (typeof db.prepare !== "function") return; // 测试里的假 db 只有 exec
-  for (const { table, column, ddl } of ADDED_COLUMNS) {
+  for (const { table, column, ddl, backfill } of ADDED_COLUMNS) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     if (cols.length === 0) continue; // 表不存在（不该发生，建表在前）
     if (cols.some((c) => c.name === column)) continue;
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    if (backfill) db.exec(backfill);
   }
 }
 

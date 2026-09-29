@@ -245,3 +245,109 @@ test("decision_required 无 kind → ready（非阻塞的安全默认）", () =>
   const r = n.getForEvent(ev({ payload: {} }));
   assert.equal(r?.type, "ready");
 });
+
+/* ---------------- 通知身份与结束方式（R1 / R2） ---------------- */
+
+type Row = { id: number; status: string; resolution: string | null; resolved_at: string | null; actioned_at: string | null };
+const rowOf = (db: Database.Database, id: number): Row =>
+  db.prepare("SELECT id, status, resolution, resolved_at, actioned_at FROM notifications WHERE id=?").get(id) as Row;
+
+test("persist 带回行 id；去重窗口内第二条返回 null，表里不多一行", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const first = n.getForEvent(ev({ event_id: "a", payload: { kind: "question" } }));
+  assert.ok(first, "第一条应当发出去");
+  assert.equal(typeof first.id, "number");
+  assert.ok(Number.isInteger(first.id));
+  const row = db.prepare("SELECT id, event_id FROM notifications").get() as { id: number; event_id: string };
+  assert.equal(first.id, row.id, "返回的 id 必须就是刚写进去的那一行");
+  assert.equal(row.event_id, "a");
+  assert.equal(rowOf(db, row.id).resolution, null, "刚发出去的气泡还挂着");
+
+  assert.equal(n.getForEvent(ev({ event_id: "b", payload: { kind: "question" } })), null);
+  const c = db.prepare("SELECT COUNT(*) c FROM notifications").get() as { c: number };
+  assert.equal(c.c, 1);
+});
+
+test("每条发出去的通知 id 各不相同（不同 session 各一条）", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const a = n.getForEvent(ev({ session_id: "s1", payload: { kind: "question" } }));
+  const b = n.getForEvent(ev({ session_id: "s2", payload: { kind: "question" } }));
+  assert.ok(a?.id && b?.id);
+  assert.notEqual(a.id, b.id);
+});
+
+test("被静音吞掉的通知落库即结束：resolution=muted，resolved_at=shown_at", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  n.muteGlobal(30);
+  assert.equal(n.getForEvent(ev({ payload: { kind: "question" } })), null);
+  const row = db.prepare("SELECT status, resolution, resolved_at, shown_at FROM notifications").get() as {
+    status: string; resolution: string; resolved_at: string; shown_at: string;
+  };
+  assert.equal(row.status, "muted");
+  assert.equal(row.resolution, "muted");
+  assert.equal(row.resolved_at, row.shown_at);
+});
+
+test("dismiss → resolution=dismissed；actioned → user_actioned 且记下时间", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const a = n.getForEvent(ev({ session_id: "s1", payload: { kind: "question" } }))!;
+  const b = n.getForEvent(ev({ session_id: "s2", payload: { kind: "question" } }))!;
+
+  const d = n.dismiss(a.id!);
+  assert.equal(d?.id, a.id);
+  assert.equal(d?.resolution, "dismissed");
+  assert.equal(d?.session_id, "s1");
+  assert.equal(d?.type, "decision");
+  assert.equal(rowOf(db, a.id!).status, "dismissed");
+  assert.ok(rowOf(db, a.id!).resolved_at);
+
+  const act = n.actioned(b.id!);
+  assert.equal(act?.resolution, "user_actioned");
+  const r = rowOf(db, b.id!);
+  assert.equal(r.status, "actioned");
+  assert.equal(r.resolution, "user_actioned");
+  assert.ok(r.actioned_at);
+  assert.equal(r.resolved_at, r.actioned_at);
+});
+
+test("只记第一次结束：叉掉之后再点「已处理」不改写，也不返回", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  const a = n.getForEvent(ev({ payload: { kind: "question" } }))!;
+  n.dismiss(a.id!);
+  const before = rowOf(db, a.id!);
+  assert.equal(n.actioned(a.id!), null);
+  assert.equal(n.dismiss(a.id!), null, "重复叉一次也不是新的一次结束");
+  assert.deepEqual(rowOf(db, a.id!), before);
+});
+
+test("不存在的 id：dismiss / actioned 返回 null，不抛", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db);
+  assert.equal(n.dismiss(9999), null);
+  assert.equal(n.actioned(9999), null);
+});
+
+test("resolveInferred 只收这个 session 还挂着的 decision / permission 气泡", () => {
+  const db = makeDb();
+  const n = new NotificationEngine(db, { dedupMs: 0 });
+  const decision = n.getForEvent(ev({ session_id: "s1", payload: { kind: "question" } }))!;
+  const permission = n.getForEvent(ev({ session_id: "s1", event_type: "permission_required", payload: { tool_name: "Bash" } }))!;
+  const context = n.getForEvent(ev({ session_id: "s1", event_type: "context_update", payload: { context_pct: 90 } }))!;
+  const answered = n.getForEvent(ev({ session_id: "s1", event_type: "permission_required", payload: {} }))!;
+  n.actioned(answered.id!);
+  const other = n.getForEvent(ev({ session_id: "s2", payload: { kind: "question" } }))!;
+
+  const resolved = n.resolveInferred("claude_code", "s1");
+  assert.deepEqual(resolved.map((r) => r.id).sort(), [decision.id, permission.id].sort());
+  assert.ok(resolved.every((r) => r.resolution === "inferred" && r.resolved_at));
+  assert.equal(rowOf(db, decision.id!).status, "dismissed");
+  assert.equal(rowOf(db, context.id!).resolution, null, "context 提醒不因为 agent 继续干活就算答过了");
+  assert.equal(rowOf(db, answered.id!).resolution, "user_actioned", "用户点过的那条不被改写成 inferred");
+  assert.equal(rowOf(db, other.id!).resolution, null, "别的 session 不连坐");
+  assert.deepEqual(n.resolveInferred("claude_code", "s1"), [], "第二次什么都不剩");
+});

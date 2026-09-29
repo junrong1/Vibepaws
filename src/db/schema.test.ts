@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { applySchema, SCHEMA_VERSION } from "./schema.ts";
+import { NOTIFICATION_RESOLUTIONS } from "../core/events.ts";
 
 const V1_SESSIONS = `
 CREATE TABLE sessions (
@@ -62,4 +63,77 @@ test("applySchema 幂等：重复执行不报错、不重复加列", () => {
   applySchema(db);
   const cols = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((c) => c.name);
   assert.equal(cols.filter((c) => c === "needs_input_since").length, 1);
+});
+
+/** v4 及以前的 notifications：只有 status，说不出一条通知是怎么结束的 */
+const V1_NOTIFICATIONS = `
+CREATE TABLE notifications (
+  id INTEGER PRIMARY KEY,
+  event_id TEXT,
+  agent TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'shown' CHECK (status IN ('shown','dismissed','actioned','muted')),
+  shown_at TEXT NOT NULL DEFAULT (datetime('now')),
+  actioned_at TEXT
+);`;
+
+type NotifRow = { id: number; title: string; status: string; resolution: string | null; resolved_at: string | null };
+
+test("老库 notifications 补上 resolution / resolved_at：按 status 回填，数据不丢", () => {
+  const db = new Database(":memory:");
+  db.exec(V1_NOTIFICATIONS);
+  const insert = db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body, status, shown_at, actioned_at)
+     VALUES('claude_code','s1','decision',?, 'b', ?, '2026-09-01T10:00:00.000Z', ?)`,
+  );
+  insert.run("shown", "shown", null);
+  insert.run("actioned", "actioned", "2026-09-01T10:05:00.000Z");
+  insert.run("dismissed", "dismissed", null);
+  insert.run("muted", "muted", null);
+
+  applySchema(db);
+
+  const rows = db.prepare("SELECT id, title, status, resolution, resolved_at FROM notifications ORDER BY id").all() as NotifRow[];
+  assert.equal(rows.length, 4, "老数据一行都不能丢");
+  const by = Object.fromEntries(rows.map((r) => [r.title, r]));
+  assert.equal(by.shown!.resolution, null, "还挂着的气泡不能被回填成已结束");
+  assert.equal(by.shown!.resolved_at, null);
+  assert.equal(by.actioned!.resolution, "user_actioned");
+  assert.equal(by.actioned!.resolved_at, "2026-09-01T10:05:00.000Z");
+  assert.equal(by.dismissed!.resolution, "dismissed");
+  assert.equal(by.dismissed!.resolved_at, null, "不知道什么时候叉的，就别编一个时间");
+  assert.equal(by.muted!.resolution, "muted");
+  assert.equal(by.muted!.resolved_at, "2026-09-01T10:00:00.000Z");
+  for (const r of rows) assert.equal(r.status, r.title, "status 原样保留");
+});
+
+test("applySchema 跑第二遍对 notifications 是空操作：不重复加列，也不再回填", () => {
+  const db = new Database(":memory:");
+  db.exec(V1_NOTIFICATIONS);
+  applySchema(db);
+  // 补列之后才出现的行：回填只属于那一次迁移，不该在每次启动时重跑
+  db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body, status)
+     VALUES('claude_code','s1','decision','t','b','dismissed')`,
+  ).run();
+  applySchema(db);
+  const cols = (db.prepare("PRAGMA table_info(notifications)").all() as Array<{ name: string }>).map((c) => c.name);
+  assert.equal(cols.filter((c) => c === "resolution").length, 1);
+  assert.equal(cols.filter((c) => c === "resolved_at").length, 1);
+  const row = db.prepare("SELECT resolution FROM notifications").get() as { resolution: string | null };
+  assert.equal(row.resolution, null);
+});
+
+test("resolution 的 CHECK 与 events.ts 的 NOTIFICATION_RESOLUTIONS 是同一份清单", () => {
+  const db = new Database(":memory:");
+  applySchema(db);
+  const insert = db.prepare(
+    `INSERT INTO notifications(agent, session_id, type, title, body, resolution)
+     VALUES('claude_code','s1','decision','t','b',?)`,
+  );
+  for (const r of [...NOTIFICATION_RESOLUTIONS, null]) insert.run(r);
+  assert.throws(() => insert.run("expired"), /CHECK/);
 });
