@@ -16,8 +16,8 @@
 #
 # version / sha256 由 scripts/update_cask.ts 在发版时按真实产物刷新 —— 手抄一次就会错一次。
 cask "vibepaws" do
-  version "0.1.1"
-  sha256 "c08069ed83940ac2bcf22bd8f49ba9dc0a7ba13727a0134c96ff61d8c9208d8b"
+  version "0.1.2"
+  sha256 "4032a08f7faa141680e0d7a97894e3136659023629dfda50756f81b57c2a75d7"
 
   url "https://github.com/junrong1/Vibepaws/releases/download/v#{version}/Vibepaws-#{version}-arm64.dmg"
   name "Vibepaws"
