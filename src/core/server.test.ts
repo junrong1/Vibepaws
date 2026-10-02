@@ -20,6 +20,8 @@ import type { CoreEvent } from "./events.ts";
 function atLocalNoon(t: TestContext): void {
   const noon = new Date();
   noon.setHours(12, 0, 0, 0);
+  // 正午还没到就钉昨天正午：events.received_at 走 SQLite 的真时钟，被钉的时间不能跑到它前面
+  if (noon.getTime() > Date.now()) noon.setDate(noon.getDate() - 1);
   t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
 }
 
@@ -189,6 +191,8 @@ test("健康分低且没有活跃 session 时宠物是 tired（README 6.4，不�
   // 用真时钟的话，本地午夜后头几分钟跑这条测试，那一段就成了昨天的，宠物读作「不知道」而不是 tired
   const noon = new Date();
   noon.setHours(12, 0, 0, 0);
+  // 正午还没到就钉昨天正午：events.received_at 走 SQLite 的真时钟，被钉的时间不能跑到它前面
+  if (noon.getTime() > Date.now()) noon.setDate(noon.getDate() - 1);
   t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
   const server = makeServer();
   // 今天结算过的一段打得很差（撞满 context、correction loop、放弃）→ healthScore 掉到 0.7 以下。

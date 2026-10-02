@@ -27,6 +27,8 @@ import type { CoreEvent } from "./events.ts";
 function atLocalNoon(t: TestContext): void {
   const noon = new Date();
   noon.setHours(12, 0, 0, 0);
+  // 正午还没到就钉昨天正午：events.received_at 走 SQLite 的真时钟，被钉的时间不能跑到它前面
+  if (noon.getTime() > Date.now()) noon.setDate(noon.getDate() - 1);
   t.mock.timers.enable({ apis: ["Date"], now: noon.getTime() });
 }
 
