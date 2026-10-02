@@ -112,7 +112,7 @@ Notarization is a round trip to Apple and usually takes 1–5 minutes per artifa
 | `APPLE_API_ISSUER` | Issuer ID |
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 The workflow imports the certificate into a throwaway keychain, preflights, tests, builds, verifies,

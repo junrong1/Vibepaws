@@ -1,9 +1,9 @@
 {
   "name": "vibepaws",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
-  "description": "Vibepaws \u2014 AI coding pet for your coding agents (MVP)",
+  "description": "Vibepaws — AI coding pet for your coding agents (MVP)",
   "main": "desktop/main.js",
   "engines": {
     "node": ">=22.6"
