@@ -4,6 +4,8 @@
  */
 import { retainKnownWords } from "./bash_allowlist.ts";
 
+import type { HabitProfile } from "./habit.ts";
+
 export type AgentId = "claude_code" | "codex" | "generic" | "pi" | "dsh";
 export type Severity = "low" | "medium" | "high";
 
@@ -629,6 +631,8 @@ export interface PetStatePush {
   health_visibility: HealthVisibility;
   /** 当前静音状态：界面要能显示「还剩多久」、点亮对应按钮并原地取消（issue #7） */
   mute: { global_until: number | null; global_minutes: number | null };
+  /** 用户工作习惯画像（docs/handoff-habit-layer.md）。ready=false 时 UI 应保持中立 */
+  habit?: HabitProfile;
   needs_you: SessionView[];
   warning: SessionView[];
   /** 自己干活的 session。**不含** delegating / juggling —— 那两档单独成组，

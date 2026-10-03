@@ -1,6 +1,6 @@
 /**
  * Vibepaws 迁移入口：npm run db:init
- * 在 <project>/.vibepaws/vibepaws.db 初始化 9 张表（幂等）。
+ * 在 <project>/.vibepaws/vibepaws.db 初始化 13 张表（幂等）。
  */
 import Database from "better-sqlite3";
 import { mkdirSync, existsSync } from "node:fs";

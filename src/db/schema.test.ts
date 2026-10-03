@@ -202,3 +202,18 @@ test("老库升级后有 needs_input_waits 表；resolution 的 CHECK 与 events
   const w = db.prepare("SELECT muted_ms, slept_ms, segment FROM needs_input_waits LIMIT 1").get() as Record<string, number>;
   assert.deepEqual(w, { muted_ms: 0, slept_ms: 0, segment: 1 });
 });
+
+test("v3 老库升级：新增 behavior_daily / habit_profile，老数据不丢", () => {
+  const db = new Database(":memory:");
+  applySchema(db);
+  // 模拟一个 v3 老库：删掉两张习惯层新表、把版本回拨到 3，并留一条老数据
+  db.exec("DROP TABLE behavior_daily; DROP TABLE habit_profile; PRAGMA user_version = 3;");
+  db.prepare("INSERT INTO settings(key, value) VALUES('probe','1')").run();
+
+  assert.equal(applySchema(db), SCHEMA_VERSION);
+
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((r) => r.name);
+  assert.ok(tables.includes("behavior_daily"), "升级后应有 behavior_daily");
+  assert.ok(tables.includes("habit_profile"), "升级后应有 habit_profile");
+  assert.equal((db.prepare("SELECT value FROM settings WHERE key='probe'").get() as { value: string }).value, "1", "老数据必须还在");
+});

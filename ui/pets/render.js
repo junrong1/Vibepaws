@@ -8,6 +8,7 @@
 import { CANVAS, FOOT_MARGIN, motionAt, spriteAabb } from "./motion.js";
 import { drawFx, FX_BEHIND } from "./fx.js";
 import { drawProcedural, PROCEDURAL_SCALE, PROCEDURAL_SIZE } from "./procedural.js";
+import { behaviorOverrides } from "../behavior-motion.js";
 import * as registry from "./registry.js";
 
 /** "<帧 URL>:<tint>" → 预先染好色的离屏 canvas。
@@ -99,12 +100,15 @@ export function drawPet(canvas, petTypeId, anim) {
   const h = isSprite ? res.manifest.h : PROCEDURAL_SIZE;
   const feetX = isSprite ? res.manifest.anchor.feetX : 0.5;
   const overrides = isSprite ? res.manifest.motion : null;
+  // 习惯画像 → 动作 overrides。behavior 为 null（冷启动 / 老 Core）时返回 {}，
+  // 与旧默认完全一致；idleVariant / energy / fidget / celebrate / asleep 都在这里折算。
+  const motionOverrides = { ...(overrides ?? {}), ...behaviorOverrides(anim.state, anim.behavior, anim.asleep) };
   const accent = isSprite ? res.manifest.accent : null;
 
-  let m = motionAt(anim.state, anim.elapsed, h, overrides);
+  let m = motionAt(anim.state, anim.elapsed, h, motionOverrides);
   const done = m.done;
   if (anim.prev && anim.blend < 1) {
-    m = blendMotion(motionAt(anim.prev.state, anim.prev.elapsed, h, overrides), m, anim.blend);
+    m = blendMotion(motionAt(anim.prev.state, anim.prev.elapsed, h, motionOverrides), m, anim.blend);
   }
 
   const box = spriteAabb(m, w, h, feetX);

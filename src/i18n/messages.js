@@ -313,6 +313,8 @@ export const MESSAGES = {
     "settings.cap.label": "Daily EXP cap",
     "settings.cap.unit": "EXP / day",
     "settings.cap.hint": "How much EXP tokens can earn per day — keeps one long session from farming levels.",
+    "settings.habit.label": "Learn my work habits",
+    "settings.habit.hint": "The pet adapts its idle behavior and bubble tone to how you work (night owl, burst, shipper…). Stored locally as counts and labels only — never prompts, code, file paths, or command text.",
 
     // ---- Token 与开销（landscape 0.12 / clawd #102）----
     // 这一段回答的是一个**被 agent 幻觉出来的**指控，所以它必须给机制而不是保证：
@@ -847,6 +849,8 @@ export const MESSAGES = {
     "settings.cap.label": "每日 EXP 上限",
     "settings.cap.unit": "EXP / 天",
     "settings.cap.hint": "token 每天最多换多少 EXP —— 免得一个长会话把等级刷出来。",
+    "settings.habit.label": "学习我的工作习惯",
+    "settings.habit.hint": "宠物会根据你的工作方式调整待机行为和气泡语气（夜猫、突击、交付型…）。只在本地存计数和标签 —— 绝不存提示词、代码、文件路径或命令文本。",
 
     // ---- Token 与开销（landscape 0.12 / clawd #102）----
     "settings.section.cost": "Token 与开销",

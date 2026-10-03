@@ -24,7 +24,7 @@
     "desktop": "electron desktop/main.js",
     "dist:mac": "npm run build:dsh && electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types src/**/*.test.ts ui/**/*.test.js desktop/*.test.js scripts/*.test.ts",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts' 'ui/**/*.test.js' 'desktop/*.test.js' 'scripts/*.test.ts'",
     "verify:release": "node --experimental-strip-types scripts/verify_release.ts",
     "cask:update": "node --experimental-strip-types scripts/update_cask.ts",
     "build:dsh": "node --experimental-strip-types scripts/build_dsh_plugin.ts"

@@ -11,7 +11,8 @@ export type ScenarioName =
   | "correction_loop"
   | "multi_session"
   | "crashed_session"
-  | "subagent_fanout";
+  | "subagent_fanout"
+  | "night_owl_burst";
 
 export const SCENARIOS: ScenarioName[] = [
   "normal",
@@ -21,6 +22,7 @@ export const SCENARIOS: ScenarioName[] = [
   "multi_session",
   "crashed_session",
   "subagent_fanout",
+  "night_owl_burst",
 ];
 
 let seqCounter = 0;
@@ -197,6 +199,36 @@ function subagentFanout(): CoreEvent[] {
   return out;
 }
 
+/**
+ * 习惯画像场景（docs/handoff-habit-layer.md §9）：两个过去的 UTC 日，每晚各 4 个短 session
+ * （每个 10 分钟、全部 success、带 Bash/Edit 工具事件）→ 应得 cadence=burst、outcome_bias=shipper、
+ * 非空 tool_affinity、ready=true。chronotype 由 Core 的 events.received_at（摄入时刻）推断，
+ * 不在这里写死 —— 它由 habit.test.ts 里直接种入夜间的 received_at 来验证。
+ */
+function nightOwlBurst(): CoreEvent[] {
+  const out: CoreEvent[] = [];
+  const agent: CoreEvent["agent"] = "claude_code";
+  const proj = "/Users/demo/api-server";
+  const now = Date.now();
+  /** 目标 UTC 时刻 → 相对现在的秒偏移（负数 = 过去） */
+  const at = (daysAgo: number, hour: number, minute = 0): number => {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() - daysAgo);
+    d.setUTCHours(hour, minute, 0, 0);
+    return (d.getTime() - now) / 1000;
+  };
+  const session = (id: string, daysAgo: number): void => {
+    const start = at(daysAgo, 23, 0);
+    out.push(ev(agent, id, proj, "session_started", "Session started", { source: "startup", cwd: proj, title: "api-server" }, "low", start));
+    out.push(ev(agent, id, proj, "agent_working", "Running build", { tool_name: "Bash" }, "low", start + 60));
+    out.push(ev(agent, id, proj, "agent_working", "Editing config", { tool_name: "Edit" }, "low", start + 120));
+    out.push(ev(agent, id, proj, "session_finished", "Done", { reason: "completion", outcome: "success" }, "low", start + 600));
+  };
+  for (let i = 0; i < 4; i++) session(`sim-habit-1-${i}`, 1);
+  for (let i = 0; i < 4; i++) session(`sim-habit-2-${i}`, 2);
+  return out;
+}
+
 const GENERATORS: Record<ScenarioName, () => CoreEvent[]> = {
   normal,
   frequent_decisions: frequentDecisions,
@@ -205,6 +237,7 @@ const GENERATORS: Record<ScenarioName, () => CoreEvent[]> = {
   multi_session: multiSession,
   crashed_session: crashedSession,
   subagent_fanout: subagentFanout,
+  night_owl_burst: nightOwlBurst,
 };
 
 export function generateScenario(name: ScenarioName): CoreEvent[] {

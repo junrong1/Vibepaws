@@ -1,11 +1,12 @@
 /**
  * Vibepaws SQLite schema — 对应 docs/mvp_architecture.md §4
- * 11 张表：pet_types / pets / agents / sessions / events / notifications /
- *          needs_input_waits / exp_logs / memories / settings / rules
+ * 13 张表：pet_types / pets / agents / sessions / events / notifications /
+ *          needs_input_waits / exp_logs / memories / settings / rules /
+ *          behavior_daily / habit_profile
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -267,6 +268,46 @@ CREATE TABLE IF NOT EXISTS rules (
   use_count     INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL,
   UNIQUE (agent, project_id, rule)
+);
+
+-- 习惯层（docs/handoff-habit-layer.md §4）：只存计数/求和/分类标签，绝不存原始内容。
+-- daily rollup: 每天每个 agent 一行，从 events / sessions 折叠而来。
+CREATE TABLE IF NOT EXISTS behavior_daily (
+  id            INTEGER PRIMARY KEY,
+  day           TEXT NOT NULL,                -- 'YYYY-MM-DD' (UTC)
+  agent         TEXT NOT NULL,
+  sessions      INTEGER NOT NULL DEFAULT 0,
+  active_min    REAL NOT NULL DEFAULT 0,
+  tokens        INTEGER NOT NULL DEFAULT 0,
+  corrections   INTEGER NOT NULL DEFAULT 0,
+  errors        INTEGER NOT NULL DEFAULT 0,
+  context_85    INTEGER NOT NULL DEFAULT 0,
+  wait_ms       INTEGER NOT NULL DEFAULT 0,   -- needs-input 时长之和
+  wait_count    INTEGER NOT NULL DEFAULT 0,
+  edits         INTEGER NOT NULL DEFAULT 0,   -- tool_name='Edit'
+  shells        INTEGER NOT NULL DEFAULT 0,   -- tool_name='Bash'
+  reads         INTEGER NOT NULL DEFAULT 0,   -- Read/Glob/Grep
+  success       INTEGER NOT NULL DEFAULT 0,
+  partial       INTEGER NOT NULL DEFAULT 0,
+  abandoned     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (day, agent)
+);
+CREATE INDEX IF NOT EXISTS idx_behavior_daily_day ON behavior_daily(day);
+
+-- 单行用户工作习惯画像（聚合 + 衰减后的摘要）。
+CREATE TABLE IF NOT EXISTS habit_profile (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  chronotype       TEXT,                        -- 'early_bird' | 'day' | 'night_owl'
+  cadence          TEXT,                        -- 'burst' | 'steady' | 'sparse'
+  depth            REAL NOT NULL DEFAULT 0.5,
+  precision        REAL NOT NULL DEFAULT 0.5,
+  context_hygiene  REAL NOT NULL DEFAULT 0.5,
+  responsiveness   REAL NOT NULL DEFAULT 0.5,
+  outcome_bias     TEXT,                        -- 'shipper' | 'explorer'
+  tool_affinity    TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
+  sample_days      INTEGER NOT NULL DEFAULT 0,
+  sample_sessions  INTEGER NOT NULL DEFAULT 0,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;
 

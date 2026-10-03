@@ -81,6 +81,23 @@ test("scope=pet：换一只新宠物，session / 事件 / 设置全都留着", (
   );
 });
 
+test("scope=habit：只清习惯画像，session / 宠物 / 设置都留着", () => {
+  const server = usedServer();
+  server.habit.handle(ev({ event_type: "agent_working", payload: { tool_name: "Bash" } }));
+  server.habit.handle(ev({ event_type: "session_finished", payload: { outcome: "success" } }));
+  assert.ok(
+    (server.db.prepare("SELECT COUNT(*) c FROM behavior_daily").get() as { c: number }).c > 0,
+    "先得真的有 habit 数据可清",
+  );
+
+  server.resetLocalData("habit");
+
+  assert.equal((server.db.prepare("SELECT COUNT(*) c FROM behavior_daily").get() as { c: number }).c, 0);
+  assert.equal((server.db.prepare("SELECT COUNT(*) c FROM habit_profile").get() as { c: number }).c, 0);
+  assert.ok(server.stateSnapshot().sessions.length >= 1, "session 列表不该被 habit 重置波及");
+  assert.equal(getSetting(server.db, "budget_tokens"), "200000", "设置留着");
+});
+
 test("scope=data：回到首次启动的样子（连 session / 事件 / 设置一起）", () => {
   const server = usedServer();
   server.resetLocalData("data");
@@ -88,7 +105,7 @@ test("scope=data：回到首次启动的样子（连 session / 事件 / 设置�
   const footprint = dataFootprint(server.db);
   assert.deepEqual(
     { ...footprint, db_bytes: null },
-    { events: 0, sessions: 0, notifications: 0, exp_logs: 0, memories: 0, agents: 0, db_bytes: null },
+    { events: 0, sessions: 0, notifications: 0, exp_logs: 0, memories: 0, agents: 0, habit: 0, db_bytes: null },
   );
   assert.equal(getSetting(server.db, "budget_tokens"), null, "预算与阈值一起清掉 —— 这是「全部数据」");
   assert.equal(

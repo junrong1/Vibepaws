@@ -19,9 +19,11 @@ import {
   evolutionStatus,
   levelUps,
   growthView,
+  evaluateEvolutionCondition,
 } from "./exp.ts";
 import { recordFinish } from "./journal.ts";
 import type { CoreEvent } from "./events.ts";
+import type { HabitProfile } from "./habit.ts";
 
 /** 「今天」的段贴着「现在」造：把时钟钉在今天本地正午，午夜刚过跑也不会把段挤到昨天 */
 function atLocalNoon(t: TestContext): void {
@@ -53,6 +55,19 @@ function ev(partial: Partial<CoreEvent>): CoreEvent {
     payload: {},
     ...partial,
   };
+}
+
+/** 造一对可进化的测试宠物类型（base→evolved），并把当前宠物指到 base。 */
+function seedEvolveTypes(db: Database.Database, conditions: string[]): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO pet_types(id, name, rarity, sprite_pack, evolution_meta, starter)
+     VALUES(100, 'Test Base', 'common', 'pixelcat', ?, 0)`,
+  ).run(JSON.stringify([{ from_level: 2, conditions, to_stage: "101" }]));
+  db.prepare(
+    `INSERT OR REPLACE INTO pet_types(id, name, rarity, sprite_pack, evolution_meta, starter)
+     VALUES(101, 'Test Evolved', 'rare', 'pixelcat', '[]', 0)`,
+  ).run();
+  db.prepare("UPDATE pets SET pet_type_id=100, level=1, exp=0 WHERE id=(SELECT id FROM pets LIMIT 1)").run();
 }
 
 test("纯函数：contextMultiplier 阈值", () => {
@@ -211,6 +226,50 @@ test("用户给宠物起的名字优先于物种名", () => {
   const exp = new ExpEngine(db);
   db.prepare("UPDATE pets SET name='Mochi'").run();
   assert.equal(exp.getPetSnapshot().name, "Mochi");
+});
+
+/* ---------------- 进化条件（habit 门控） ---------------- */
+
+test("evaluateEvolutionCondition 支持 health / habit 键，未知键保守不触发", () => {
+  const habit = { cadence: "burst", depth: 0.7, precision: 0.5, context_hygiene: 0.5 } as HabitProfile;
+  assert.equal(evaluateEvolutionCondition("health>=0.7", 0.8, habit), true);
+  assert.equal(evaluateEvolutionCondition("health>=0.7", 0.5, habit), false);
+  assert.equal(evaluateEvolutionCondition("cadence=burst", 1, habit), true);
+  assert.equal(evaluateEvolutionCondition("cadence=steady", 1, habit), false);
+  assert.equal(evaluateEvolutionCondition("depth>=0.6", 1, habit), true);
+  assert.equal(evaluateEvolutionCondition("precision>=0.6", 1, habit), false);
+  assert.equal(evaluateEvolutionCondition("unknown>=1", 1, habit), false);
+});
+
+test("进化：health>=0.7 向后兼容仍触发", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/x')").run();
+  seedEvolveTypes(db, ["health>=0.7"]);
+  exp.handle(ev({ payload: { tokens: 100000 } })); // 100 EXP → Lv2
+  const pet = db.prepare("SELECT pet_type_id, level FROM pets").get() as { pet_type_id: number; level: number };
+  assert.equal(pet.level, 2);
+  assert.equal(pet.pet_type_id, 101);
+});
+
+test("进化：habit 键门控（cadence=burst 满足则进化）", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/x')").run();
+  seedEvolveTypes(db, ["health>=0.7", "cadence=burst"]);
+  exp.habitProvider = () => ({ cadence: "burst" } as HabitProfile);
+  exp.handle(ev({ payload: { tokens: 100000 } }));
+  assert.equal((db.prepare("SELECT pet_type_id FROM pets").get() as { pet_type_id: number }).pet_type_id, 101);
+});
+
+test("进化：habit 键不满足则不进化", () => {
+  const db = makeDb();
+  const exp = new ExpEngine(db);
+  db.prepare("INSERT INTO sessions(agent, agent_session_id, project_id) VALUES('claude_code','s1','/x')").run();
+  seedEvolveTypes(db, ["health>=0.7", "cadence=burst"]);
+  exp.habitProvider = () => ({ cadence: "steady" } as HabitProfile);
+  exp.handle(ev({ payload: { tokens: 100000 } }));
+  assert.equal((db.prepare("SELECT pet_type_id FROM pets").get() as { pet_type_id: number }).pet_type_id, 100);
 });
 
 /* ---------------- starter 抽取（稀有度加权） ---------------- */
