@@ -548,21 +548,23 @@ export function expSourceBreakdown(
 type EvolutionRule = { from_level: number; conditions?: string[]; to_stage: string };
 
 /**
- * 下一次进化还差什么。判定与 checkEvolution 逐字一致：只认带 `health>=0.7` 的规则、
- * 等级够了才轮到它、健康要过门槛、而且**只在升级那一刻**判定 ——
- * 所以两样都满足时说的是「下一次升级时」，而不是假装它此刻就该发生。
- * health = null（今天还不知道）按 R31 读作健康：不挡进化，和引擎一样。
+ * 下一次进化还差什么。判定与 checkEvolution 同一套条件求值（evaluateEvolutionCondition）：
+ * 只认带非空 conditions 的规则（空数组 = 不进化 = final）、等级够了才轮到它、所有条件
+ * AND 求值、而且**只在升级那一刻**判定 —— 所以条件都满足时说的是「下一次升级时」，
+ * 而不是假装它此刻就该发生。habit 门控（chronotype=/cadence=/depth>= 等）也在这里判，
+ * 未达标时返回 state=habit（而不是误报 final）。health = null（今天还不知道）按 R31 读作健康。
  */
 export function evolutionStatus(
   meta: readonly EvolutionRule[],
   level: number,
   health: number | null,
   formName: (typeId: number) => string | null = () => null,
+  habit?: HabitProfile,
 ): EvolutionStatus {
   const candidates = meta.filter(
     (m) =>
       Number.isFinite(m.from_level) &&
-      m.conditions?.includes("health>=0.7") &&
+      (m.conditions?.length ?? 0) > 0 &&
       Number.isInteger(Number(m.to_stage)),
   );
   if (candidates.length === 0) return { state: "final" };
@@ -571,7 +573,35 @@ export function evolutionStatus(
     candidates.find((m) => level >= m.from_level) ??
     [...candidates].sort((a, b) => a.from_level - b.from_level)[0]!;
   const toTypeId = Number(rule.to_stage);
-  const state = level < rule.from_level ? "level" : health !== null && health < EVOLUTION_HEALTH_GATE ? "health" : "ready";
+  const conditions = rule.conditions ?? [];
+  if (level < rule.from_level) {
+    return {
+      state: "level",
+      to_type_id: toTypeId,
+      to_form: formName(toTypeId),
+      from_level: rule.from_level,
+      level,
+      health_gate: EVOLUTION_HEALTH_GATE,
+      health,
+      conditions,
+    };
+  }
+  const effHealth = health ?? 1.0; // 今天还不知道 = 读作健康（R31），不挡进化
+  const unmet = conditions.filter((c) => !evaluateEvolutionCondition(c, effHealth, habit));
+  if (unmet.length === 0) {
+    return {
+      state: "ready",
+      to_type_id: toTypeId,
+      to_form: formName(toTypeId),
+      from_level: rule.from_level,
+      level,
+      health_gate: EVOLUTION_HEALTH_GATE,
+      health,
+      conditions,
+    };
+  }
+  // health 条件没达标优先报 health（更可操作）；其余 habit 键未达标报 habit。
+  const state = conditions.includes("health>=0.7") && effHealth < EVOLUTION_HEALTH_GATE ? "health" : "habit";
   return {
     state,
     to_type_id: toTypeId,
@@ -580,6 +610,8 @@ export function evolutionStatus(
     level,
     health_gate: EVOLUTION_HEALTH_GATE,
     health,
+    conditions,
+    unmet_conditions: unmet,
   };
 }
 
@@ -601,7 +633,7 @@ export function levelUps(rows: ReadonlyArray<{ note: string | null; created_at: 
 export function growthView(
   db: Database.Database,
   pet: PetSnapshot,
-  opts: { now?: Date; days?: number } = {},
+  opts: { now?: Date; days?: number; habit?: HabitProfile } = {},
 ): GrowthView {
   const now = opts.now ?? new Date();
   const days = Math.max(1, Math.floor(opts.days ?? 7));
@@ -641,7 +673,7 @@ export function growthView(
     curve: levelCurve(pet.level),
     week: expSourceBreakdown(expRows, { now, days }),
     level_ups: levelUps(levelRows),
-    evolution: evolutionStatus(meta, pet.level, health, formName),
+    evolution: evolutionStatus(meta, pet.level, health, formName, opts.habit),
   };
 }
 

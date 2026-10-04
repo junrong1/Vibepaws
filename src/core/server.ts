@@ -335,7 +335,7 @@ export class VibepawsServer {
           }
           // Den 的 Growth 标签页（U13）。和 /api/exp 分开：那条是浮层 EXP 明细的原始行，这条是算好的视图
           if (url === "/api/growth") {
-            sendJson(res, 200, growthView(this.db, this.exp.getPetSnapshot()));
+            sendJson(res, 200, growthView(this.db, this.exp.getPetSnapshot(), { habit: this.habit.getProfile() }));
             return;
           }
           if (url === "/api/habit") {

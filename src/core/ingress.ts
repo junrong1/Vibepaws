@@ -122,11 +122,16 @@ export function ingestEvent(raw: unknown, opts: IngressOptions): {
 
   const payload = sanitizePayload(obj.payload);
 
+  // 事件自己的时刻（UTC、SQLite 空格分隔），与 received_at（摄入时刻）分开：
+  // habit 层的 chronotype 要的是「用户什么时候在工作」，不是「Core 什么时候收到」——
+  // 离线缓冲补发时这两者差得远（docs/handoff-habit-layer.md §5 与 health.ts 的 SPOOL_REPLAY_GAP）。
+  const occurredAt = new Date(timestamp).toISOString().slice(0, 19).replace("T", " ");
+
   // 落库（仅 safe_summary + 白名单 payload；原始 hook JSON 永不落库）
   db.prepare(
-    `INSERT INTO events(event_id, seq, agent, session_id, event_type, severity, safe_summary, payload_json)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(event_id, seq, agent, session_id, event_type, severity, safe_summary, JSON.stringify(payload));
+    `INSERT INTO events(event_id, seq, agent, session_id, event_type, severity, safe_summary, payload_json, occurred_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(event_id, seq, agent, session_id, event_type, severity, safe_summary, JSON.stringify(payload), occurredAt);
 
   const event: CoreEvent = {
     event_id,
