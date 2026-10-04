@@ -43,7 +43,7 @@ function ev(partial: Partial<CoreEvent>): CoreEvent {
   };
 }
 
-/** SQLite datetime 格式（UTC），与 events.received_at 的 strftime('%H') 口径一致 */
+/** SQLite datetime 格式（UTC），与 events 的 received_at / occurred_at 口径一致 */
 function sqliteUtc(d: Date): string {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
@@ -58,9 +58,9 @@ function insertEvent(
   at: Date,
 ): void {
   db.prepare(
-    `INSERT INTO events(event_id, seq, agent, session_id, event_type, severity, safe_summary, payload_json, received_at)
-     VALUES(?, ?, ?, ?, ?, 'low', 'x', ?, ?)`,
-  ).run(eventId, 0, agent, sessionId, type, JSON.stringify(payload), sqliteUtc(at));
+    `INSERT INTO events(event_id, seq, agent, session_id, event_type, severity, safe_summary, payload_json, received_at, occurred_at)
+     VALUES(?, ?, ?, ?, ?, 'low', 'x', ?, ?, ?)`,
+  ).run(eventId, 0, agent, sessionId, type, JSON.stringify(payload), sqliteUtc(at), sqliteUtc(at));
 }
 
 function todayRow(db: Database.Database, agent = "claude_code"): Record<string, number> {
@@ -107,7 +107,7 @@ test("连续分：precision / context_hygiene / responsiveness / depth", () => {
   assert.equal(computePrecision(0, 3), 1);
   assert.equal(computeContextHygiene(2, 4), 0.5);
   assert.equal(computeResponsiveness(900_000, 1), 0.5);
-  assert.equal(computeResponsiveness(0, 0), 1); // 无等待 = 全响应
+  assert.equal(computeResponsiveness(0, 0), 0.5); // 无样本 = 中性（缺失不能当满分）
   // depth: mean=45 → lengthFactor 1，hygiene 0.5，precision 0.5 → 0.5+0.15+0.1
   assert.equal(computeDepth(45, 0.5, 0.5), 0.75);
 });
@@ -218,12 +218,12 @@ test("habit_enabled=0 时停止折叠，getProfile 返回中立", () => {
 
 test("recompute：合成 night_owl + burst + shipper 流", () => {
   const db = makeDb();
-  // 1) 夜里活动的事件（chronotype 直接读 events 的小时直方图）
+  // 1) 夜里活动的事件（chronotype 读 occurred_at 的**本地**小时直方图，与 wakeWindow 同口径）
   const now = new Date();
   const mk = (daysAgo: number, hour: number) => {
     const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() - daysAgo);
-    d.setUTCHours(hour, 0, 0, 0);
+    d.setDate(d.getDate() - daysAgo);
+    d.setHours(hour, 0, 0, 0);
     return d;
   };
   for (const [daysAgo, hour] of [[0, 23], [0, 0], [1, 23], [1, 0], [1, 1], [2, 22], [2, 12]] as const) {
@@ -251,7 +251,7 @@ test("recompute：合成 night_owl + burst + shipper 流", () => {
   assert.equal(p.chronotype, "night_owl");
   assert.equal(p.cadence, "burst");
   assert.equal(p.outcome_bias, "shipper");
-  assert.ok(p.tool_affinity.includes("Bash"));
+  assert.ok(p.tool_affinity.includes("bash"), "tool_affinity 应小写归一");
 });
 
 /* ---------------- backfill ---------------- */

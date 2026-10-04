@@ -6,7 +6,7 @@
  * 隐私：events 仅存 safe_summary + 白名单 payload（第二道隐私闸在写入前）。
  */
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pet_types (
@@ -121,7 +121,8 @@ CREATE TABLE IF NOT EXISTS events (
   severity      TEXT NOT NULL DEFAULT 'low' CHECK (severity IN ('low','medium','high')),
   safe_summary  TEXT NOT NULL,
   payload_json  TEXT NOT NULL DEFAULT '{}', -- 仅白名单字段
-  received_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  received_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  occurred_at   TEXT                          -- 事件自身的 timestamp（UTC，'YYYY-MM-DD HH:MM:SS'）；NULL = 老行，按 received_at 兜底
 );
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(agent, session_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type, received_at);
@@ -332,6 +333,14 @@ const ADDED_COLUMNS: Array<{
   { table: "sessions", column: "subagent_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "sessions", column: "subagent_since", ddl: "TEXT" },
   { table: "sessions", column: "segment", ddl: "INTEGER NOT NULL DEFAULT 1" },
+  {
+    table: "events",
+    column: "occurred_at",
+    ddl: "TEXT",
+    // 老行只有 received_at（Core 摄入时刻，不是事件自己的 timestamp）：把它当作事件时刻的下界回填，
+    // 避免 chronotype 读到 NULL。之后的新行由 ingress 写入真正的 timestamp。
+    backfill: "UPDATE events SET occurred_at = received_at WHERE occurred_at IS NULL",
+  },
   {
     table: "sessions",
     column: "segment_started_at",

@@ -104,9 +104,13 @@ export function computeContextHygiene(context85Crossings: number, sessions: numb
   return clamp01(1 - context85Crossings / Math.max(1, sessions));
 }
 
-/** 响应度：平均等待越短越高，30 分钟封底为 0。waitCount=0 时视为全响应。 */
+/**
+ * 响应度：平均等待越短越高，30 分钟封底为 0。
+ * waitCount=0（没有任何等待样本，例如 backfill 无法重建历史等待）时返回中性 0.5 ——
+ * 「agent 从没等过」和「不知道」都拿不到 1.0，不能把缺失当满分。
+ */
 export function computeResponsiveness(waitMs: number, waitCount: number): number {
-  if (waitCount <= 0) return 1;
+  if (waitCount <= 0) return 0.5;
   const meanWait = waitMs / waitCount;
   return clamp01(1 - meanWait / 1_800_000);
 }
@@ -152,6 +156,13 @@ function daysBetween(a: string, b: string): number {
 
 function waitKey(agent: string, sessionId: string): string {
   return `${agent}:${sessionId}`;
+}
+
+/** SQLite 的 'YYYY-MM-DD HH:MM:SS'（UTC）→ Date。认不出的返回 null。 */
+function sqliteUtcToDate(s: string): Date | null {
+  if (!s) return null;
+  const d = new Date(`${s.replace(" ", "T")}Z`);
+  return Number.isFinite(d.getTime()) ? d : null;
 }
 
 interface DailyRow {
@@ -445,20 +456,27 @@ export class HabitEngine {
     return d.toISOString().slice(0, 10);
   }
 
-  /** chronotype 需要小时粒度，而 behavior_daily 只有天粒度 —— 直接读 events（不新增逐事件行）。 */
+  /**
+   * chronotype 需要小时粒度，而 behavior_daily 只有天粒度 —— 直接读 events（不新增逐事件行）。
+   * 用 occurred_at（事件自己的时刻）而非 received_at（摄入时刻），并用**本地**小时：
+   * 和 ui/behavior-motion.js 的 wakeWindow（getHours）同口径，否则夜猫/早鸟分类会和宠物的
+   * 醒睡窗口在时区上错位（UTC+8 用户会被按 UTC 判成另一个作息）。
+   */
   private computeChronotype(cutoff: string): Chronotype | null {
     const rows = this.db
       .prepare(
-        `SELECT strftime('%H', received_at) AS hour, julianday('now') - julianday(received_at) AS age
-         FROM events WHERE event_type IN ('agent_working','session_started') AND received_at >= ?`,
+        `SELECT occurred_at FROM events
+         WHERE event_type IN ('agent_working','session_started') AND occurred_at >= ?`,
       )
-      .all(cutoff) as Array<{ hour: string; age: number }>;
+      .all(cutoff) as Array<{ occurred_at: string | null }>;
+    const now = Date.now();
     const hours = new Array<number>(24).fill(0);
     for (const r of rows) {
-      const h = Number(r.hour);
-      if (!Number.isInteger(h) || h < 0 || h > 23) continue;
-      const age = Number(r.age);
-      const w = Number.isFinite(age) ? decayWeight(age, this.halfLifeDays) : 1;
+      const d = sqliteUtcToDate(r.occurred_at ?? "");
+      if (!d) continue;
+      const h = d.getHours();
+      const age = (now - d.getTime()) / 86_400_000;
+      const w = decayWeight(age, this.halfLifeDays);
       hours[h] = (hours[h] ?? 0) + w;
     }
     return classifyChronotype(hours);
@@ -467,7 +485,7 @@ export class HabitEngine {
   /** tool_affinity 需要完整 tool_name 计数，而 behavior_daily 只留了 3 个桶 —— 直接读 events。 */
   private computeToolAffinity(cutoff: string): string[] {
     const rows = this.db
-      .prepare("SELECT payload_json FROM events WHERE event_type='agent_working' AND received_at >= ?")
+      .prepare("SELECT payload_json FROM events WHERE event_type='agent_working' AND occurred_at >= ?")
       .all(cutoff) as Array<{ payload_json: string }>;
     const counts: Record<string, number> = {};
     for (const r of rows) {
@@ -478,7 +496,9 @@ export class HabitEngine {
         continue;
       }
       if (typeof tool !== "string" || !tool) continue;
-      counts[tool] = (counts[tool] ?? 0) + 1;
+      // 统一小写：pi 报 bash/edit/read，claude 报 Bash/Edit —— 不归一就会把同一个工具拆成两个桶
+      const t = tool.toLowerCase();
+      counts[t] = (counts[t] ?? 0) + 1;
     }
     return topToolAffinity(counts, 5);
   }
@@ -547,7 +567,8 @@ function rowToEvent(r: Record<string, unknown>): CoreEvent {
     event_type: String(r.event_type ?? "") as CoreEvent["event_type"],
     severity: (String(r.severity ?? "low") as CoreEvent["severity"]),
     safe_summary: String(r.safe_summary ?? ""),
-    timestamp: String(r.received_at ?? new Date().toISOString()),
+    // 用事件自己的时刻（occurred_at），老行退回到 received_at（摄入时刻）
+    timestamp: String(r.occurred_at ?? r.received_at ?? new Date().toISOString()),
     payload,
   };
 }

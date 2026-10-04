@@ -651,22 +651,34 @@ function evolutionCard(evo, pet) {
   const conds = el("div", "conds");
   const levelMet = evo.level >= evo.from_level;
   conds.appendChild(cond(levelMet, t("den.growth.cond.level", { need: evo.from_level, have: evo.level })));
-  const gate = Math.round((evo.health_gate ?? 0.7) * 100);
-  const health = typeof evo.health === "number" ? evo.health : null;
-  const healthMet = health === null || health >= (evo.health_gate ?? 0.7);
-  conds.appendChild(
-    cond(
-      healthMet,
-      t("den.growth.cond.health", { need: gate, have: health === null ? t("den.growth.cond.health.unknown") : `${Math.round(health * 100)}%` }),
-    ),
-  );
+  const conditions = Array.isArray(evo.conditions) ? evo.conditions : [];
+  const hasHealth = conditions.includes("health>=0.7");
+  if (hasHealth) {
+    const gate = Math.round((evo.health_gate ?? 0.7) * 100);
+    const health = typeof evo.health === "number" ? evo.health : null;
+    const healthMet = health === null || health >= (evo.health_gate ?? 0.7);
+    conds.appendChild(
+      cond(
+        healthMet,
+        t("den.growth.cond.health", { need: gate, have: health === null ? t("den.growth.cond.health.unknown") : `${Math.round(health * 100)}%` }),
+      ),
+    );
+  }
+  const habitConds = conditions.filter((c) => c !== "health>=0.7");
+  if (habitConds.length > 0) {
+    const unmet = evo.unmet_conditions ?? [];
+    const habitMet = !habitConds.some((c) => unmet.includes(c));
+    conds.appendChild(cond(habitMet, t("den.growth.cond.habit")));
+  }
   card.appendChild(conds);
   const when =
     evo.state === "level"
       ? t("den.growth.evo.level", { n: Math.max(1, evo.from_level - evo.level) })
       : evo.state === "health"
         ? t("den.growth.evo.health")
-        : t("den.growth.evo.ready");
+        : evo.state === "habit"
+          ? t("den.growth.evo.habit")
+          : t("den.growth.evo.ready");
   card.appendChild(el("p", "hint", when));
   return card;
 }

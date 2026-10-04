@@ -454,11 +454,23 @@ test("下一次进化：等级没到 / 健康没过 / 都满足（下一次升�
   assert.equal(evolutionStatus(meta, 5, 0.7, names).state, "ready", "门槛是 ≥，和引擎一样");
   assert.equal(evolutionStatus(meta, 5, null, names).state, "ready", "今天还不知道 = 读作健康（R31），不挡进化");
   assert.equal(evolutionStatus([], 5, 1).state, "final");
-  assert.equal(
-    evolutionStatus([{ from_level: 5, conditions: ["mood>=1"], to_stage: "30" }], 9, 1).state,
-    "final",
-    "引擎只认带 health>=0.7 的规则 —— 这里说的必须和它做的一样",
-  );
+  // 非空 conditions 但未知键：不再误报 final，而是 habit 未达标（引擎同样永远不触发）
+  const unknown = evolutionStatus([{ from_level: 5, conditions: ["mood>=1"], to_stage: "30" }], 9, 1);
+  assert.equal(unknown.state, "habit");
+  assert.deepEqual((unknown as { unmet_conditions?: string[] }).unmet_conditions, ["mood>=1"]);
+});
+
+test("进化状态：habit 门控与 checkEvolution 同源（cadence=burst 满足才 ready）", () => {
+  const meta = [{ from_level: 5, conditions: ["health>=0.7", "cadence=burst"], to_stage: "30" }];
+  const names = (id: number): string | null => (id === 30 ? "Cinderclaw" : null);
+  const burst = { cadence: "burst" } as HabitProfile;
+  const steady = { cadence: "steady" } as HabitProfile;
+  assert.equal(evolutionStatus(meta, 5, 0.8, names, burst).state, "ready");
+  const habitUnmet = evolutionStatus(meta, 5, 0.8, names, steady);
+  assert.equal(habitUnmet.state, "habit");
+  assert.deepEqual((habitUnmet as { unmet_conditions?: string[] }).unmet_conditions, ["cadence=burst"]);
+  // 健康门槛仍优先报 health
+  assert.equal(evolutionStatus(meta, 5, 0.6, names, burst).state, "health");
 });
 
 test("升级记录：从 level 标记里读出等级与时刻，从新到旧", () => {
