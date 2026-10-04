@@ -109,7 +109,7 @@ npm run verify:release                  # 去问 macOS 到底成没成
 | `APPLE_API_ISSUER` | Issuer ID |
 
 ```bash
-git tag v0.1.2 && git push origin v0.1.2
+git tag v0.1.3 && git push origin v0.1.3
 ```
 
 流水线会把证书导进一个用完即毁的临时钥匙串，先体检、跑测试、构建、验收，销毁钥匙串，
