@@ -196,6 +196,8 @@ function apply(data, forced) {
   capEl.max = limits.daily_exp_cap_max;
   setValue(capEl, String(settings.daily_exp_cap), forced);
 
+  $("habit").checked = Boolean(settings.habit_enabled);
+
   const zombieEl = $("zombie");
   zombieEl.min = limits.zombie_timeout_min_min;
   zombieEl.max = limits.zombie_timeout_min_max;
@@ -1148,6 +1150,9 @@ $("zombie").addEventListener("change", () =>
 );
 $("health-visibility").addEventListener("change", () =>
   patchSettings({ health_visibility: $("health-visibility").value }, $("health-visibility")),
+);
+$("habit").addEventListener("change", () =>
+  patchSettings({ habit_enabled: $("habit").checked }, $("habit")),
 );
 $("warn").addEventListener("change", () => {
   const raw = $("warn").value;

@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibepaws · 习惯驱动宠物 — 现状与实施方案</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-2: #161b22;
+    --bg-3: #1c2330;
+    --border: #2d333b;
+    --ink: #e6edf3;
+    --ink-dim: #8b949e;
+    --ink-faint: #6e7681;
+    --accent: #f2b632;
+    --accent-2: #58a6ff;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --purple: #a371f7;
+    --pink: #db61a2;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); }
+  code {
+    background: rgba(110,118,129,.16);
+    padding: .12em .4em;
+    border-radius: 5px;
+    font-size: .9em;
+    color: #e6edf3;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 96px; }
+
+  header.hero {
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: linear-gradient(180deg, var(--bg-2), var(--bg));
+    padding: 32px 32px 28px;
+    margin-bottom: 28px;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 10px;
+  }
+  h1 { font-size: 28px; margin: 0 0 10px; line-height: 1.35; }
+  .lede { color: var(--ink-dim); margin: 0; max-width: 800px; }
+
+  .verdict {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin: 24px 0 0;
+  }
+  .vcard {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    background: var(--bg-2);
+  }
+  .vcard .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .tag.ok    { background: rgba(63,185,80,.14);  color: var(--green); }
+  .tag.warn  { background: rgba(210,153,34,.14); color: var(--amber); }
+  .tag.miss  { background: rgba(248,81,73,.14);  color: var(--red); }
+  .vcard h3 { margin: 6px 0 6px; font-size: 15px; }
+  .vcard p { margin: 0; color: var(--ink-dim); font-size: 13.5px; }
+
+  section { margin-top: 42px; }
+  h2 {
+    font-size: 20px;
+    margin: 0 0 6px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 .num { color: var(--accent); font-family: var(--mono); margin-right: 8px; }
+  .sub { color: var(--ink-dim); margin: 2px 0 18px; font-size: 14px; }
+  h3 { margin: 22px 0 8px; font-size: 16px; }
+
+  .pipe {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 18px 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .pipe .node {
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+  .pipe .node b { color: var(--accent); }
+  .pipe .arrow { color: var(--ink-faint); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 9px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--bg-2);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  td code { white-space: nowrap; }
+  .pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pill.yes  { background: rgba(63,185,80,.13);  color: var(--green); }
+  .pill.part { background: rgba(210,153,34,.13); color: var(--amber); }
+  .pill.no   { background: rgba(248,81,73,.12);  color: var(--red); }
+
+  .formula {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    overflow-x: auto;
+    margin: 16px 0;
+  }
+  .formula .m { color: var(--purple); }
+  .formula .o { color: var(--accent); }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 18px 0; }
+  .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 18px 0; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-2);
+    padding: 18px 20px;
+  }
+  .card h4 { margin: 0 0 10px; font-size: 15px; }
+  .card p { margin: 0; color: var(--ink-dim); font-size: 13.5px; }
+  .card ul { margin: 0; padding-left: 18px; }
+  .card li { margin: 6px 0; }
+  .card li code { white-space: nowrap; }
+
+  .phase {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    background: var(--bg-2);
+    padding: 18px 22px;
+    margin: 16px 0;
+  }
+  .phase h3 { margin: 0 0 4px; font-size: 16px; }
+  .phase .meta { color: var(--accent); font-family: var(--mono); font-size: 12px; margin-bottom: 10px; }
+  .phase p { margin: 6px 0; }
+  .phase ul { margin: 6px 0; padding-left: 18px; }
+
+  pre {
+    background: #0a0e14;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: #c9d1d9;
+  }
+  pre .c { color: #6e7681; font-style: italic; }
+  pre .k { color: #ff7b72; }
+  pre .s { color: #a5d6ff; }
+  pre .n { color: #79c0ff; }
+
+  .meter-row { margin: 12px 0; }
+  .meter-row .lbl {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 5px;
+    color: var(--ink-dim);
+  }
+  .meter {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--bg-3);
+    overflow: hidden;
+  }
+  .meter i {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--green));
+  }
+  .note {
+    border-left: 3px solid var(--accent-2);
+    background: rgba(88,166,255,.07);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin: 18px 0;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .map-arrow { color: var(--accent); font-family: var(--mono); }
+  footer { margin-top: 56px; color: var(--ink-faint); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">Vibepaws · 功能审计 + 方案设计</p>
+    <h1>习惯驱动的宠物 —— 行为、气泡、进化都从你的工作习惯学习</h1>
+    <p class="lede">
+      依据 <code>src/core</code>、<code>src/db</code>、<code>src/adapters</code>、
+      <code>docs/mvp_architecture.md</code> 与 <code>README.md</code> 审计。结论：
+      <strong>它已经记录了丰富的「单 session」行为，但还没有把信号聚合成「用户级」的工作习惯画像 ——
+      所以目前宠物的进化、动作和气泡语气对习惯都是「盲」的。</strong>
+      本文规划那一层，让宠物真正「像你养的」。
+    </p>
+
+    <div class="verdict">
+      <div class="vcard">
+        <span class="tag ok">✅ 已具备</span>
+        <h3>单 session 行为采集</h3>
+        <p>隐私优先的事件管道（5 个 adapter → Core → SQLite）已在记录 token、context、
+        correction、goal、等待时长、工具与结果。</p>
+      </div>
+      <div class="vcard">
+        <span class="tag warn">⚠️ 部分具备</span>
+        <h3>有信号、无画像</h3>
+        <p>原始工作习惯信号都在，但没有把跨 session 的信号聚合成「用户」画像
+        （节奏、工具风格、专注度、精确度）。</p>
+      </div>
+      <div class="vcard">
+        <span class="tag miss">❌ 缺失</span>
+        <h3>习惯 → 宠物（进化 + 行为 + 语气）</h3>
+        <p>进化只读 <code>level</code> + <code>health_score</code>；宠物的动作、情绪、气泡措辞全是写死的 —— 与习惯零关联。</p>
+      </div>
+    </div>
+  </header>
+
+  <!-- ───────────────────────────── 1. 现状 ───────────────────────────── -->
+  <section id="stage">
+    <h2><span class="num">01</span>现状 —— 已经在记录哪些行为</h2>
+    <p class="sub">Vibepaws 已有一条完整的、带隐私护栏的行为遥测闭环。这是习惯层要叠加的底座。</p>
+
+    <div class="pipe">
+      <span class="node"><b>adapters</b><br>hook_agent.ts · pi_extension.ts<br>dsh_plugin.ts · bridge.ts · simulator</span>
+      <span class="arrow">POST /events →</span>
+      <span class="node"><b>ingress.ts</b><br>token · 白名单 · 去重</span>
+      <span class="arrow">→</span>
+      <span class="node"><b>registry / notifications / exp</b><br>状态机 · 气泡 · EXP</span>
+      <span class="arrow">→</span>
+      <span class="node"><b>SQLite</b><br>9 张表</span>
+      <span class="arrow">→</span>
+      <span class="node"><b>SSE + /api/*</b><br>pet_state · sessions · settings</span>
+      <span class="arrow">→</span>
+      <span class="node"><b>ui/</b><br>桌面宠物 · 设置窗口</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>行为信号</th><th>采集位置</th><th>关键字段</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>原始事件流（白名单过滤后）</td><td><code>events</code> 表</td><td><code>event_type, safe_summary, payload_json, received_at</code></td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>每个 session 的 token 用量</td><td><code>sessions.token_used</code></td><td>累计、单调递增</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>上下文压力</td><td><code>sessions.context_pct</code></td><td>0–100，来自 <code>context_update</code></td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>correction 循环（同一文件 30s 内反复编辑）</td><td><code>sessions.correction_count</code></td><td><code>registry.ts</code> 里的启发式</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>用户填写的 session 目标</td><td><code>sessions.goal</code></td><td>漂移判定基准 + 1.1× EXP</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>token 预算</td><td><code>sessions.budget_tokens</code></td><td>里程碑的分母</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>agent 等你的时长</td><td><code>sessions.needs_input_since</code></td><td>decision / permission 事件</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>一轮结束待命（ready）</td><td><code>sessions.ready_since</code></td><td>非阻塞 decision</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>使用的工具（<code>tool_name</code>）</td><td><code>events.payload_json</code></td><td>Bash / Edit / Write / Read / …</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>生命周期时间戳</td><td><code>sessions.started_at / finished_at / last_working_at</code></td><td>session 时长、活跃时间</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>结果</td><td><code>sessions.outcome</code></td><td>success / partial / abandoned / orphaned / timeout</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>EXP 流水</td><td><code>exp_logs</code></td><td>token · context · topic · outcome · care · self</td><td><span class="pill yes">已上线</span></td></tr>
+        <tr><td>健康分</td><td><code>exp.ts</code> 派生</td><td>最近 24h 的 error/drift 数量</td><td><span class="pill part">部分</span></td></tr>
+        <tr><td>记忆 / 成就</td><td><code>memories</code> 表</td><td>schema 存在，<strong>没有任何写入方</strong></td><td><span class="pill no">未使用</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <strong>核心发现：</strong>所有东西都是 <em>session 作用域</em>。没有任何一张表、一个引擎或 API 把这些信号
+      聚合成「用户级」的工作习惯模型。<code>memories</code> 是唯一跨 session 的表，却在代码里零写入。
+    </div>
+
+    <h3>宠物现在依赖什么</h3>
+    <div class="formula">
+      session_exp = <span class="m">capped_token_exp</span> × <span class="m">context_multiplier</span> × <span class="m">topic_multiplier</span> <span class="o">+ outcome_bonus + daily_care_bonus</span><br>
+      <span class="c">context: &lt;70%→1.10 · 70–85%→1.00 · 85–95%→0.75 · &gt;95%→0.50</span><br>
+      <span class="c">topic:   设了 goal→1.10 · correction≥5→0.80 · 否则→1.00</span>
+    </div>
+    <p class="sub">
+      进化（<code>exp.ts::checkEvolution</code>）只评估 <code>from_level</code> +
+      <code>conditions: ["health&gt;=0.7"]</code>。宠物的待机动画、情绪、气泡措辞在 <code>ui/</code> 里都是写死的。
+      <strong>三个面 —— 进化、行为、语气 —— 今天没有一个在读取习惯画像。</strong>
+    </p>
+  </section>
+
+  <!-- ───────────────────────────── 2. 工作习惯模型 ───────────────────────────── -->
+  <section id="habit-model">
+    <h2><span class="num">02</span>工作习惯模型</h2>
+    <p class="sub">八个维度，全部可以从已采集的数据推导出来。「工作习惯」不只是你<em>何时</em>写代码 —— 更是你<em>怎么</em>写代码。</p>
+
+    <div class="grid-3">
+      <div class="card">
+        <h4>🕐 作息类型（Chronotype）</h4>
+        <p>你何时工作：早鸟 / 白天 / 夜猫。来自 <code>received_at</code> 的活跃时段直方图。</p>
+      </div>
+      <div class="card">
+        <h4>📈 节奏（Cadence）</h4>
+        <p>爆发（很多短 session）vs 平稳（少数长 session）vs 稀疏。来自 session 频率 + 时长。</p>
+      </div>
+      <div class="card">
+        <h4>🎯 专注深度（Depth）</h4>
+        <p>深度工作 vs 浅层。长时间不中断 + 干净的 context = 深度；频繁切换 = 浅层。</p>
+      </div>
+      <div class="card">
+        <h4>🧰 工具风格（Tool style）</h4>
+        <p>CLI 重 / 编辑重 / 测试先行 / 提交驱动。来自 <code>tool_name</code> 分布。</p>
+      </div>
+      <div class="card">
+        <h4>🎯 精确度（Precision）</h4>
+        <p>correction 循环少 = 精确；反复改 = 探索型。来自 <code>correction_count</code>。</p>
+      </div>
+      <div class="card">
+        <h4>🧭 上下文卫生（Context hygiene）</h4>
+        <p>你多常把 context 推到 85% 以上。来自 <code>context_pct</code> 越界次数。</p>
+      </div>
+      <div class="card">
+        <h4>⚡ 响应速度（Responsiveness）</h4>
+        <p>你多快回应 agent。来自 <code>needs_input_since</code> 的时长。</p>
+      </div>
+      <div class="card">
+        <h4>🏁 结果偏好（Outcome bias）</h4>
+        <p>交付型（提交/成功）vs 探索型（partial/abandoned）。来自 <code>outcome</code> 分布。</p>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>设计原则：</strong>保持 <strong>Core 确定性</strong> —— 它只存数字和少量分类标签（例如
+      <code>chronotype=night_owl</code>、<code>cadence=burst</code>）。所有 <em>呈现层</em>（用哪套动画、哪个 emoji、
+      哪种措辞）都放在 <strong>渲染层</strong>。这跟现有哲学一致：Core 做判定、UI 做渲染；通知已经带
+      <code>i18n</code> key 让渲染层选语言 —— 我们在这套机制上再加一条 <code>voice</code>（语气）轴。
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── 3. 习惯 → 行为 ───────────────────────────── -->
+  <section id="behavior">
+    <h2><span class="num">03</span>习惯 → 宠物行为</h2>
+    <p class="sub">宠物的动画套件、精力值、反应方式变成习惯画像的函数。「行为」= 待机变体 + 情绪 + 作息周期 + 反应阈值。</p>
+
+    <table>
+      <thead>
+        <tr><th>习惯信号</th><th class="map-arrow">→</th><th>宠物行为</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>chronotype = night_owl</code></td><td class="map-arrow">→</td><td>夜里醒着、白天打盹；月光色调的待机；你熬夜 session 时精神抖擞。</td></tr>
+        <tr><td><code>chronotype = early_bird</code></td><td class="map-arrow">→</td><td>清晨明亮活泼；天黑后就犯困。</td></tr>
+        <tr><td><code>cadence = burst</code></td><td class="map-arrow">→</td><td>高精力待机（快速蹦跳），对每个事件都反应很快。</td></tr>
+        <tr><td><code>cadence = steady</code></td><td class="map-arrow">→</td><td>平稳呼吸、缓慢摇尾、很少躁动。</td></tr>
+        <tr><td><code>cadence = sparse</code></td><td class="map-arrow">→</td><td>经常打盹；你回来时伸个大懒腰。</td></tr>
+        <tr><td><code>depth</code> 高</td><td class="map-arrow">→</td><td><code>working</code> 时进入「心流」专注姿态 + 柔光。</td></tr>
+        <tr><td><code>depth</code> 低</td><td class="map-arrow">→</td><td>工作时来回踱步、东张西望、坐立不安。</td></tr>
+        <tr><td><code>precision</code> 低（correction 循环）</td><td class="map-arrow">→</td><td>歪头「等待」姿态，凑近编辑处。</td></tr>
+        <tr><td><code>responsiveness</code> 高</td><td class="map-arrow">→</td><td>积极 —— <code>needs-you</code> 时摇尾巴 + 快速抬头。</td></tr>
+        <tr><td><code>responsiveness</code> 低</td><td class="map-arrow">→</td><td>回合之间打瞌睡，然后惊醒。</td></tr>
+        <tr><td><code>outcome_bias = shipper</code></td><td class="map-arrow">→</td><td><code>finished</code> 时得意 / 庆祝。</td></tr>
+        <tr><td><code>outcome_bias = explorer</code></td><td class="map-arrow">→</td><td>好奇，凑近看你探索了什么。</td></tr>
+      </tbody>
+    </table>
+
+    <h3>BehaviorDirector（渲染层，<code>ui/</code>）</h3>
+<pre><span class="c">// ui/behavior.js —— 把 HabitProfile 映射成动画参数。纯函数、可单测。</span>
+<span class="k">export function</span> behaviorFor(habit) {
+  <span class="k">const</span> energy = {
+    burst: 1.0, steady: 0.45, sparse: 0.2,
+  }[habit.cadence] ?? 0.5;
+
+  <span class="k">return</span> {
+    idleVariant: habit.depth &gt; 0.6 ? <span class="s">"focused"</span>
+               : habit.cadence === <span class="s">"burst"</span> ? <span class="s">"bouncy"</span>
+               : habit.cadence === <span class="s">"sparse"</span> ? <span class="s">"sleepy"</span>
+               : <span class="s">"calm"</span>,
+    wakeWindow: habit.chronotype === <span class="s">"night_owl"</span> ? [20, 4]   <span class="c">// 晚 8 点 – 凌晨 4 点</span>
+              : habit.chronotype === <span class="s">"early_bird"</span> ? [5, 21]
+              : [8, 23],
+    reactionMs: 900 - energy * 500,        <span class="c">// burst 反应更快</span>
+    fidget: 1 - habit.precision,           <span class="c">// 精确度低 → 更躁动</span>
+    celebrate: habit.outcome_bias === <span class="s">"shipper"</span>,
+  };
+}</pre>
+  </section>
+
+  <!-- ───────────────────────────── 4. 习惯 → 气泡语气 ───────────────────────────── -->
+  <section id="voice">
+    <h2><span class="num">04</span>习惯 → 气泡语气</h2>
+    <p class="sub">气泡的<em>内容</em>不变（还是那个通知事件），但<em>语气</em> —— 口吻、emoji、节奏、措辞 —— 会随你的工作方式变化。叠加在现有 <code>i18n</code> key/params 体系之上。</p>
+
+    <table>
+      <thead>
+        <tr><th>习惯信号</th><th class="map-arrow">→</th><th>气泡风格</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>night_owl</code></td><td class="map-arrow">→</td><td>🌙 「凌晨 1 点还在发版」「夜色正好」。</td></tr>
+        <tr><td><code>burst</code></td><td class="map-arrow">→</td><td>短促有力 ⚡ —— 「又来了？上」「3 个搞定，下一个」。</td></tr>
+        <tr><td><code>deep work</code></td><td class="map-arrow">→</td><td>极简安静 —— 「context 40%」（不闲聊），不用 emoji 打扰。</td></tr>
+        <tr><td><code>correction loop</code></td><td class="map-arrow">→</td><td>温和提醒 —— 「同一文件改第 3 次了，开个新 session？」。</td></tr>
+        <tr><td><code>test-first</code></td><td class="map-arrow">→</td><td>✅ 庆祝 —— 「测试绿了，已交付」。</td></tr>
+        <tr><td><code>cli-heavy</code></td><td class="map-arrow">→</td><td>终端梗 —— 「$ cd done」「exit 0」。</td></tr>
+        <tr><td><code>shipper</code></td><td class="map-arrow">→</td><td>提交/收工时自豪口吻 —— 「又一个交付了 🚀」。</td></tr>
+        <tr><td><code>explorer</code></td><td class="map-arrow">→</td><td>好奇口吻 —— 「这波绕得挺有意思」。</td></tr>
+        <tr><td><code>distracted</code>（回应慢）</td><td class="map-arrow">→</td><td>温柔再提醒 —— 「你有空我就在 👋」。</td></tr>
+      </tbody>
+    </table>
+
+    <h3>语气系统（渲染层，<code>ui/</code>）</h3>
+<pre><span class="c">// ui/voice.js —— 同一个 i18n key，按习惯选不同的语气变体。</span>
+<span class="k">export function</span> renderBubble(notif, habit) {
+  <span class="k">const</span> variant = voiceVariant(notif.type, habit);   <span class="c">// "punchy" | "quiet" | "gentle" | "proud"</span>
+  <span class="c">// i18n key 仍是语言的权威来源；variant 只决定 emoji / 节奏 / 措辞。</span>
+  <span class="k">return</span> t(notif.i18n.body.key, { ...notif.i18n.body.params, ...variant.emoji });
+}
+
+<span class="k">function</span> voiceVariant(type, h) {
+  <span class="k">if</span> (type === <span class="s">"milestone"</span> &amp;&amp; h.tool_affinity.includes(<span class="s">"test"</span>))
+    <span class="k">return</span> { emoji: <span class="s">"✅"</span>, pacing: <span class="s">"proud"</span> };
+  <span class="k">if</span> (type === <span class="s">"drift"</span>)
+    <span class="k">return</span> { emoji: <span class="s">"🤔"</span>, pacing: <span class="s">"gentle"</span> };
+  <span class="k">if</span> (h.depth &gt; 0.6)
+    <span class="k">return</span> { emoji: <span class="s">""</span>, pacing: <span class="s">"quiet"</span> };
+  <span class="k">if</span> (h.cadence === <span class="s">"burst"</span>)
+    <span class="k">return</span> { emoji: <span class="s">"⚡"</span>, pacing: <span class="s">"punchy"</span> };
+  <span class="k">return</span> { emoji: <span class="s">""</span>, pacing: <span class="s">"normal"</span> };
+}</pre>
+  </section>
+
+  <!-- ───────────────────────────── 5. 路线图 ───────────────────────────── -->
+  <section id="plan">
+    <h2><span class="num">05</span>实施方案 —— 5 个阶段</h2>
+    <p class="sub">增量式、不破坏现有功能。阶段 1–2 在 Core 里搭「习惯大脑」；阶段 3–4 把它接到进化、行为、语气；阶段 5 暴露给用户。</p>
+
+    <div class="phase">
+      <h3>阶段 1 —— 习惯数据模型</h3>
+      <div class="meta">schema.ts · migrate.ts</div>
+      <p>两张表：一张按天汇总（时间序列）+ 一张单行 <em>习惯画像</em>（指数衰减后的摘要）。只存数字，绝不存原始内容。</p>
+      <ul>
+        <li><code>behavior_daily(day, agent, active_min, sessions, tokens, commits, tests, corrections, errors, context_85, …)</code></li>
+        <li><code>habit_profile(id, chronotype, cadence, depth, precision, context_hygiene, responsiveness, outcome_bias, tool_affinity, updated_at)</code></li>
+        <li>复用现有 <code>memories</code> 表作为「洞察」流水。</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <h3>阶段 2 —— HabitEngine（Core）</h3>
+      <div class="meta">新增 src/core/habit.ts · 接入 server 事件链</div>
+      <p>纯「事件的函数」引擎，接进与 <code>registry</code> / <code>exp</code> 相同的分发链。把每条事件折进按天汇总，
+      并用指数衰减重算 8 维画像。</p>
+      <ul>
+        <li>首次运行时用已有 <code>events</code> + <code>sessions</code> 回填。</li>
+        <li>向 <code>memories</code> 写洞察行（例如 <code>chronotype=night_owl</code>）。</li>
+        <li>暴露 <code>GET /api/habit</code>，并把 <code>habit</code> 塞进 <code>pet_state</code> 的 SSE 推送。</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <h3>阶段 3 —— 习惯 → 进化</h3>
+      <div class="meta">exp.ts checkEvolution · seed.ts evolution_meta</div>
+      <p>给 <code>evolution_meta.conditions</code> 增加习惯键 —— 进化本来就是配置驱动，所以这是语义扩展，不是重写。</p>
+      <ul>
+        <li><code>conditions: ["health&gt;=0.7", "chronotype=night_owl"]</code> → 夜猫形态。</li>
+        <li><code>conditions: ["depth&gt;=0.6"]</code> → 「专注」变体；<code>cadence=burst</code> → 「火花」形态。</li>
+        <li>没有习惯条件命中时，回落到今天的 level+health 规则。</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <h3>阶段 4 —— 习惯 → 行为 &amp; 气泡语气</h3>
+      <div class="meta">ui/behavior.js · ui/voice.js · ui/app.js</div>
+      <p>渲染层从 SSE 拿 <code>habit</code>。Core 保持确定性，所有呈现都映射在这里。</p>
+      <ul>
+        <li><code>behaviorFor(habit)</code> → 待机变体、精力、作息窗口、反应阈值、躁动程度。</li>
+        <li><code>renderBubble(notif, habit)</code> → 按通知类型 + 习惯选口吻/emoji/节奏。</li>
+        <li>作息周期镜像 <code>chronotype</code>；在你活跃窗口之外宠物会「打盹」。</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <h3>阶段 5 —— 设置 + 隐私</h3>
+      <div class="meta">settings.html · server.ts · reset.ts</div>
+      <ul>
+        <li>「你的宠物懂你」面板：作息、节奏、工具风格、专注度 —— 只读，带「忘掉我的习惯」。</li>
+        <li><code>/api/reset</code> 增加 <code>habit</code> 作用域；提供关闭开关（「宠物保持中性」）。</li>
+        <li>画像只有数字 —— 永不存 prompt、代码、路径，也绝不外发。永远。</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── 6. 参考代码 ───────────────────────────── -->
+  <section id="code">
+    <h2><span class="num">06</span>参考代码</h2>
+    <p class="sub">与现有命名和仓库隐私姿态对齐的骨架。</p>
+
+    <h3>Schema（追加到 <code>SCHEMA_SQL</code>，提升 <code>SCHEMA_VERSION</code>）</h3>
+<pre><span class="c">-- 按天汇总：每天、每个 agent 一行，从 events/sessions 折出</span>
+CREATE TABLE IF NOT EXISTS behavior_daily (
+  id INTEGER PRIMARY KEY,
+  day TEXT NOT NULL,               <span class="c">-- 'YYYY-MM-DD'（UTC）</span>
+  agent TEXT NOT NULL,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  active_min REAL NOT NULL DEFAULT 0,
+  tokens INTEGER NOT NULL DEFAULT 0,
+  commits INTEGER NOT NULL DEFAULT 0,
+  tests INTEGER NOT NULL DEFAULT 0,
+  corrections INTEGER NOT NULL DEFAULT 0,
+  errors INTEGER NOT NULL DEFAULT 0,
+  context_85 INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (day, agent)
+);
+
+<span class="c">-- 单行用户工作习惯画像（聚合、指数衰减）</span>
+CREATE TABLE IF NOT EXISTS habit_profile (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  chronotype TEXT,               <span class="c">-- 'early_bird' | 'day' | 'night_owl'</span>
+  cadence TEXT,                  <span class="c">-- 'burst' | 'steady' | 'sparse'</span>
+  depth REAL NOT NULL DEFAULT 0.5,          <span class="c">-- 0..1 深度工作</span>
+  precision REAL NOT NULL DEFAULT 0.5,      <span class="c">-- 0..1（1 = 很少反复改）</span>
+  context_hygiene REAL NOT NULL DEFAULT 0.5,<span class="c">-- 0..1（1 = 干净）</span>
+  responsiveness REAL NOT NULL DEFAULT 0.5, <span class="c">-- 0..1（1 = 回应快）</span>
+  outcome_bias TEXT,             <span class="c">-- 'shipper' | 'explorer'</span>
+  tool_affinity TEXT NOT NULL DEFAULT '[]', <span class="c">-- JSON：[tool_name, …] 加权</span>
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);</pre>
+
+    <h3>HabitEngine 骨架（<code>src/core/habit.ts</code>）</h3>
+<pre><span class="k">import</span> type Database <span class="k">from</span> <span class="s">"better-sqlite3"</span>;
+<span class="k">import</span> type { CoreEvent } <span class="k">from</span> <span class="s">"./events.ts"</span>;
+
+<span class="k">export class</span> HabitEngine {
+  <span class="k">private</span> db: Database.Database;
+  <span class="k">constructor</span>(db: Database.Database) { this.db = db; }
+
+  <span class="c">// 接进与 registry/exp 相同的分发链（server.ts）</span>
+  <span class="k">handle</span>(ev: CoreEvent): <span class="k">void</span> {
+    <span class="k">const</span> day = ev.timestamp.slice(0, 10);
+    <span class="k">switch</span> (ev.event_type) {
+      <span class="k">case</span> <span class="s">"agent_working"</span>:
+        <span class="k">if</span> (ev.payload.tool_name === <span class="s">"Bash"</span>) this.bump(day, ev.agent, <span class="s">"tokens"</span>);
+        <span class="k">break</span>;
+      <span class="k">case</span> <span class="s">"context_update"</span>:
+        <span class="k">if</span> ((ev.payload.context_pct ?? 0) &gt; 85) this.bump(day, ev.agent, <span class="s">"context_85"</span>);
+        <span class="k">break</span>;
+      <span class="k">case</span> <span class="s">"session_finished"</span>:
+        this.bump(day, ev.agent, <span class="s">"sessions"</span>);
+        this.recompute();  <span class="c">// 把今天的汇总折进 8 维画像</span>
+        <span class="k">break</span>;
+    }
+  }
+
+  <span class="k">private</span> recompute(): <span class="k">void</span> { <span class="c">/* 聚合 behavior_daily → habit_profile，带衰减 */</span> }
+
+  <span class="k">get</span>(): Record&lt;string, unknown&gt; {
+    <span class="k">return</span> this.db.prepare(<span class="s">"SELECT * FROM habit_profile WHERE id=1"</span>).get() ?? {};
+  }
+}</pre>
+
+    <h3>习惯驱动的进化（<code>seed.ts</code> 的 <code>evolution_meta</code>）</h3>
+<pre>{
+  id: 2, name: <span class="s">"Lunafang"</span>, rarity: <span class="s">"rare"</span>,
+  evolution_meta: [{
+    from_level: 10,
+    conditions: [<span class="s">"health&gt;=0.7"</span>, <span class="s">"chronotype=night_owl"</span>],
+    to_stage: <span class="s">"22"</span>   <span class="c">// 月狐形态</span>
+  }]
+}</pre>
+  </section>
+
+  <!-- ───────────────────────────── 7. 就绪度 ───────────────────────────── -->
+  <section id="readiness">
+    <h2><span class="num">07</span>就绪度评分</h2>
+    <p class="sub">按子系统看，仓库距离「完整的习惯驱动宠物」还有多远。</p>
+
+    <div class="meter-row"><div class="lbl"><span>事件采集（adapters + ingress）</span><strong>100%</strong></div><div class="meter"><i style="width:100%"></i></div></div>
+    <div class="meter-row"><div class="lbl"><span>单 session 信号（registry + exp）</span><strong>90%</strong></div><div class="meter"><i style="width:90%"></i></div></div>
+    <div class="meter-row"><div class="lbl"><span>工作习惯画像（跨 session 聚合）</span><strong>0%</strong></div><div class="meter"><i style="width:0%"></i></div></div>
+    <div class="meter-row"><div class="lbl"><span>习惯驱动进化</span><strong>0%</strong></div><div class="meter"><i style="width:0%"></i></div></div>
+    <div class="meter-row"><div class="lbl"><span>习惯驱动宠物行为</span><strong>0%</strong></div><div class="meter"><i style="width:0%"></i></div></div>
+    <div class="meter-row"><div class="lbl"><span>习惯驱动气泡语气</span><strong>0%</strong></div><div class="meter"><i style="width:0%"></i></div></div>
+    <div class="meter-row"><div class="lbl"><span>隐私护栏（已经很强）</span><strong>100%</strong></div><div class="meter"><i style="width:100%"></i></div></div>
+  </section>
+
+  <section id="privacy">
+    <h2><span class="num">08</span>隐私护栏（必须保留）</h2>
+    <p class="sub">习惯层必须继承仓库现有的双闸隐私姿态，而不是削弱它。</p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>保持不变</h4>
+        <ul>
+          <li>只有白名单 payload 字段进入 Core（第二道闸在 <code>ingress.ts</code>）。</li>
+          <li>习惯模型只存 <em>派生数字 + 分类标签</em>，绝不存 prompt/代码/路径。</li>
+          <li>所有数据都在本地 <code>.vibepaws/vibepaws.db</code>。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>需要新增</h4>
+        <ul>
+          <li><code>/api/reset</code> 增加 <code>habit</code> 作用域（一键「忘掉我的习惯」）。</li>
+          <li>提供退出开关：「宠物保持中性」可关闭行为/语气自适应。</li>
+          <li><code>behavior_daily</code> 只保留计数 —— 不外发、不上云。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    基于 Vibepaws 仓库（v0.1.0，SCHEMA_VERSION=3）的静态审计生成。文件路径均指向真实实现。本文档是方案，尚未落码。
+  </footer>
+
+</div>
+</body>
+</html>

@@ -15,6 +15,9 @@ import { renderPips } from "./health/pips_dom.js";
 import {
   FACTOR_MAX, rowHealth, sortSessions, panelSignature, factorBreakdown, weakestFactor, rowKey,
 } from "./health/rows.js";
+import { behaviorFor } from "./behavior.js";
+import { voiceVariant, renderBubble } from "./voice.js";
+import { reactionDelayMs, isAwake } from "./behavior-motion.js";
 // 与 Core 共用的文案目录，由 UI server 的 /i18n.js 路由提供（src/i18n/messages.js）
 import { t as translate, normalizeLocale } from "/i18n.js";
 
@@ -48,6 +51,43 @@ const PET_STATE_OVERRIDE = (() => {
   return v && Object.hasOwn(MOTION, v) ? v : null;
 })();
 
+/**
+ * 习惯画像调试覆写：?habit=<name>。
+ * 和 ?petstate= 一样，只在本地预览用 —— 让你不用攒真实数据就能逐个看动画效果。
+ * 传了合法 preset 就强制 ready=true，覆盖 Core 推来的 habit。
+ */
+const HABIT_PRESETS = {
+  night_owl: { chronotype: "night_owl", cadence: "burst", depth: 0.5, precision: 0.8, outcome_bias: "shipper", tool_affinity: ["Bash", "Edit"] },
+  burst: { cadence: "burst", depth: 0.5, precision: 0.8, outcome_bias: "shipper", tool_affinity: ["Bash"] },
+  sparse: { cadence: "sparse", depth: 0.4, precision: 0.7, tool_affinity: [] },
+  deep: { cadence: "steady", depth: 0.8, precision: 0.95, tool_affinity: [] },
+  fidget: { cadence: "steady", depth: 0.4, precision: 0.3, tool_affinity: [] },
+  shipper: { cadence: "burst", depth: 0.5, precision: 0.8, outcome_bias: "shipper", tool_affinity: ["Bash", "Edit"] },
+  explorer: { cadence: "steady", depth: 0.5, precision: 0.8, outcome_bias: "explorer", tool_affinity: [] },
+};
+const HABIT_OVERRIDE = (() => {
+  const v = new URLSearchParams(location.search).get("habit");
+  return v && HABIT_PRESETS[v] ? HABIT_PRESETS[v] : null;
+})();
+
+/** 把 preset 补成一个完整的、ready=true 的 HabitProfile。 */
+function habitProfileFromPreset(p) {
+  return {
+    chronotype: p.chronotype ?? null,
+    cadence: p.cadence ?? null,
+    depth: p.depth ?? 0.5,
+    precision: p.precision ?? 0.5,
+    context_hygiene: p.context_hygiene ?? 0.5,
+    responsiveness: p.responsiveness ?? 0.5,
+    outcome_bias: p.outcome_bias ?? null,
+    tool_affinity: p.tool_affinity ?? [],
+    sample_days: 99,
+    sample_sessions: 99,
+    updated_at: new Date().toISOString(),
+    ready: true,
+  };
+}
+
 /** 壳（Electron preload 暴露的桥）；纯浏览器里为 null */
 const shell = window.vibepaws ?? null;
 /**
@@ -75,6 +115,10 @@ const state = {
   healthToday: null,
   /** 分数显示在哪（R30）：off / flyout / everywhere。老 Core 不发时按默认 flyout */
   healthVisibility: "flyout",
+  /** 习惯画像（null = 老 Core 不推这个字段；ready=false 时 UI 保持中立） */
+  habit: null,
+  /** 画像 → 行为参数（每个 pet_state 重算一次） */
+  behavior: behaviorFor(null),
   /** 事件流是否活着 —— 气泡只从这条流来，它断了就等于提醒功能死了 */
   streamOk: null,
   /** 5s 轮询是否活着 —— 只能证明 session 列表新鲜，证明不了气泡还会来 */
@@ -167,6 +211,9 @@ function applyPush(push) {
   state.mute = push.mute ?? { global_until: null, global_minutes: null };
   state.healthToday = push.health_today ?? null;
   state.healthVisibility = push.health_visibility ?? "flyout";
+  if (HABIT_OVERRIDE) state.habit = habitProfileFromPreset(HABIT_OVERRIDE);
+  else if (push.habit) state.habit = push.habit;
+  state.behavior = behaviorFor(state.habit?.ready ? state.habit : null);
   render();
   // 顺带重画气泡：可见性变了，因子点名要跟着出现 / 消失
   reconcileStickyBubbles();
@@ -278,6 +325,9 @@ let prevAnim = null;
 let blendStart = 0;
 /** 已经放完的一次性动作：Core 还在推同一个状态，但不该再放一遍 */
 let consumed = null;
+/** 反应延迟：想切过去但还没到点（reactionMs）的下一个状态 */
+let pendingState = null;
+let pendingAt = 0;
 
 /**
  * 现在整张桌面上同时在跑几个 subagent（轨道上画几颗小方块）。
@@ -324,11 +374,28 @@ function drawPetFrame(now) {
     return;
   }
 
+  const ready = state.habit?.ready === true;
   const want = petStateNow();
+  const delay = ready ? reactionDelayMs(state.behavior) : 0;
+
+  // 反应延迟：sparse 慢半拍、burst 反应快；冷启动 / 老 Core（delay=0）保持原即时切换。
   if (want !== cur.state) {
-    prevAnim = { state: cur.state, since: cur.since };
-    blendStart = now;
-    cur = { state: want, since: now, done: false };
+    if (delay <= 0) {
+      prevAnim = { state: cur.state, since: cur.since };
+      blendStart = now;
+      cur = { state: want, since: now, done: false };
+      pendingState = null;
+    } else if (pendingState !== want) {
+      pendingState = want;
+      pendingAt = now;
+    } else if (now - pendingAt >= delay) {
+      prevAnim = { state: cur.state, since: cur.since };
+      blendStart = now;
+      cur = { state: pendingState, since: now, done: false };
+      pendingState = null;
+    }
+  } else {
+    pendingState = null;
   }
   if (reducedMotion?.matches) {
     drawStillFrame(now, petTypeId);
@@ -336,6 +403,7 @@ function drawPetFrame(now) {
   }
   stillKey = null;
   const blend = prevAnim ? Math.min(1, (now - blendStart) / BLEND_MS) : 1;
+  const asleep = ready ? !isAwake(state.behavior.wakeWindow, new Date()) : false;
 
   const { done } = drawPet($("pet"), petTypeId, {
     state: cur.state,
@@ -343,6 +411,8 @@ function drawPetFrame(now) {
     prev: prevAnim ? { state: prevAnim.state, elapsed: now - prevAnim.since } : null,
     blend,
     subagents: liveSubagents(),
+    behavior: ready ? state.behavior : null,
+    asleep,
   });
 
   if (blend >= 1) prevAnim = null;
@@ -618,7 +688,9 @@ function pushBubble(n) {
 /** 一条气泡的 DOM，建一次；展开 / 单行 / 藏起来都只是换 class（见 renderBubbles） */
 function buildBubble(b) {
   const el = document.createElement("div");
-  el.className = `bubble ${bubbleTone(b.type)}${b.sticky ? " sticky" : ""}`;
+  const habit = state.habit?.ready ? state.habit : null;
+  const voice = voiceVariant(b.type, habit);
+  el.className = `bubble ${bubbleTone(b.type)} pacing-${voice.pacing}${b.sticky ? " sticky" : ""}`;
   el.dataset.uid = b.uid;
   el.dataset.type = b.type;
 
@@ -692,8 +764,9 @@ function buildBubble(b) {
 
 /** 写进会变的那几段文字（原地合并时也走这里） */
 function fillBubble(b, el = b.el) {
+  const habit = state.habit?.ready ? state.habit : null;
   el.querySelector(".b-title").textContent = notifText(b.n, "title");
-  el.querySelector(".b-body").textContent = notifText(b.n, "body");
+  el.querySelector(".b-body").textContent = renderBubble(b.n, habit, t);
   const advice = el.querySelector(".b-advice");
   const action = b.n.coach?.action;
   advice.hidden = !action;

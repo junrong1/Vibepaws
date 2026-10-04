@@ -85,6 +85,7 @@ const KEY_DAILY_CAP = "daily_exp_cap";
 const KEY_WARN_PCTS = "context_warn_pcts";
 const KEY_ZOMBIE_TIMEOUT = "zombie_timeout_min";
 const KEY_HEALTH_VISIBILITY = "health_visibility";
+const KEY_HABIT_ENABLED = "habit_enabled";
 
 /** 默认 token 预算：0 = 关掉里程碑提醒（没有分母就没有百分比可报） */
 export const DEFAULT_BUDGET_TOKENS = 0;
@@ -92,6 +93,8 @@ export const DEFAULT_BUDGET_TOKENS = 0;
 export const DEFAULT_DAILY_EXP_CAP = 200;
 /** context 警告阈值（README 6.3）。空数组 = 关掉 context 警告。 */
 export const DEFAULT_CONTEXT_WARN_PCTS: readonly number[] = [70, 85, 95];
+/** 习惯画像默认开启：推荐默认开 + 显式关闭开关（docs/handoff-habit-layer.md §7） */
+export const DEFAULT_HABIT_ENABLED = true;
 
 /**
  * Session Health 分数显示在哪（R30）。三档的顺序即设置界面下拉的顺序。
@@ -130,6 +133,8 @@ export interface VibepawsSettings {
   zombie_timeout_min: number;
   /** Session Health 分数显示在哪（R30） */
   health_visibility: HealthVisibility;
+  /** 是否采集习惯画像。关闭后 HabitEngine 停止折叠事件，UI 保持中立 */
+  habit_enabled: boolean;
 }
 
 /**
@@ -172,6 +177,12 @@ export function normalizeHealthVisibility(raw: unknown): Normalized<HealthVisibi
   const v = typeof raw === "string" ? raw.trim() : raw;
   if (typeof v !== "string" || !(HEALTH_VISIBILITIES as readonly string[]).includes(v)) return INVALID;
   return { ok: true, value: v as HealthVisibility, clamped: false };
+}
+
+/** 习惯画像开关：默认开。"0"/false 关闭，其余一律视为开启（宽容读取脏值）。 */
+export function normalizeHabitEnabled(raw: unknown): Normalized<boolean> {
+  if (raw === null || raw === undefined) return { ok: true, value: true, clamped: false };
+  return { ok: true, value: raw !== "0" && raw !== false, clamped: false };
 }
 
 /** session 级预算：0 / null = 跟随全局默认（列写 NULL，读取时自然回落） */
@@ -279,6 +290,13 @@ export function getHealthVisibility(db: Database.Database): HealthVisibility {
   return n.ok ? n.value : DEFAULT_HEALTH_VISIBILITY;
 }
 
+export function getHabitEnabled(db: Database.Database): boolean {
+  const raw = getSetting(db, KEY_HABIT_ENABLED);
+  if (raw === null) return DEFAULT_HABIT_ENABLED;
+  const n = normalizeHabitEnabled(raw);
+  return n.ok ? n.value : DEFAULT_HABIT_ENABLED;
+}
+
 export function readSettings(db: Database.Database): VibepawsSettings {
   return {
     budget_tokens: getDefaultBudgetTokens(db),
@@ -286,6 +304,7 @@ export function readSettings(db: Database.Database): VibepawsSettings {
     context_warn_pcts: getContextWarnPcts(db),
     zombie_timeout_min: getZombieTimeoutMin(db),
     health_visibility: getHealthVisibility(db),
+    habit_enabled: getHabitEnabled(db),
   };
 }
 
@@ -351,6 +370,14 @@ export function parseSettingsPatch(raw: unknown): ParsedSettingsPatch {
     if (!n.ok) out.invalid.push("health_visibility");
     else out.settings.health_visibility = n.value;
   }
+  if ("habit_enabled" in body) {
+    const n = normalizeHabitEnabled(body.habit_enabled);
+    if (!n.ok) out.invalid.push("habit_enabled");
+    else {
+      out.settings.habit_enabled = n.value;
+      if (n.clamped) out.clamped.push("habit_enabled");
+    }
+  }
   if ("pet_name" in body) {
     const n = normalizeText(body.pet_name, SETTINGS_LIMITS.pet_name_max);
     if (!n.ok) out.invalid.push("pet_name");
@@ -389,6 +416,10 @@ export function applySettingsPatch(db: Database.Database, patch: Partial<Vibepaw
     // 和「我还没表态」区分开（否则改完默认档再改回来会被当成从未设置过）
     setSetting(db, KEY_WARN_PCTS, JSON.stringify(next));
     if (!same) changed.push("context_warn_pcts");
+  }
+  if (patch.habit_enabled !== undefined && patch.habit_enabled !== before.habit_enabled) {
+    setSetting(db, KEY_HABIT_ENABLED, patch.habit_enabled ? "1" : "0");
+    changed.push("habit_enabled");
   }
   return changed;
 }

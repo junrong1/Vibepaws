@@ -16,3 +16,7 @@ src/adapters/dsh_plugin.cjs
 .idea/
 mvp_architecture.html
 references/desktop_pet_landscape.html
+
+# habit 层本地验证产物（scripts/render_habit_preview*.js 与 core 日志）
+core.log
+*habit_preview.png

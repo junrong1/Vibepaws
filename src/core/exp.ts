@@ -15,6 +15,7 @@
  */
 import type Database from "better-sqlite3";
 import type { CoreEvent, EvolutionStatus, ExpSource, GrowthView, PetState } from "./events.ts";
+import type { HabitProfile } from "./habit.ts";
 import { getDailyExpCap } from "./settings.ts";
 import { localDayKey, localDayStart, todayHealth, type DayHealth } from "./health_query.ts";
 import { EVOLUTION_HEALTH_GATE, type EvolutionRecord } from "./journal.ts";
@@ -83,6 +84,8 @@ export class ExpEngine {
   private db: Database.Database;
   /** 进化的那一刻（R29）。server 注入：发 evolution 气泡 + 写日志。这里只负责说「发生了」 */
   onEvolve?: (e: EvolutionRecord) => void;
+  /** 由 server 注入的习惯画像提供者 —— 进化条件里的 habit 键用它求值 */
+  habitProvider?: () => HabitProfile;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -266,10 +269,10 @@ export class ExpEngine {
     if (level === pet.level) return;
     this.lastLevelUpAt = Date.now(); // 用于 level-up 状态 5s 回落
     this.db.prepare("UPDATE pets SET level=?, exp=?, state='level-up' WHERE id=?").run(level, remaining, petId);
-    this.checkEvolution(petId, level);
+    this.checkEvolution(petId, level, this.habitProvider?.());
   }
 
-  private checkEvolution(petId: number, level: number): void {
+  private checkEvolution(petId: number, level: number, habit?: HabitProfile): void {
     const visited = new Set<number>();
     while (true) {
       const pet = this.petRow();
@@ -287,11 +290,15 @@ export class ExpEngine {
         return;
       }
 
-      const rule = meta.find((candidate) =>
-        level >= candidate.from_level && candidate.conditions?.includes("health>=0.7"),
-      );
       const health = this.healthScore();
-      if (!rule || health < 0.7) return;
+      const rule = meta.find((candidate) => {
+        if (level < candidate.from_level) return false;
+        const conditions = candidate.conditions ?? [];
+        // 向后兼容：空 conditions 不触发（starter 宠物的 evolution_meta 为空数组）。
+        if (conditions.length === 0) return false;
+        return conditions.every((c) => evaluateEvolutionCondition(c, health, habit));
+      });
+      if (!rule) return;
       const targetId = Number(rule.to_stage);
       if (!Number.isInteger(targetId) || visited.has(targetId)) return;
 
@@ -541,21 +548,23 @@ export function expSourceBreakdown(
 type EvolutionRule = { from_level: number; conditions?: string[]; to_stage: string };
 
 /**
- * 下一次进化还差什么。判定与 checkEvolution 逐字一致：只认带 `health>=0.7` 的规则、
- * 等级够了才轮到它、健康要过门槛、而且**只在升级那一刻**判定 ——
- * 所以两样都满足时说的是「下一次升级时」，而不是假装它此刻就该发生。
- * health = null（今天还不知道）按 R31 读作健康：不挡进化，和引擎一样。
+ * 下一次进化还差什么。判定与 checkEvolution 同一套条件求值（evaluateEvolutionCondition）：
+ * 只认带非空 conditions 的规则（空数组 = 不进化 = final）、等级够了才轮到它、所有条件
+ * AND 求值、而且**只在升级那一刻**判定 —— 所以条件都满足时说的是「下一次升级时」，
+ * 而不是假装它此刻就该发生。habit 门控（chronotype=/cadence=/depth>= 等）也在这里判，
+ * 未达标时返回 state=habit（而不是误报 final）。health = null（今天还不知道）按 R31 读作健康。
  */
 export function evolutionStatus(
   meta: readonly EvolutionRule[],
   level: number,
   health: number | null,
   formName: (typeId: number) => string | null = () => null,
+  habit?: HabitProfile,
 ): EvolutionStatus {
   const candidates = meta.filter(
     (m) =>
       Number.isFinite(m.from_level) &&
-      m.conditions?.includes("health>=0.7") &&
+      (m.conditions?.length ?? 0) > 0 &&
       Number.isInteger(Number(m.to_stage)),
   );
   if (candidates.length === 0) return { state: "final" };
@@ -564,7 +573,35 @@ export function evolutionStatus(
     candidates.find((m) => level >= m.from_level) ??
     [...candidates].sort((a, b) => a.from_level - b.from_level)[0]!;
   const toTypeId = Number(rule.to_stage);
-  const state = level < rule.from_level ? "level" : health !== null && health < EVOLUTION_HEALTH_GATE ? "health" : "ready";
+  const conditions = rule.conditions ?? [];
+  if (level < rule.from_level) {
+    return {
+      state: "level",
+      to_type_id: toTypeId,
+      to_form: formName(toTypeId),
+      from_level: rule.from_level,
+      level,
+      health_gate: EVOLUTION_HEALTH_GATE,
+      health,
+      conditions,
+    };
+  }
+  const effHealth = health ?? 1.0; // 今天还不知道 = 读作健康（R31），不挡进化
+  const unmet = conditions.filter((c) => !evaluateEvolutionCondition(c, effHealth, habit));
+  if (unmet.length === 0) {
+    return {
+      state: "ready",
+      to_type_id: toTypeId,
+      to_form: formName(toTypeId),
+      from_level: rule.from_level,
+      level,
+      health_gate: EVOLUTION_HEALTH_GATE,
+      health,
+      conditions,
+    };
+  }
+  // health 条件没达标优先报 health（更可操作）；其余 habit 键未达标报 habit。
+  const state = conditions.includes("health>=0.7") && effHealth < EVOLUTION_HEALTH_GATE ? "health" : "habit";
   return {
     state,
     to_type_id: toTypeId,
@@ -573,6 +610,8 @@ export function evolutionStatus(
     level,
     health_gate: EVOLUTION_HEALTH_GATE,
     health,
+    conditions,
+    unmet_conditions: unmet,
   };
 }
 
@@ -594,7 +633,7 @@ export function levelUps(rows: ReadonlyArray<{ note: string | null; created_at: 
 export function growthView(
   db: Database.Database,
   pet: PetSnapshot,
-  opts: { now?: Date; days?: number } = {},
+  opts: { now?: Date; days?: number; habit?: HabitProfile } = {},
 ): GrowthView {
   const now = opts.now ?? new Date();
   const days = Math.max(1, Math.floor(opts.days ?? 7));
@@ -634,10 +673,43 @@ export function growthView(
     curve: levelCurve(pet.level),
     week: expSourceBreakdown(expRows, { now, days }),
     level_ups: levelUps(levelRows),
-    evolution: evolutionStatus(meta, pet.level, health, formName),
+    evolution: evolutionStatus(meta, pet.level, health, formName, opts.habit),
   };
 }
 
 function round2(v: number): number {
   return Math.round(v * 100) / 100;
+}
+
+/**
+ * 进化条件里的 habit 数值键（depth>=0.6 / precision>=0.6 / context_hygiene>=0.6）。
+ * 返回 null 表示「不是这个键」，让调用方继续试下一个键。
+ */
+function evalHabitGe(
+  cond: string,
+  key: "depth" | "precision" | "context_hygiene",
+  habit?: HabitProfile,
+): boolean | null {
+  const prefix = `${key}>=`;
+  if (!cond.startsWith(prefix)) return null;
+  const n = Number(cond.slice(prefix.length));
+  if (!Number.isFinite(n)) return false;
+  return (habit?.[key] ?? 0) >= n;
+}
+
+/**
+ * 进化条件判定。支持的键（docs/handoff-habit-layer.md §6.2）：
+ *   health>=0.7 · chronotype=night_owl|early_bird · cadence=burst|steady ·
+ *   depth>=0.6 · precision>=0.6 · context_hygiene>=0.6
+ * 未知条件一律 false（保守不触发）；habit 缺省时 habit 键不通过。
+ */
+export function evaluateEvolutionCondition(cond: string, health: number, habit?: HabitProfile): boolean {
+  if (cond === "health>=0.7") return health >= 0.7;
+  if (cond.startsWith("chronotype=")) return habit?.chronotype === cond.slice("chronotype=".length);
+  if (cond.startsWith("cadence=")) return habit?.cadence === cond.slice("cadence=".length);
+  for (const key of ["depth", "precision", "context_hygiene"] as const) {
+    const r = evalHabitGe(cond, key, habit);
+    if (r !== null) return r;
+  }
+  return false;
 }

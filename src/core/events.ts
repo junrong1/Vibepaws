@@ -4,6 +4,8 @@
  */
 import { retainKnownWords } from "./bash_allowlist.ts";
 
+import type { HabitProfile } from "./habit.ts";
+
 export type AgentId = "claude_code" | "codex" | "generic" | "pi" | "dsh";
 export type Severity = "low" | "medium" | "high";
 
@@ -519,15 +521,16 @@ export interface GrowthView {
 
 /**
  * 下一次进化还差什么（exp.ts checkEvolution 的同一套判定，只是说出来）：
- *   final  —— 这个形态没有下一阶；
+ *   final  —— 这个形态没有下一阶（没有非空 conditions 的规则）；
  *   level  —— 等级还没到 from_level；
- *   health —— 等级到了，但今天的健康低于门槛：下一次升级那一刻要 ≥ 门槛才会进化；
- *   ready  —— 两样都满足：进化只在升级那一刻判定，所以是「下一次升级时」，不是现在。
+ *   health —— 等级到了，但 health>=0.7 还没达标：下一次升级那一刻要 ≥ 门槛才会进化；
+ *   habit  —— 等级到了，但某个 habit 键（chronotype/cadence/depth…）还没达标；
+ *   ready  —— 所有条件都满足：进化只在升级那一刻判定，所以是「下一次升级时」，不是现在。
  */
 export type EvolutionStatus =
   | { state: "final" }
   | {
-      state: "level" | "health" | "ready";
+      state: "level" | "health" | "habit" | "ready";
       to_type_id: number;
       to_form: string | null;
       from_level: number;
@@ -535,6 +538,10 @@ export type EvolutionStatus =
       health_gate: number;
       /** null = 今天还不知道（按健康算，不挡进化） */
       health: number | null;
+      /** 该规则的进化条件（与 checkEvolution 同源） */
+      conditions: string[];
+      /** 未达标的条件（state=health/habit 时非空） */
+      unmet_conditions?: string[];
     };
 
 export interface AgentCapabilities {
@@ -629,6 +636,8 @@ export interface PetStatePush {
   health_visibility: HealthVisibility;
   /** 当前静音状态：界面要能显示「还剩多久」、点亮对应按钮并原地取消（issue #7） */
   mute: { global_until: number | null; global_minutes: number | null };
+  /** 用户工作习惯画像（docs/handoff-habit-layer.md）。ready=false 时 UI 应保持中立 */
+  habit?: HabitProfile;
   needs_you: SessionView[];
   warning: SessionView[];
   /** 自己干活的 session。**不含** delegating / juggling —— 那两档单独成组，

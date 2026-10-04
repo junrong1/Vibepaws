@@ -151,6 +151,25 @@ test("EXP 条分母永远有值（next_level_exp 缺失会显示成 37/undefined
   assert.equal(typeof pet.state, "string");
 });
 
+test("stateSnapshot 包含 habit 画像（冷启动 ready=false 且标签中立）", () => {
+  const server = makeServer();
+  const snap = server.stateSnapshot();
+  assert.ok(snap.habit, "pet_state 里必须带 habit");
+  assert.equal(snap.habit.ready, false);
+  assert.equal(snap.habit.chronotype, null);
+  assert.equal(snap.habit.cadence, null);
+  assert.equal(snap.habit.outcome_bias, null);
+});
+
+test("HTTP：GET /api/habit 返回 profile", async () => {
+  await withServer(async (server, base) => {
+    const res = await fetch(`${base}/api/habit`, { headers: { "x-vibepaws-token": server.token } });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { profile: { ready: boolean } };
+    assert.equal(typeof body.profile.ready, "boolean");
+  });
+});
+
 test("HTTP：/health 免鉴权，其余端点没 token 一律 401", async () => {
   const server = makeServer();
   // port 0 → 系统分配；start() 会把真实端口写回 server.port

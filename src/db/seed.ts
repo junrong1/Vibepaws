@@ -31,6 +31,22 @@ export interface PetTypeSeed {
 }
 
 /**
+ * evolution_meta 里的 conditions 支持两类键（docs/handoff-habit-layer.md §6.2）：
+ *   · health>=0.7 —— 向后兼容的旧键，只有它也能照旧进化。
+ *   · habit 键 —— chronotype=night_owl|early_bird · cadence=burst|steady ·
+ *     depth>=0.6 · precision>=0.6 · context_hygiene>=0.6（由 HabitEngine 提供画像）。
+ * 所有条件 AND 求值；空数组 = 不进化（starter 宠物默认不进化）。
+ *
+ * 例：
+ *   evolution_meta: [{
+ *     from_level: 5,
+ *     conditions: ["health>=0.7", "cadence=burst", "depth>=0.6"],
+ *     to_stage: "11",
+ *   }]
+ * 注意：这只说明形状，不改变现有 starter 宠物的进化 —— 新美术是单独的一件事。
+ */
+
+/**
  * 程序生成的宠物 + 进化家族。保留是为了老库不炸，不是为了继续分配。
  * 进化家族三阶目前只有配色差别，重做美术是后续的事。
  */

@@ -9,6 +9,7 @@
  * 两个 scope，是两件不同的事，不要合并：
  *   · pet  —— 换一只新宠物：宠物、EXP 流水、日志（memories + 日志文件）。session 列表与设置留着。
  *   · data —— 全部本地数据：连 session / 事件 / 通知 / 设置一起，回到首次启动的样子。
+ *   · habit —— 只清习惯画像（behavior_daily + habit_profile），其余数据不动（docs/handoff-habit-layer.md §7.4）。
  *
  * 日志文件（<data>/journal/YYYY-MM.md，见 core/journal.ts）两个 scope 都删：它是 memories 的导出，
  * 行删了文件还在，等于给一只刚被清空的宠物留下一整本散文历史。只删我们起的那种文件名。
@@ -20,12 +21,13 @@ import type Database from "better-sqlite3";
 import { statSync } from "node:fs";
 import { clearJournalFiles } from "./journal.ts";
 
-export type ResetScope = "pet" | "data";
+export type ResetScope = "pet" | "data" | "habit";
 
 /** 每个 scope 会清掉的表，按**子表在前**排列（sessions 被 exp_logs / memories 引用） */
 const TABLES: Record<ResetScope, string[]> = {
   pet: ["exp_logs", "memories", "pets"],
-  data: ["exp_logs", "memories", "notifications", "needs_input_waits", "events", "sessions", "agents", "pets"],
+  data: ["exp_logs", "memories", "notifications", "needs_input_waits", "events", "sessions", "agents", "pets", "behavior_daily", "habit_profile"],
+  habit: ["behavior_daily", "habit_profile"],
 };
 
 /** 数据足迹：按钮旁边要能说出「删掉的是多少东西」，否则那两个按钮谁也不敢点 */
@@ -36,6 +38,8 @@ export interface DataFootprint {
   exp_logs: number;
   memories: number;
   agents: number;
+  /** 习惯画像按天汇总的行数（behavior_daily） */
+  habit: number;
   /** 占用字节数（主库 + WAL）；拿不到时 null（内存库、权限） */
   db_bytes: number | null;
 }
@@ -75,6 +79,7 @@ export function dataFootprint(db: Database.Database): DataFootprint {
     exp_logs: count(db, "exp_logs"),
     memories: count(db, "memories"),
     agents: count(db, "agents"),
+    habit: count(db, "behavior_daily"),
     db_bytes: diskBytes(db),
   };
 }

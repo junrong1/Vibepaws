@@ -82,6 +82,7 @@ import { coachingRule, coachingSnapshot, resetThreshold, tuneRule, type Coaching
 import { SessionRegistry } from "./registry.ts";
 import { NotificationEngine } from "./notifications.ts";
 import { ExpEngine, TIRED_HEALTH_THRESHOLD, growthView } from "./exp.ts";
+import { HabitEngine } from "./habit.ts";
 import { todayHealth } from "./health_query.ts";
 import { dayHealthView, parseHistoryDays, sessionHealthHistory } from "./health_history.ts";
 import { JOURNAL_DIR_NAME, Journal, journalView, parseJournalMonth } from "./journal.ts";
@@ -185,6 +186,7 @@ export class VibepawsServer {
   notifications: NotificationEngine;
   exp: ExpEngine;
   journal: Journal;
+  habit: HabitEngine;
   /** 采集通道开销计量（landscape 0.12）：每次 POST /events 记一条 */
   hookMeter = new HookMeter();
   token: string;
@@ -228,14 +230,17 @@ export class VibepawsServer {
     );
     // 升级后第一次启动：已经结算的老 session 收养成日志行；上次没写进文件的行补上
     this.journal.catchUp();
+    this.habit = new HabitEngine(this.db);
     // 进化（R29）：一行日志 + 一条气泡。exp 已经把它 try/catch 住了，这里再抛也伤不到 EXP 结算
     this.exp.onEvolve = (e) => {
       this.journal.onEvolution(e);
       const n = this.notifications.forEvolution(e);
       if (n) for (const client of [...this.sseClients]) this.sendSse(client, "notification", n);
     };
+    // 习惯画像 → 进化条件（habit 键）。不接上，cadence=/depth>= 这类门控在真实 Core 里永远不触发
+    this.exp.habitProvider = () => this.habit.getProfile();
 
-    // 事件分发链：ingress → registry → notifications/exp → SSE
+    // 事件分发链：ingress → registry → habit/exp → SSE
     this.notifications.onEvent = (ev: CoreEvent) => {
       const wasWaiting = this.isWaiting(ev.agent, ev.session_id);
       this.registry.handle(ev);
@@ -248,6 +253,7 @@ export class VibepawsServer {
       if (wasWaiting && !this.isWaiting(ev.agent, ev.session_id)) {
         this.broadcastResolved(this.notifications.resolveInferred(ev.agent, ev.session_id));
       }
+      this.habit.handle(ev);
       this.exp.handle(ev);
       this.broadcastNotification(ev);
     };
@@ -329,7 +335,12 @@ export class VibepawsServer {
           }
           // Den 的 Growth 标签页（U13）。和 /api/exp 分开：那条是浮层 EXP 明细的原始行，这条是算好的视图
           if (url === "/api/growth") {
-            sendJson(res, 200, growthView(this.db, this.exp.getPetSnapshot()));
+            sendJson(res, 200, growthView(this.db, this.exp.getPetSnapshot(), { habit: this.habit.getProfile() }));
+            return;
+          }
+          if (url === "/api/habit") {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ profile: this.habit.getProfile() }));
             return;
           }
           // 采集通道开销（landscape 0.12）。文案说「自己 curl 一下」，
@@ -567,6 +578,7 @@ export class VibepawsServer {
     const result = resetLocalData(this.db, scope, { journalDir: this.journal.dir });
     this.notifications.forgetAll();
     this.registry.forgetAll();
+    this.habit.forgetAll();
     this.exp.ensurePet();
     this.broadcastState();
     return { deleted: result.deleted, vacuumed: result.vacuumed, journal_files: result.journal_files };
@@ -579,8 +591,8 @@ export class VibepawsServer {
         sendJson(res, 400, { error: "confirmation required" });
         return;
       }
-      if (scope !== "pet" && scope !== "data") {
-        sendJson(res, 400, { error: "scope must be pet or data" });
+      if (scope !== "pet" && scope !== "data" && scope !== "habit") {
+        sendJson(res, 400, { error: "scope must be pet, data or habit" });
         return;
       }
       const result = this.resetLocalData(scope);
@@ -1023,6 +1035,7 @@ export class VibepawsServer {
       health_today: dayHealthView(today),
       health_visibility: getHealthVisibility(this.db),
       adapters: this.listAdapters(),
+      habit: this.habit.getProfile(),
       mute: (({ global_until, global_minutes }) => ({ global_until, global_minutes }))(
         this.notifications.muteStatus(),
       ),

@@ -237,10 +237,12 @@ export const MESSAGES = {
     "den.growth.evo.target": "{to} at Lv.{from}",
     "den.growth.evo.level": "Not yet — {n} more level(s) to go.",
     "den.growth.evo.health": "The level is there; health is what's missing. It's checked again at the next level-up.",
+    "den.growth.evo.habit": "The level is there; the work-habit profile isn't there yet. It's re-checked at the next level-up.",
     "den.growth.evo.ready": "Both conditions are met — it evolves at the next level-up.",
     "den.growth.cond.level": "Level ≥ {need} (now {have})",
     "den.growth.cond.health": "Health ≥ {need}% at the level-up (today {have})",
     "den.growth.cond.health.unknown": "not known yet — reads as healthy",
+    "den.growth.cond.habit": "Work-habit profile matches",
     "den.growth.cond.met": "met",
     "den.growth.cond.unmet": "not met",
     "den.growth.history": "Level-ups",
@@ -313,6 +315,8 @@ export const MESSAGES = {
     "settings.cap.label": "Daily EXP cap",
     "settings.cap.unit": "EXP / day",
     "settings.cap.hint": "How much EXP tokens can earn per day — keeps one long session from farming levels.",
+    "settings.habit.label": "Learn my work habits",
+    "settings.habit.hint": "The pet adapts its idle behavior and bubble tone to how you work (night owl, burst, shipper…). Stored locally as counts and labels only — never prompts, code, file paths, or command text.",
 
     // ---- Token 与开销（landscape 0.12 / clawd #102）----
     // 这一段回答的是一个**被 agent 幻觉出来的**指控，所以它必须给机制而不是保证：
@@ -774,10 +778,12 @@ export const MESSAGES = {
     "den.growth.evo.target": "Lv.{from} 进化成 {to}",
     "den.growth.evo.level": "还没到 —— 还差 {n} 级。",
     "den.growth.evo.health": "等级够了，差的是健康。下一次升级时会再判定一次。",
+    "den.growth.evo.habit": "等级够了，差的是工作习惯画像。下一次升级时会再判定一次。",
     "den.growth.evo.ready": "两个条件都满足 —— 下一次升级时进化。",
     "den.growth.cond.level": "等级 ≥ {need}（现在 {have}）",
     "den.growth.cond.health": "升级那一刻健康 ≥ {need}%（今天 {have}）",
     "den.growth.cond.health.unknown": "还不知道 —— 读作健康",
+    "den.growth.cond.habit": "工作习惯画像达标",
     "den.growth.cond.met": "已满足",
     "den.growth.cond.unmet": "未满足",
     "den.growth.history": "升级记录",
@@ -847,6 +853,8 @@ export const MESSAGES = {
     "settings.cap.label": "每日 EXP 上限",
     "settings.cap.unit": "EXP / 天",
     "settings.cap.hint": "token 每天最多换多少 EXP —— 免得一个长会话把等级刷出来。",
+    "settings.habit.label": "学习我的工作习惯",
+    "settings.habit.hint": "宠物会根据你的工作方式调整待机行为和气泡语气（夜猫、突击、交付型…）。只在本地存计数和标签 —— 绝不存提示词、代码、文件路径或命令文本。",
 
     // ---- Token 与开销（landscape 0.12 / clawd #102）----
     "settings.section.cost": "Token 与开销",
